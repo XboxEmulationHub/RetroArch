@@ -285,6 +285,7 @@ enum midi_driver_enum
 {
    MIDI_WINMM               = RECORD_NULL + 1,
    MIDI_ALSA,
+   MIDI_COREMIDI,
    MIDI_NULL
 };
 
@@ -597,6 +598,8 @@ static const enum record_driver_enum RECORD_DEFAULT_DRIVER = RECORD_WAV;
 
 #ifdef HAVE_WINMM
 static const enum midi_driver_enum MIDI_DEFAULT_DRIVER = MIDI_WINMM;
+#elif defined(HAVE_COREMIDI)
+static const enum midi_driver_enum MIDI_DEFAULT_DRIVER = MIDI_COREMIDI;
 #elif defined(HAVE_ALSA) && !defined(HAVE_HAKCHI) && !defined(HAVE_SEGAM) && !defined(DINGUX)
 static const enum midi_driver_enum MIDI_DEFAULT_DRIVER = MIDI_ALSA;
 #else
@@ -743,6 +746,8 @@ static const enum wifi_driver_enum WIFI_DEFAULT_DRIVER = WIFI_NULL;
 
 #if defined(ANDROID)
 static const enum location_driver_enum LOCATION_DEFAULT_DRIVER = LOCATION_ANDROID;
+#elif defined(HAVE_CORELOCATION)
+static const enum location_driver_enum LOCATION_DEFAULT_DRIVER = LOCATION_CORELOCATION;
 #else
 static const enum location_driver_enum LOCATION_DEFAULT_DRIVER = LOCATION_NULL;
 #endif
@@ -1455,6 +1460,8 @@ const char *config_get_default_midi(void)
          return "winmm";
       case MIDI_ALSA:
          return "alsa";
+      case MIDI_COREMIDI:
+         return "coremidi";
       case MIDI_NULL:
          break;
    }
@@ -1838,6 +1845,7 @@ static struct config_bool_setting *populate_settings_bool(
 #endif
    SETTING_BOOL("audio_fastforward_mute",        &settings->bools.audio_fastforward_mute, true, DEFAULT_AUDIO_FASTFORWARD_MUTE, false);
    SETTING_BOOL("audio_fastforward_speedup",     &settings->bools.audio_fastforward_speedup, true, DEFAULT_AUDIO_FASTFORWARD_SPEEDUP, false);
+   SETTING_BOOL("audio_rewind_mute",             &settings->bools.audio_rewind_mute, true, DEFAULT_AUDIO_REWIND_MUTE, false);
 
 #ifdef HAVE_WASAPI
    SETTING_BOOL("audio_wasapi_exclusive_mode",   &settings->bools.audio_wasapi_exclusive_mode, true, DEFAULT_WASAPI_EXCLUSIVE_MODE, false);
@@ -2010,6 +2018,7 @@ static struct config_bool_setting *populate_settings_bool(
 #endif
    SETTING_BOOL("content_show_history",          &settings->bools.menu_content_show_history, true, DEFAULT_CONTENT_SHOW_HISTORY, false);
    SETTING_BOOL("content_show_playlists",        &settings->bools.menu_content_show_playlists, true, DEFAULT_CONTENT_SHOW_PLAYLISTS, false);
+   SETTING_BOOL("content_show_playlist_tabs",    &settings->bools.menu_content_show_playlist_tabs, true, DEFAULT_CONTENT_SHOW_PLAYLIST_TABS, false);
 #if defined(HAVE_LIBRETRODB)
    SETTING_BOOL("content_show_explore",          &settings->bools.menu_content_show_explore, true, DEFAULT_MENU_CONTENT_SHOW_EXPLORE, false);
 #endif
@@ -3733,6 +3742,14 @@ static bool config_load_file(global_t *global,
       RARCH_LOG_OUTPUT("=== Config end ===\n");
    }
 #endif
+
+   /* Special case for perfcnt_enable */
+   {
+      bool tmp = false;
+      config_get_bool(conf, "perfcnt_enable", &tmp);
+      if (tmp)
+         retroarch_ctl(RARCH_CTL_SET_PERFCNT_ENABLE, NULL);
+   }
 
    /* Overrides */
 

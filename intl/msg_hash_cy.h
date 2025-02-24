@@ -1286,6 +1286,10 @@ MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_ASSETS_DIRECTORY,
    "Lawrlwythiadau"
    )
+MSG_HASH( /* FIXME Not RGUI specific */
+   MENU_ENUM_LABEL_VALUE_RGUI_BROWSER_DIRECTORY,
+   "Cyfeiriadur Cychwynnol"
+   )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_DIRECTORY,
    "Rhestri Chwarae"
@@ -1517,6 +1521,8 @@ MSG_HASH(
 
 
 /* Ozone: Settings > User Interface > Appearance */
+
+
 
 
 /* MaterialUI: Settings > User Interface > Appearance */

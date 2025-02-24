@@ -435,7 +435,7 @@ static void reallocate_port_if_needed(unsigned detected_port, int vendor_id,
             (   detected_port == settings->uints.input_joypad_index[player]
             || !input_config_get_device_name(settings->uints.input_joypad_index[player]))
             && settings->uints.input_device_reservation_type[player]
-            != INPUT_DEVICE_RESERVATION_RESERVED )
+            != INPUT_DEVICE_RESERVATION_RESERVED)
       {
          first_free_player_slot = player;
          RARCH_DBG("[Autoconf]: First unconfigured / unreserved player is %d\n",
@@ -445,14 +445,15 @@ static void reallocate_port_if_needed(unsigned detected_port, int vendor_id,
       if (settings->uints.input_device_reservation_type[player] != INPUT_DEVICE_RESERVATION_NONE)
          no_reservation_at_all = false;
    }
-   if (first_free_player_slot > settings->uints.input_max_users) {
+   if (first_free_player_slot > settings->uints.input_max_users)
+   {
       RARCH_ERR( "[Autoconf]: No free and unreserved player slots found for adding new device"
-                 " \"%s\"! Detected port %d, max_users: %d, first free slot %d\n",
-                 device_name, detected_port,
-                 settings->uints.input_max_users,
-                 first_free_player_slot+1);
+            " \"%s\"! Detected port %d, max_users: %d, first free slot %d\n",
+            device_name, detected_port,
+            settings->uints.input_max_users,
+            first_free_player_slot+1);
       RARCH_WARN("[Autoconf]: Leaving detected player slot in place: %d\n",
-                 prev_assigned_player_slots[detected_port]);
+            prev_assigned_player_slots[detected_port]);
       return;
    }
 
@@ -510,7 +511,7 @@ static void reallocate_port_if_needed(unsigned detected_port, int vendor_id,
    if (device_has_reserved_slot)
    {
       unsigned prev_assigned_port = settings->uints.input_joypad_index[player];
-      if(detected_port != prev_assigned_port)
+      if (detected_port != prev_assigned_port)
       {
          RARCH_LOG("[Autoconf]: Device \"%s\" (%x:%x) is reserved "
                    "for player %d, updating.\n",

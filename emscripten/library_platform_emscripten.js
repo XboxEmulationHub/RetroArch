@@ -12,29 +12,9 @@ var LibraryPlatformEmscripten = {
          RPE.powerState.dischargeTime = Number.isFinite(e.target.dischargingTime) ? e.target.dischargingTime : 0x7FFFFFFF;
          RPE.powerState.level = e.target.level;
          RPE.powerState.charging = e.target.charging;
-      }
-   },
-
-   PlatformEmscriptenWatchCanvasSize: function() {
-      RPE.observer = new ResizeObserver(function(e) {
-         var width, height;
-         var entry = e.find(i => i.target == Module.canvas);
-         if (!entry) return;
-         if (entry.devicePixelContentBoxSize) {
-            width = entry.devicePixelContentBoxSize[0].inlineSize;
-            height = entry.devicePixelContentBoxSize[0].blockSize;
-         } else {
-            width = Math.round(entry.contentRect.width * window.devicePixelRatio);
-            height = Math.round(entry.contentRect.height * window.devicePixelRatio);
-         }
-         Module.setCanvasSize(width, height);
-         Module.print("Setting real canvas size: " + width + " x " + height);
-      });
-      RPE.observer.observe(Module.canvas);
-      window.addEventListener("resize", function(e) {
-         RPE.observer.unobserve(Module.canvas);
-         RPE.observer.observe(Module.canvas);
-      }, false);
+      },
+      command_queue:[],
+      command_reply_queue:[],
    },
 
    PlatformEmscriptenPowerStateInit: function() {
@@ -71,6 +51,15 @@ var LibraryPlatformEmscripten = {
    PlatformEmscriptenGetFreeMem: function() {
       if (!performance.memory) return 0;
       return (performance.memory.jsHeapSizeLimit || 0) - (performance.memory.usedJSHeapSize || 0);
+   },
+
+   $EmscriptenSendCommand__deps:["PlatformEmscriptenCommandRaiseFlag"],
+   $EmscriptenSendCommand: function(str) {
+      RPE.command_queue.push(str);
+      _PlatformEmscriptenCommandRaiseFlag();
+   },
+   $EmscriptenReceiveCommandReply: function() {
+      return RPE.command_reply_queue.shift();
    }
 };
 

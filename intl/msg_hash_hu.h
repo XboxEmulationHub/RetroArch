@@ -2913,16 +2913,8 @@ MSG_HASH(
    "Minden hang letiltása Csendes módban."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_AUDIO_FASTFORWARD_MUTE,
-   "Hang kikapcsolása gyorsításkor"
-   )
-MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_FASTFORWARD_MUTE,
    "A hang automatikus elnémítása gyorsításkor."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_AUDIO_FASTFORWARD_SPEEDUP,
-   "Hang gyorsított lejátszása gyorsításkor"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_FASTFORWARD_SPEEDUP,
@@ -3747,10 +3739,6 @@ MSG_HASH(
    "Menü váltógomb"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_META_MENU_TOGGLE,
-   "A menü és a futó tartalom megjelenítése közt vált."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_QUIT_GAMEPAD_COMBO,
    "Kontroller kombináció a kilépéshez"
    )
@@ -3825,10 +3813,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_PAUSE_TOGGLE,
    "Szünet"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_META_PAUSE_TOGGLE,
-   "Váltás a futó tartalom megállítása és továbbengedése közt."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_FRAMEADVANCE,
@@ -4978,10 +4962,6 @@ MSG_HASH(
    "A nem támogatott kiterjesztésű fájlok nem jelennek meg a Fájlböngészőben."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_USE_BUILTIN_PLAYER,
-   "A beépített médialejátszó használata"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_FILTER_BY_CURRENT_CORE,
    "Szűrés az aktuális mag szerint"
    )
@@ -4992,6 +4972,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_USE_LAST_START_DIRECTORY,
    "A Fájlböngésző az utoljára használt helyen nyílik meg a kezdő könyvtárból töltésnél. A RetroArch újraindításakor visszaáll az alapállapotra."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_USE_BUILTIN_PLAYER,
+   "A beépített médialejátszó használata"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_USE_BUILTIN_IMAGE_VIEWER,
+   "A beépített képnézegető használata"
    )
 
 /* Settings > Frame Throttle */
@@ -6103,10 +6091,6 @@ MSG_HASH(
    "Tartalom megállítása, amikor a menü aktív"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_PAUSE_LIBRETRO,
-   "Megállítja az éppen futó tartalmat, ha a menü aktiválódik."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_SAVESTATE_RESUME,
    "Visszatérés a tartalomhoz játékállások kezelése után"
    )
@@ -6458,10 +6442,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_PLAYLISTS,
    "\"Játéklisták\" látható"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_PLAYLISTS,
-   "A \"Játéklisták\" menü jelenjen meg. (Ozone / XMB esetén újraindítás szükséges.)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_EXPLORE,
@@ -6940,14 +6920,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_USER,
    "\"Felhasználók\" látható"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_ICON_THUMBNAILS,
-   "Játéklista ikonok"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_ICON_THUMBNAILS,
-   "A játéklista elemeinek ikonjai."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SETTINGS_SHOW_USER,
@@ -7912,10 +7884,6 @@ MSG_HASH(
    "A tartalom beolvasása és játéklistához adása anélkül, hogy lenne azt támogató mag telepítve."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_SCAN_SERIAL_AND_CRC,
-   "CRC ellenőrzés duplikált azonosítók esetén"
-   )
-MSG_HASH(
    MENU_ENUM_SUBLABEL_SCAN_SERIAL_AND_CRC,
    "Az ISO fájlok sorozatszáma néha megegyezik, különösen a PSP/PSN lemezeknél. Ilyenkor ha a beolvasó csak a sorozatszámra hagyatkozik, rossz rendszert társíthat a tartalomhoz. A CRC ellenőrzést bekapcsolva a beolvasás jóval lassabb, de pontosabb lehet."
    )
@@ -8176,7 +8144,7 @@ MSG_HASH(
    )
 MSG_HASH( /* FIXME Not RGUI specific */
    MENU_ENUM_LABEL_VALUE_RGUI_BROWSER_DIRECTORY,
-   "Fájlkezelő"
+   "Kezdő könyvtár"
    )
 MSG_HASH( /* FIXME Not RGUI specific */
    MENU_ENUM_SUBLABEL_RGUI_BROWSER_DIRECTORY,
@@ -8418,10 +8386,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_STEAM_RICH_PRESENCE_FORMAT,
    "Állapotüzenetek tartalmának formátuma"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_STEAM_RICH_PRESENCE_FORMAT,
-   "A futó tartalommal kapcsolatosan megosztott információk."
    )
 
 MSG_HASH(
@@ -9020,10 +8984,6 @@ MSG_HASH(
    "Folytatás"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_RESUME_CONTENT,
-   "A futó tartalom folytatása és a gyorsmenü elhagyása."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESTART_CONTENT,
    "Újraindítás"
    )
@@ -9034,10 +8994,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,
    "Tartalom bezárása"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_CLOSE_CONTENT,
-   "Az aktuális tartalom bezárása. Az el nem mentett változtatások elveszhetnek."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TAKE_SCREENSHOT,
@@ -9172,16 +9128,8 @@ MSG_HASH(
    "Mag beállításai"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_CORE_OPTIONS,
-   "A futó tartalom beállításai."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INPUT_REMAPPING_OPTIONS,
    "Irányítás"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_CORE_INPUT_REMAPPING_OPTIONS,
-   "A futó tartalom irányításának változtatása."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_CHEAT_OPTIONS,
@@ -9804,10 +9752,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SHADER_WATCH_FOR_CHANGES,
    "A shader fájlok változásainak automatikus alkalmazása."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_HELP_SHADER_WATCH_FOR_CHANGES,
-   "A shader fájl változásainak észlelése. A lemezen található shaderbe mentett változtatások után ez automatikusan újra lesz fordítva és alkalmazva a futó tartalomra."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_REMEMBER_LAST_DIR,
@@ -11027,10 +10971,6 @@ MSG_HASH(
    "Átlátszóság"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_MENU_RGUI_TRANSPARENCY,
-   "Amikor a gyorsmenü aktív, a futó tartalom látszódik a háttérben. Az átlátszóság kikapcsolása módosíthatja a menü színösszeállítását."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_RGUI_SHADOWS,
    "Árnyék effekt"
    )
@@ -11471,26 +11411,6 @@ MSG_HASH(
    "A játéklisták a gyártó neve nélküli betűrend szerint lesznek ábécésorrendben."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_OZONE_MENU_COLOR_THEME,
-   "Színösszeállítás"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_OZONE_MENU_COLOR_THEME,
-   "A színösszeállítás lecserélése."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_OZONE_COLOR_THEME_BASIC_WHITE,
-   "Egyszerű fehér"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_OZONE_COLOR_THEME_BASIC_BLACK,
-   "Egyszerű fekete"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_OZONE_COLOR_THEME_DRACULA,
-   "Drakula"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LEFT_THUMBNAILS_OZONE,
    "Másodlagos bélyegkép"
    )
@@ -11514,6 +11434,28 @@ MSG_HASH(
    MENU_ENUM_SUBLABEL_OZONE_THUMBNAIL_SCALE_FACTOR,
    "A bélyegkép oszlop méretezése."
    )
+
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_MENU_COLOR_THEME,
+   "Színösszeállítás"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_MENU_COLOR_THEME,
+   "A színösszeállítás lecserélése."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_COLOR_THEME_BASIC_WHITE,
+   "Egyszerű fehér"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_COLOR_THEME_BASIC_BLACK,
+   "Egyszerű fekete"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_COLOR_THEME_DRACULA,
+   "Drakula"
+   )
+
 
 /* MaterialUI: Settings > User Interface > Appearance */
 
@@ -12419,10 +12361,6 @@ MSG_HASH(
    "Bill"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_USE_BUILTIN_IMAGE_VIEWER,
-   "A beépített képnézegető használata"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_MAX_SWAPCHAIN_IMAGES,
    "Swapchain képek maximális száma"
    )
@@ -12556,14 +12494,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SELECT_FROM_PLAYLIST,
    "Kiválasztás játéklistáról"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_RESUME,
-   "Folytatás"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_RESUME,
-   "A futó tartalom folytatása és a gyorsmenü elhagyása."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CHEAT_VIEW_MATCHES,

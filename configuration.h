@@ -662,6 +662,7 @@ typedef struct settings
       bool audio_rate_control;
       bool audio_fastforward_mute;
       bool audio_fastforward_speedup;
+      bool audio_rewind_mute;
 #ifdef IOS
       bool audio_respect_silent_mode;
 #endif
@@ -823,6 +824,7 @@ typedef struct settings
       bool menu_content_show_history;
       bool menu_content_show_add;
       bool menu_content_show_playlists;
+      bool menu_content_show_playlist_tabs;
       bool menu_content_show_explore;
       bool menu_use_preferred_system_color_theme;
       bool menu_preferred_system_color_theme_set;
@@ -1270,8 +1272,7 @@ bool config_load_remap(const char *directory_input_remapping,
  **/
 
 void config_get_autoconf_profile_filename(
-      const char *device_name, unsigned user,
-      char *buf, size_t len_buf);
+      const char *device_name, unsigned user, char *s, size_t len);
 /**
  * config_save_autoconf_profile:
  * @device_name       : Input device name

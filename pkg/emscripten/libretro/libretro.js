@@ -9,7 +9,7 @@ var initializationCount = 0;
 
 var Module = {
    noInitialRun: true,
-   arguments: ["-v", "--menu"],
+   arguments: ["-v", "--menu", "-c", "/home/web_user/retroarch/userdata/retroarch.cfg"],
 
    encoder: new TextEncoder(),
    message_queue: [],
@@ -203,9 +203,8 @@ function setupFileSystem(backend) {
    var xfs2 = new BrowserFS.FileSystem.XmlHttpRequest(".index-xhr", "assets/cores/");
 
    console.log("WEBPLAYER: initializing filesystem: " + backend);
+   mfs.mount('/home/web_user/retroarch/bundle', xfs1);
    mfs.mount('/home/web_user/retroarch/userdata', afs);
-
-   mfs.mount('/home/web_user/retroarch/', xfs1);
    mfs.mount('/home/web_user/retroarch/userdata/content/downloads', xfs2);
    BrowserFS.initialize(mfs);
    var BFS = new BrowserFS.EmscriptenFS(Module.FS, Module.PATH, Module.ERRNO_CODES);
