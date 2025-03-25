@@ -462,6 +462,7 @@ DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_meta_screenshot,            ME
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_meta_recording_toggle,      MENU_ENUM_SUBLABEL_INPUT_META_RECORDING_TOGGLE)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_meta_streaming_toggle,      MENU_ENUM_SUBLABEL_INPUT_META_STREAMING_TOGGLE)
 
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_meta_turbo_fire_toggle,     MENU_ENUM_SUBLABEL_INPUT_META_TURBO_FIRE_TOGGLE)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_meta_grab_mouse_toggle,     MENU_ENUM_SUBLABEL_INPUT_META_GRAB_MOUSE_TOGGLE)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_meta_game_focus_toggle,     MENU_ENUM_SUBLABEL_INPUT_META_GAME_FOCUS_TOGGLE)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_meta_fullscreen_toggle_key, MENU_ENUM_SUBLABEL_INPUT_META_FULLSCREEN_TOGGLE_KEY)
@@ -566,11 +567,13 @@ DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_touch_vmouse_gesture,    MENU_
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_button_axis_threshold,         MENU_ENUM_SUBLABEL_INPUT_BUTTON_AXIS_THRESHOLD)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_analog_deadzone,               MENU_ENUM_SUBLABEL_INPUT_ANALOG_DEADZONE)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_analog_sensitivity,            MENU_ENUM_SUBLABEL_INPUT_ANALOG_SENSITIVITY)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_turbo_enable,            MENU_ENUM_SUBLABEL_INPUT_TURBO_ENABLE)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_turbo_period,            MENU_ENUM_SUBLABEL_INPUT_TURBO_PERIOD)
-DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_duty_cycle,              MENU_ENUM_SUBLABEL_INPUT_DUTY_CYCLE)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_turbo_duty_cycle,        MENU_ENUM_SUBLABEL_INPUT_TURBO_DUTY_CYCLE)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_turbo_mode,              MENU_ENUM_SUBLABEL_INPUT_TURBO_MODE)
-DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_turbo_default_button,    MENU_ENUM_SUBLABEL_INPUT_TURBO_DEFAULT_BUTTON)
-DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_allow_turbo_dpad,        MENU_ENUM_SUBLABEL_INPUT_ALLOW_TURBO_DPAD)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_turbo_bind,              MENU_ENUM_SUBLABEL_INPUT_TURBO_BIND)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_turbo_button,            MENU_ENUM_SUBLABEL_INPUT_TURBO_BUTTON)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_turbo_allow_dpad,        MENU_ENUM_SUBLABEL_INPUT_TURBO_ALLOW_DPAD)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_input_rumble_gain,             MENU_ENUM_SUBLABEL_INPUT_RUMBLE_GAIN)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_video_vertical_sync,           MENU_ENUM_SUBLABEL_VIDEO_VSYNC)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_video_adaptive_vsync,          MENU_ENUM_SUBLABEL_VIDEO_ADAPTIVE_VSYNC)
@@ -617,6 +620,7 @@ DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cheevos_password,              MENU_
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_video_post_filter_record,      MENU_ENUM_SUBLABEL_VIDEO_POST_FILTER_RECORD)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_start_core,                    MENU_ENUM_SUBLABEL_START_CORE)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_core_list,                     MENU_ENUM_SUBLABEL_CORE_LIST)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_core_list_unload,              MENU_ENUM_SUBLABEL_CORE_LIST_UNLOAD)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_download_core,                 MENU_ENUM_SUBLABEL_DOWNLOAD_CORE)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_update_installed_cores,        MENU_ENUM_SUBLABEL_UPDATE_INSTALLED_CORES)
 #if defined(ANDROID)
@@ -664,6 +668,7 @@ DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_restart_retroarch,             MENU_
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_menu_widgets,                  MENU_ENUM_SUBLABEL_MENU_WIDGETS_ENABLE)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_menu_show_load_content_animation, MENU_ENUM_SUBLABEL_MENU_SHOW_LOAD_CONTENT_ANIMATION)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_notification_show_autoconfig,  MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_notification_show_autoconfig_fails, MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG_FAILS)
 #ifdef HAVE_CHEATS
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_notification_show_cheats_applied,  MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_CHEATS_APPLIED)
 #endif
@@ -2404,6 +2409,9 @@ int menu_cbs_init_bind_sublabel(menu_file_list_cbs_t *cbs,
                BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_meta_streaming_toggle);
                return 0;
 
+            case RARCH_TURBO_FIRE_TOGGLE:
+               BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_meta_turbo_fire_toggle);
+               return 0;
             case RARCH_GRAB_MOUSE_TOGGLE:
                BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_meta_grab_mouse_toggle);
                return 0;
@@ -4377,6 +4385,9 @@ int menu_cbs_init_bind_sublabel(menu_file_list_cbs_t *cbs,
          case MENU_ENUM_LABEL_NOTIFICATION_SHOW_AUTOCONFIG:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_notification_show_autoconfig);
             break;
+         case MENU_ENUM_LABEL_NOTIFICATION_SHOW_AUTOCONFIG_FAILS:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_notification_show_autoconfig_fails);
+            break;
          case MENU_ENUM_LABEL_NOTIFICATION_SHOW_CHEATS_APPLIED:
 #ifdef HAVE_CHEATS
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_notification_show_cheats_applied);
@@ -4453,6 +4464,9 @@ int menu_cbs_init_bind_sublabel(menu_file_list_cbs_t *cbs,
             break;
          case MENU_ENUM_LABEL_CORE_LIST:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_core_list);
+            break;
+         case MENU_ENUM_LABEL_CORE_LIST_UNLOAD:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_core_list_unload);
             break;
          case MENU_ENUM_LABEL_SIDELOAD_CORE_LIST:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_sideload_core_list);
@@ -4580,8 +4594,11 @@ int menu_cbs_init_bind_sublabel(menu_file_list_cbs_t *cbs,
          case MENU_ENUM_LABEL_VIDEO_ADAPTIVE_VSYNC:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_video_adaptive_vsync);
             break;
-         case MENU_ENUM_LABEL_INPUT_DUTY_CYCLE:
-            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_duty_cycle);
+         case MENU_ENUM_LABEL_INPUT_TURBO_ENABLE:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_turbo_enable);
+            break;
+         case MENU_ENUM_LABEL_INPUT_TURBO_DUTY_CYCLE:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_turbo_duty_cycle);
             break;
          case MENU_ENUM_LABEL_INPUT_TURBO_PERIOD:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_turbo_period);
@@ -4589,11 +4606,14 @@ int menu_cbs_init_bind_sublabel(menu_file_list_cbs_t *cbs,
          case MENU_ENUM_LABEL_INPUT_TURBO_MODE:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_turbo_mode);
             break;
-         case MENU_ENUM_LABEL_INPUT_TURBO_DEFAULT_BUTTON:
-            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_turbo_default_button);
+         case MENU_ENUM_LABEL_INPUT_TURBO_BIND:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_turbo_bind);
             break;
-         case MENU_ENUM_LABEL_INPUT_ALLOW_TURBO_DPAD:
-            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_allow_turbo_dpad);
+         case MENU_ENUM_LABEL_INPUT_TURBO_BUTTON:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_turbo_button);
+            break;
+         case MENU_ENUM_LABEL_INPUT_TURBO_ALLOW_DPAD:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_turbo_allow_dpad);
             break;
          case MENU_ENUM_LABEL_INPUT_RUMBLE_GAIN:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_rumble_gain);

@@ -68,6 +68,14 @@ MSG_HASH(
    "Sélectionner le cœur à utiliser."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CORE_LIST_UNLOAD,
+   "Décharger le cœur"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CORE_LIST_UNLOAD,
+   "Relâche le cœur chargé."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_HELP_CORE_LIST,
    "Rechercher une implémentation de cœur libretro. Le dossier de démarrage du navigateur de fichiers dépend de votre dossier d'emplacement des cœurs. S'il n'est pas défini, il démarrera à la racine.\nSi l'emplacement des cœurs est un dossier, le menu l'utilisera comme dossier principal. Si le dossier d'emplacement des cœurs est un chemin complet, il démarrera dans le dossier où se trouve le fichier."
    )
@@ -2629,11 +2637,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_X,
-   "Biais de la fenêtre d'affichage personnalisé utilisé pour décaler la fenêtre d'affichage horizontalement (si plus large que la hauteur du contenu). 0.0 signifie tout à gauche et 1.0 signifie tout à droite."
+   "Position horizontale du contenu lorsque la fenêtre d'affichage est plus large que la largeur du contenu. 0,0 est à l'extrême gauche, 0,5 est au centre, 1,0 est à l'extrême droite."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_Y,
-   "Biais de la fenêtre d'affichage personnalisé utilisé pour décaler la fenêtre d'affichage verticalement (si plus grande que la hauteur du contenu). 0.0 signifie tout en haut et 1.0 signifie tout en bas."
+   "Position verticale du contenu lorsque la fenêtre d'affichage est plus haute que la hauteur du contenu. 0,0 est tout en haut, 0,5 est au centre, 1,0 est tout en bas."
    )
 #if defined(RARCH_MOBILE)
 MSG_HASH(
@@ -2654,11 +2662,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
-   "Biais de la fenêtre d'affichage personnalisé utilisé pour décaler la fenêtre d'affichage horizontalement (si plus large que la hauteur du contenu). 0.0 signifie tout à gauche et 1.0 signifie tout à droite. (Orientation portrait)"
+   "Position horizontale du contenu lorsque la fenêtre d'affichage est plus large que la largeur du contenu. 0,0 est à l'extrême gauche, 0,5 est au centre, 1,0 est à l'extrême droite (orientation portrait)."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
-   "Biais de la fenêtre d'affichage personnalisé utilisé pour décaler la fenêtre d'affichage verticalement (si plus grande que la hauteur du contenu). 0.0 signifie tout en haut et 1.0 signifie tout en bas. (Orientation portrait)"
+   "Position verticale du contenu lorsque la fenêtre d'affichage est plus haute que la hauteur du contenu. 0,0 est tout en haut, 0,5 est au centre, 1,0 est tout en bas (orientation portrait)."
    )
 #endif
 MSG_HASH(
@@ -3449,21 +3457,34 @@ MSG_HASH(
    MSG_INPUT_BIND_HOLD,
    "Maintenir"
    )
+
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ENABLE,
+   "Tir turbo"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_ENABLE,
+   "Désactivé arrête toutes les opérations de tir turbo."
+   )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_PERIOD,
    "Délai d'activation du turbo "
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TURBO_PERIOD,
-   "Durée (en images) après laquelle une touche en mode turbo est pressée."
+   "Durée en images après laquelle une touche en mode turbo est pressée."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_DUTY_CYCLE,
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DUTY_CYCLE,
    "Rapport cyclique du turbo "
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_DUTY_CYCLE,
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_DUTY_CYCLE,
    "Le nombre d'images en mode turbo Turbo durant laquelle les touches sont maintenues enfoncées. Si ce nombre est égal ou supérieur au délai d'activation du turbo, les touches ne seront jamais relâchées."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_TURBO_DUTY_CYCLE_HALF,
+   "Demi-période"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_MODE,
@@ -3491,34 +3512,42 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_CLASSIC,
-   "Mode classique, fonctionnement à deux touches. Maintenez une touche enfoncée et pressez la touche Turbo pour activer la séquence de déclenchement.\nLa touche Turbo peut être assignée dans Réglages/Entrées/Touches du port 1."
+   "Mode classique, fonctionnement à deux touches. Maintenez une touche enfoncée et pressez la touche Turbo pour activer la séquence de déclenchement.\nL'affectation Turbo peut être assignée dans Réglages/Entrées/Touches du port X."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_CLASSIC_TOGGLE,
-   "Mode activer/désactiver classique, fonctionnement à deux touches. Maintenez une touche et appuyez sur la touche Turbo pour activer le turbo pour ce bouton. Pour désactiver le turbo : maintenez le bouton et appuyez à nouveau sur le bouton Turbo.\nLe bouton Turbo peut être assigné dans Réglages/Entrées/Port 1."
+   "Mode activer/désactiver classique, fonctionnement à deux touches. Maintenez une touche et appuyez sur la touche Turbo pour activer le turbo pour cette touche. Pour désactiver le turbo : maintenez la touche et appuyez à nouveau sur la touche Turbo.\nL'affectation Turbo peut être assignée dans Réglages/Entrées/Touches du port X."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_SINGLEBUTTON,
-   "Mode activer/désactiver. Pressez une fois la touche Turbo pour activer la séquence de déclenchement pour la touche par défaut sélectionnée, une seconde fois pour la désactiver.\nLa touche Turbo peut être assignée dans Réglages/Entrées/Touches du port 1."
+   "Mode activer/désactiver. Pressez une fois la touche Turbo pour activer la séquence de déclenchement pour la touche par défaut sélectionnée, une seconde fois pour la désactiver.\nL'affectation Turbo peut être assignée dans Réglages/Entrées/Touches du port X."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_SINGLEBUTTON_HOLD,
-   "Mode maintenir. La séquence de déclenchement pour la touche par défaut sélectionnée est active tant que la touche Turbo est enfoncée.\nLa touche Turbo peut être assignée dans Réglages/Entrées/Touches du port 1.\nPour émuler la fonction tir automatique de l'ère des ordinateurs de famille, définissez les touches Turbo et les touches par défaut sur la même touche que celle du tir de la manette."
+   "Mode maintenir. La séquence de déclenchement pour la touche par défaut sélectionnée est active tant que la touche Turbo est enfoncée.\nL'affectation Turbo peut être assignée dans Réglages/Entrées/Touches du port X.\nPour émuler la fonction tir automatique de l'ère des ordinateurs de famille, définissez l'affectation et la touche sur la même touche que celle du tir de la manette."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DEFAULT_BUTTON,
-   "Touche turbo par défaut"
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BIND,
+   "Affectation turbo"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_TURBO_DEFAULT_BUTTON,
-   "Touche active par défaut pour le mode turbo 'Touche unique'."
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_BIND,
+   "Affectation RetroManette activant le Turbo. Laisser vide utilise l'affectation spécifique au port."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_ALLOW_TURBO_DPAD,
-   "Autoriser le turbo pour la croix directionnelle"
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BUTTON,
+   "Touche Turbo"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_ALLOW_TURBO_DPAD,
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_BUTTON,
+   "Touche turbo cible en mode 'Touche unique'."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ALLOW_DPAD,
+   "Turbo autorise les directions de la croix directionnelle"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_ALLOW_DPAD,
    "Si activé, les entrées numériques directionnelles (aussi connues sous le nom de croix ou 'pavé directionnel') peuvent être en mode turbo."
    )
 MSG_HASH(
@@ -3527,7 +3556,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TURBO_FIRE_SETTINGS,
-   "Changez les paramètres de tir turbo.\nRemarque : la fonction turbo nécessite le mappage d'une touche turbo à votre périphérique d'entrée dans le menu 'Commandes du port X' correspondant."
+   "Modifier les réglages de tir turbo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_HAPTIC_FEEDBACK_SETTINGS,
@@ -4011,6 +4040,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_REPLAY_SLOT_MINUS,
    "Décrémente le numéro d'emplacement de replay sélectionné."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_META_TURBO_FIRE_TOGGLE,
+   "Tir Turbo (Activer/désactiver)"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_META_TURBO_FIRE_TOGGLE,
+   "Active/désactive le tir turbo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_GRAB_MOUSE_TOGGLE,
@@ -5782,6 +5819,10 @@ MSG_HASH(
    "Notifications à la connexion de périphériques d'entrée (configuration automatique)"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Notifications d'échec de périphériques d'entrée (configuration automatique)"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_CHEATS_APPLIED,
    "Notifications de cheats"
    )
@@ -5800,6 +5841,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG,
    "Afficher un message à l'écran lors de la connexion/déconnexion de périphériques d'entrées."
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Afficher un message à l'écran lorsque des périphériques d'entrée n'ont pas pu être configurés."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_REMAP_LOAD,

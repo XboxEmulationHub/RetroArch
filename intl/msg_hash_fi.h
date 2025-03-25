@@ -72,6 +72,14 @@ MSG_HASH(
    "Valitse käytettävä ydin."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CORE_LIST_UNLOAD,
+   "Vapauta ydin"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CORE_LIST_UNLOAD,
+   "Vapauta ladattu ydin."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_HELP_CORE_LIST,
    "Selaa libretro ytimiä. Tiedostoselaimen aloituspaikka riippuu ydinten kansion polusta. Jos tyhjä, se alkaa juuresta.\nJos ydinkansion on kansio, valikko käyttää sitä pääkansiona. Jos ydinkansio on täydellinen polku, se alkaa kansiosta, jossa ytimen tiedosto on."
    )
@@ -3121,21 +3129,14 @@ MSG_HASH(
    MSG_INPUT_BIND_HOLD,
    "Pidä"
    )
+
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ENABLE,
+   "Turbotulitus"
+   )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_PERIOD,
    "Turbon jakso"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_TURBO_PERIOD,
-   "Ajanjakso (kuvissa) kun turbo-yhteensopivia painikkeita painetaan."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_DUTY_CYCLE,
-   "Turbon käyttöjakso"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_DUTY_CYCLE,
-   "Kuvien määrä turbojaksolla, jonka aikana painikkeita pidetään painettuina. Jos tämä luku on yhtä suuri tai suurempi kuin turbojakso, painikkeet eivät koskaan vapaudu."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_MODE,
@@ -3162,12 +3163,8 @@ MSG_HASH(
    "Yksittäinen painike (Pito)"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DEFAULT_BUTTON,
-   "Turbon oletuspainike"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_TURBO_DEFAULT_BUTTON,
-   "Oletusarvoinen aktiivinen painike turbotilalle käyttäessä tilaa 'yksi painike'."
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BUTTON,
+   "Turbopainike"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_FIRE_SETTINGS,
@@ -4998,6 +4995,10 @@ MSG_HASH(
    "Syötelaitteen (Automaattinen kokoonpano) yhdistämisen ilmoitukset"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Syötelaitteen (Autoconfig) epäonnistumisen ilmoitukset"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_CHEATS_APPLIED,
    "Huijauskoodi-ilmoitukset"
    )
@@ -5016,6 +5017,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG,
    "Näytä näytöllä ilmoitus viesti, kun syöttölaitteita yhdistetään/irrotetaan."
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Näytä viesti, kun syötelaitteita ei voitu määrittää."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_REMAP_LOAD,

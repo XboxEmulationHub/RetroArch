@@ -72,6 +72,14 @@ MSG_HASH(
    "Selecciona el núcleo a usar."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CORE_LIST_UNLOAD,
+   "Descargar núcleo"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CORE_LIST_UNLOAD,
+   "Descarga el núcleo que esté cargado."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_HELP_CORE_LIST,
    "Busca una implementación de un núcleo libretro. La posición inicial del explorador dependerá de la ruta del directorio de núcleos. En caso de estar en blanco, la posición inicial será la raíz.\nSi el directorio de núcleos es un directorio, este se utilizará como posición inicial. Si es una ruta completa, la posición será la carpeta donde se encuentre el archivo."
    )
@@ -2649,11 +2657,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_X,
-   "Compensación personalizada usada para desplazar horizontalmente el área de visualización (si es más ancha que la altura del contenido). 0,0 para extremo izquierdo y 1,0 para extremo derecho."
+   "Establece la posición horizontal del contenido cuando el área de visualización sea más ancha que el contenido. 0,0 para extremo izquierdo, 0,5 para centrar, 1,0 para extremo derecho."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_Y,
-   "Compensación personalizada usada para desplazar verticalmente el área de visualización (si es más alta que la altura del contenido). 0,0 para extremo superior y 1,0 para extremo inferior."
+   "Establece la posición vertical del contenido cuando el área de visualización sea más alta que el contenido. 0,0 para extremo superior, 0,5 para centrar, 1,0 para extremo inferior."
    )
 #if defined(RARCH_MOBILE)
 MSG_HASH(
@@ -2674,11 +2682,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
-   "Compensación personalizada usada para desplazar horizontalmente el área de visualización (si es más ancha que la altura del contenido) en una orientación vertical. 0,0 para extremo izquierdo y 1,0 para extremo derecho."
+   "Establece la posición horizontal del contenido cuando el área de visualización sea más ancha que el contenido. 0,0 para extremo izquierdo, 0,5 para centrar, 1,0 para extremo derecho (en orientación vertical)."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
-   "Compensación personalizada usada para desplazar verticalmente el área de visualización (si es más alta que la altura del contenido) en una orientación vertical. 0,0 para extremo superior y 1,0 para extremo inferior."
+   "Establece la posición vertical del contenido cuando el área de visualización sea más alta que el contenido. 0,0 para extremo superior, 0,5 para centrar, 1,0 para extremo inferior (en orientación vertical)."
    )
 #endif
 MSG_HASH(
@@ -3489,21 +3497,34 @@ MSG_HASH(
    MSG_INPUT_BIND_HOLD,
    "Mantén durante"
    )
+
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ENABLE,
+   "Turbo"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_ENABLE,
+   "Al desactivar esta opción, se detendrán todas las opciones del modo turbo/autodisparo/«autofire»."
+   )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_PERIOD,
    "Periodo del turbo"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TURBO_PERIOD,
-   "Indica la duración (en fotogramas) durante la que se pulsarán los botones con turbo."
+   "Indica la duración en fotogramas durante la que se pulsarán los botones con turbo."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_DUTY_CYCLE,
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DUTY_CYCLE,
    "Ciclo de trabajo del turbo"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_DUTY_CYCLE,
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_DUTY_CYCLE,
    "Indica el número de fotogramas en los que mantendrán pulsados los botones dentro del periodo del turbo. Si el valor es igual o superior al periodo del turbo, los botones no se soltarán nunca."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_TURBO_DUTY_CYCLE_HALF,
+   "Medio ciclo"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_MODE,
@@ -3531,34 +3552,42 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_CLASSIC,
-   "Modo de manejo clásico de dos botones. Mantén pulsado un botón y pulsa a la vez el botón de turbo para activar la secuencia de pulsación y liberación.\nEl botón de turbo puede asignarse en Ajustes/Entrada/Controles del puerto 1."
+   "Modo de manejo clásico de dos botones. Mantén pulsado un botón y pulsa a la vez el botón de turbo para activar la secuencia de pulsación y liberación.\nEl turbo puede asignarse en Ajustes/Entrada/Controles del puerto X."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_CLASSIC_TOGGLE,
-   "Manejo clásico de dos botones. Mantén pulsado un botón y pulsa a la vez el botón de turbo para activar su modo turbo. Desactivar turbo: mantén pulsado el botón y vuelve a pulsar el botón de turbo.\nEl botón de turbo puede asignarse en Ajustes/Entrada/Controles del puerto 1."
+   "Manejo clásico de dos botones. Mantén pulsado un botón y pulsa a la vez el botón de turbo para activar su modo turbo. Desactivar turbo: mantén pulsado el botón y vuelve a pulsar el botón de turbo.\nEl turbo puede asignarse en Ajustes/Entrada/Controles del puerto X."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_SINGLEBUTTON,
-   "Modo de alternancia. Pulsa el botón de turbo una vez para activar la secuencia de pulsación y liberación del botón predeterminado seleccionado y vuelve a pulsar el botón de turbo para desactivarlo.\nEl botón de turbo puede asignarse en Ajustes/Entrada/Controles del puerto 1."
+   "Modo de alternancia. Pulsa el botón de turbo una vez para activar la secuencia de pulsación y liberación del botón predeterminado seleccionado y vuelve a pulsar el botón de turbo para desactivarlo.\nEl turbo puede asignarse en Ajustes/Entrada/Controles del puerto X."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_SINGLEBUTTON_HOLD,
-   "Modo de mantener pulsado el botón. La secuencia de pulsación y liberación para el botón predeterminado seleccionado se mantendrá activa siempre y cuando se mantenga pulsado el botón de turbo.\nEl botón de turbo puede asignarse en Ajustes/Entrada/Controles del puerto 1.\nSi deseas emular el método de autodisparo/«autofire» de la época de los PC domésticos, asigna los botones de turbo y predeterminado para que sean el mismo que el botón de disparo del mando."
+   "Modo de mantener pulsado el botón. La secuencia de pulsación y liberación para el botón predeterminado seleccionado se mantendrá activa siempre y cuando se mantenga pulsado el botón de turbo.\nEl turbo puede asignarse en Ajustes/Entrada/Controles del puerto X.\nSi deseas emular el método de autodisparo/«autofire» de la época de los PC domésticos, asigna los botones de turbo y predeterminado para que sean el mismo que el botón de disparo del mando."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DEFAULT_BUTTON,
-   "Botón predeterminado del turbo"
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BIND,
+   "Asignación de turbo"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_TURBO_DEFAULT_BUTTON,
-   "Asigna el botón individual predeterminado para el modo turbo."
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_BIND,
+   "La asignación que activará el turbo en el RetroPad. Si está en blanco, se utilizará la asignación específica del puerto."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_ALLOW_TURBO_DPAD,
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BUTTON,
+   "Botón de turbo"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_BUTTON,
+   "El botón que se usará para el turbo en el modo de botón dedicado."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ALLOW_DPAD,
    "Permitir direcciones de la cruceta con turbo"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_ALLOW_TURBO_DPAD,
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_ALLOW_DPAD,
    "Permite que los botones digitales de dirección (también conocidos como la cruceta o «seta») puedan usar el modo turbo."
    )
 MSG_HASH(
@@ -3567,7 +3596,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TURBO_FIRE_SETTINGS,
-   "Cambia los ajustes del turbo.\nNota: la característica de turbo necesita que asignes un botón de turbo a tu dispositivo de entrada en el menú «Controles del puerto X» correspondiente."
+   "Cambia los ajustes del turbo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_HAPTIC_FEEDBACK_SETTINGS,
@@ -4051,6 +4080,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_REPLAY_SLOT_MINUS,
    "Disminuye el índice de la posición de repetición seleccionada."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_META_TURBO_FIRE_TOGGLE,
+   "Pulsación turbo (alternar)"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_META_TURBO_FIRE_TOGGLE,
+   "Activa o desactiva el modo de disparo turbo/autodisparo/«autofire»."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_GRAB_MOUSE_TOGGLE,
@@ -5822,6 +5859,10 @@ MSG_HASH(
    "Notificaciones de conexión de entrada (autoconfiguración)"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Notificaciones de fallos de entrada (autoconfiguración)"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_CHEATS_APPLIED,
    "Notificaciones de trucos"
    )
@@ -5840,6 +5881,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG,
    "Muestra un mensaje en pantalla al conectar o desconectar dispositivos de entrada."
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Muestra un mensaje en pantalla cuando no se puedan configurar dispositivos de entrada."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_REMAP_LOAD,

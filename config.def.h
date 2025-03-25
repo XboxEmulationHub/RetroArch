@@ -1090,6 +1090,10 @@
 #define DEFAULT_NOTIFICATION_SHOW_AUTOCONFIG true
 #endif
 
+/* Display a notification when controller
+ * autoconfiguration fails. */
+#define DEFAULT_NOTIFICATION_SHOW_AUTOCONFIG_FAILS true
+
 /* Display a notification when cheats are being
  * applied */
 #define DEFAULT_NOTIFICATION_SHOW_CHEATS_APPLIED true
@@ -1563,11 +1567,13 @@
 #define DEFAULT_ANALOG_SENSITIVITY 1.0f
 
 /* Describes speed of which turbo-enabled buttons toggle. */
+#define DEFAULT_TURBO_ENABLE true
 #define DEFAULT_TURBO_PERIOD 6
-#define DEFAULT_TURBO_DUTY_CYCLE 3
+#define DEFAULT_TURBO_DUTY_CYCLE 0
 #define DEFAULT_TURBO_MODE 0
-#define DEFAULT_TURBO_DEFAULT_BTN RETRO_DEVICE_ID_JOYPAD_B
-#define DEFAULT_ALLOW_TURBO_DPAD false
+#define DEFAULT_TURBO_BIND -1
+#define DEFAULT_TURBO_BUTTON RETRO_DEVICE_ID_JOYPAD_B
+#define DEFAULT_TURBO_ALLOW_DPAD false
 
 /* Enable automatic mouse grab by default
  * only on Android */
@@ -1613,7 +1619,11 @@
 #endif
 
 #define DEFAULT_INPUT_BIND_TIMEOUT 3
+#if defined(ANDROID)
+#define DEFAULT_INPUT_BIND_HOLD 1
+#else
 #define DEFAULT_INPUT_BIND_HOLD 0
+#endif
 #define DEFAULT_INPUT_POLL_TYPE_BEHAVIOR 2
 #define DEFAULT_INPUT_HOTKEY_BLOCK_DELAY 5
 #define DEFAULT_INPUT_HOTKEY_DEVICE_MERGE false

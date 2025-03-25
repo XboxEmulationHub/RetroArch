@@ -72,6 +72,14 @@ MSG_HASH(
    "Escolla o núcleo a empregar."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CORE_LIST_UNLOAD,
+   "Descargar o núcleo"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CORE_LIST_UNLOAD,
+   "Liberar o núcleo cargado."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_HELP_CORE_LIST,
    "Navega por unha implementación do núcleo libretro. O lugar onde comeza o navegador depende da túa ruta do Directorio de Núcleos.\nlf Se está en branco, comezará na raíz. Se o Directorio de Núcleos é un directorio, o menú usará ese como carpeta principal. Se o Directorio de Núcleos é unha ruta completa, comezará na carpeta onde está o arquivo."
    )
@@ -2629,11 +2637,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_X,
-   "Desviación personalizada do porto de vista usada para compensar o porto de vista horizontalmente (se for máis ancho que a altura do contido). 0.0 significa moi á esquerda e 1.0 significa moi á dereita."
+   "Posición horizontal do contido cando a xanela é máis ancha ca o contido. 0.0 é totalmente á esquerda, 0.5 é o centro, 1.0 é totalmente á dereita."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_Y,
-   "Desviación personalizada do porto de vista usada para compensar o porto de vista verticalmente (se for máis alto que a altura do contido). 0.0 significa arriba e 1.0 significa abaixo."
+   "Posición vertical do contido cando a xanela é máis alta ca o contido. 0.0 é arriba de todo, 0.5 é o centro, 1.0 é abaixo de todo."
    )
 #if defined(RARCH_MOBILE)
 MSG_HASH(
@@ -2654,11 +2662,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
-   "Desviación personalizada do porto de vista usada para desprazar o porto de vista horizontalmente (se for máis ancho que a altura do contido). 0.0 significa á esquerda e 1.0 significa á dereita. (Orientación en retrato)"
+   "Posición horizontal do contido cando a xanela é máis ancha ca o contido (orientación vertical). 0.0 é totalmente á esquerda, 0.5 é o centro, 1.0 é totalmente á dereita"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
-   "Desviación personalizada do porto de vista usada para compensar o porto de vista verticalmente (se for máis alto que a altura do contido). 0.0 significa arriba e 1.0 significa abaixo. (Orientación en retrato)"
+   "Posición vertical do contido cando a xanela é máis alta ca o contido (orientación vertical). 0.0 é arriba de todo, 0.5 é o centro, 1.0 é abaixo de todo"
    )
 #endif
 MSG_HASH(
@@ -2897,12 +2905,28 @@ MSG_HASH(
    "Acala todo o audio en modo silencioso."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_AUDIO_FASTFORWARD_MUTE,
+   "Acalar o son ao avanzar rápido"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_FASTFORWARD_MUTE,
    "Acalar automaticamente o audio ao utilizar o avance rápido."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_AUDIO_FASTFORWARD_SPEEDUP,
+   "Acelerar o son ao avanzar rápido"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_FASTFORWARD_SPEEDUP,
    "Acelera o audio ao avanzar rápido. Evita crepitar pero cambia de ton."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_AUDIO_REWIND_MUTE,
+   "Acalar o son ao rebobinar"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_AUDIO_REWIND_MUTE,
+   "Acalar automaticamente o son ao rebobinar."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AUDIO_VOLUME,
@@ -3224,6 +3248,18 @@ MSG_HASH(
    "Estado: N/D"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_AUDIO_STREAM_STATE_STOPPED,
+   "Estado: Detido"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_AUDIO_STREAM_STATE_PLAYING,
+   "Estado: Reproducindo"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_AUDIO_STREAM_STATE_PLAYING_LOOPED,
+   "Estado: Reproducindo (en bucle)"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AUDIO_STREAM_STATE_PLAYING_SEQUENTIAL,
    "Estado: Reproducindo (en secuencia)"
    )
@@ -3421,21 +3457,34 @@ MSG_HASH(
    MSG_INPUT_BIND_HOLD,
    "Manter"
    )
+
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ENABLE,
+   "Turbo fogo"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_ENABLE,
+   "Desactivado detén todas as operacións de disparo turbo."
+   )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_PERIOD,
    "Período Turbo"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TURBO_PERIOD,
-   "O período (en fotogramas) no que se preme os botóns activados para turbo."
+   "O período en fotogramas no que se premen os botóns con turbo activado."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_DUTY_CYCLE,
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DUTY_CYCLE,
    "Ciclo de traballo turbo"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_DUTY_CYCLE,
-   "O número de fotogramas do período Turbo durante os que se manteñen pulsados os botóns. Se este número é igual ou superior ao período turbo, os botóns nunca se soltarán."
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_DUTY_CYCLE,
+   "O número de fotogramas nos que os botóns se manteñen pulsados durante o período turbo. Se este número é igual ou maior que o período Turbo, os botóns nunca se soltarán."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_TURBO_DUTY_CYCLE_HALF,
+   "Medio período"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_MODE,
@@ -3463,35 +3512,43 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_CLASSIC,
-   "Modo clásico, operación con dous botóns. Mantén premido un botón e toca o botón Turbo para activar a secuencia do comunicado de prensa.\nO botón Turbo pódese asignar en Configuración/Entrada/Controis do porto 1."
+   "Modo clásico, operación de dous botóns. Mantén un botón e preme o botón Turbo para activar a secuencia de presión-liberación.\nA asignación do Turbo pode facerse en Configuración/Entrada/Controis do Porto X."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_CLASSIC_TOGGLE,
-   "Modo de alternancia clásico, operación con dous botóns. Mantén premido un botón e toca o botón Turbo para activar o turbo para ese botón. Para desactivar o turbo: manteña premido o botón e preme de novo o botón Turbo.\nO botón Turbo pódese asignar en Configuración/Entrada/Controis do porto 1."
+   "Modo clásico de alternancia, operación de dous botóns. Mantén un botón e preme o botón Turbo para activar o turbo para ese botón. Para desactivar o turbo: mantén o botón e preme o botón Turbo de novo.\nA asignación do Turbo pode facerse en Configuración/Entrada/Controis do Porto X."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_SINGLEBUTTON,
-   "Alternar modo. Preme o botón Turbo unha vez para activar a secuencia de lanzamento de prensa para o botón predeterminado seleccionado, preme de novo para desactivalo.\nO botón Turbo pódese asignar en Configuración/Entrada/Controis do porto 1."
+   "Modo de alternancia. Preme o botón Turbo unha vez para activar a secuencia de presión-liberación para o botón predeterminado escollido, e preme de novo para desactivalo.\nA asignación do Turbo pode facerse en Configuración/Entrada/Controis do Porto X."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_SINGLEBUTTON_HOLD,
-   "Modo de espera. A secuencia de lanzamento de prensa para o botón predeterminado seleccionado está activa mentres se manteña premido o botón Turbo.\nO botón Turbo pódese asignar en Configuración/Entrada/Controis do porto 1.\nPara emular a función de disparo automático da era do ordenador doméstico, configura Turbo e os botóns predeterminados deben ser os mesmos que o botón de disparo do joystick."
+   "Modo de mantemento. A secuencia de presión-liberación para o botón predeterminado escollido está activa mentres o botón Turbo se manteña premido.\nA asignación do Turbo pode facerse en Configuración/Entrada/Controis do Porto X.\nPara emular a función de disparo automático da era dos microordenadores, asigna o mesmo botón de disparo do joystick á función Bind e ao botón."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DEFAULT_BUTTON,
-   "Botón Turbo predeterminado"
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BIND,
+   "Asignación Turbo"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_TURBO_DEFAULT_BUTTON,
-   "Botón activo predeterminado para o modo Turbo \"Botón único\"."
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_BIND,
+   "Turbo activando a asignación do RetroPad. Se está baleiro, utilízase a asignación específica do porto."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_ALLOW_TURBO_DPAD,
-   "Permitir indicacións do Turbo D-Pad"
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BUTTON,
+   "Botón Turbo"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_ALLOW_TURBO_DPAD,
-   "Se está activada, as entradas direccionais dixitais (tamén coñecidas como d-pad ou 'hatswitch') poden ser turbo."
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_BUTTON,
+   "Botón turbo de destino no modo 'Botón Único'."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ALLOW_DPAD,
+   "Permitir direccións do D-Pad no Turbo"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_ALLOW_DPAD,
+   "Se está activado, as entradas direccionais dixitais (tamén coñecidas como D-Pad ou 'hatswitch') poden usar o turbo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_FIRE_SETTINGS,
@@ -3499,7 +3556,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TURBO_FIRE_SETTINGS,
-   "Cambia a configuración do turbo fogo.\nNota: a función turbo require asignar un botón turbo ao teu dispositivo de entrada no menú \"Controis do porto X\" correspondente."
+   "Trocar configuracións de disparo turbo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_HAPTIC_FEEDBACK_SETTINGS,
@@ -3695,6 +3752,10 @@ MSG_HASH(
    "Alternar menú"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_META_MENU_TOGGLE,
+   "Troca a pantalla actual entre o menú e o contido."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_QUIT_GAMEPAD_COMBO,
    "Saír (Combo de controlador)"
    )
@@ -3769,6 +3830,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_PAUSE_TOGGLE,
    "En pausa"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_META_PAUSE_TOGGLE,
+   "Troca o contido entre os estados de pausado e non pausado."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_FRAMEADVANCE,
@@ -3975,6 +4040,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_REPLAY_SLOT_MINUS,
    "Reduce o índice da ranura de reprodución seleccionado actualmente."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_META_TURBO_FIRE_TOGGLE,
+   "Disparo Turbo (Alternancia)"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_META_TURBO_FIRE_TOGGLE,
+   "Activa/desactiva o disparo turbo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_GRAB_MOUSE_TOGGLE,
@@ -4914,6 +4987,10 @@ MSG_HASH(
    "Filtrar por núcleo actual"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_FILTER_BY_CURRENT_CORE,
+   "Filtrar os arquivos que se mostran no Navegador de Arquivos polo núcleo actual."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_LAST_START_DIRECTORY,
    "Lembra o último directorio de inicio usado"
    )
@@ -5285,6 +5362,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_OVERLAY_ABXY_DIAGONAL_SENSITIVITY,
    "Axusta o tamaño das zonas de superposición no rombo do botón da cara. Establécese ao 100 % para a simetría de 8 vías."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_ANALOG_RECENTER_ZONE,
+   "Zona de recentralización analóxica"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_OVERLAY_ANALOG_RECENTER_ZONE,
@@ -5726,6 +5807,10 @@ MSG_HASH(
    "Notificacións de conexión de entrada (configuración automática)"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Notificacións de falla de entrada (Autoconfiguración)"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_CHEATS_APPLIED,
    "Notificacións de códigos de trucos"
    )
@@ -5744,6 +5829,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG,
    "Mostra unha mensaxe en pantalla ao conectar/desconectar dispositivos de entrada."
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Amosar unha mensaxe na pantalla cando os dispositivos de entrada non poidan ser configurados."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_REMAP_LOAD,
@@ -5864,6 +5953,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_FONT_SIZE,
    "Tamaño da notificación"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_VIDEO_FONT_SIZE,
+   "Especifica o tamaño da fonte en puntos. Cando se usan widgets, este tamaño afecta só á visualización de estatísticas na pantalla."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_POS_X,
@@ -6013,6 +6106,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PAUSE_LIBRETRO,
    "Pausa o contido cando o menú estea activo"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_PAUSE_LIBRETRO,
+   "Pausar o contido se o menú está activo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_SAVESTATE_RESUME,
@@ -6346,6 +6443,18 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_PLAYLISTS,
    "Mostrar \"Listas de reprodución\""
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CONTENT_SHOW_PLAYLISTS,
+   "Amosar as listas de reprodución no Menú Principal. Ignorado en GLUI se as lapelas de listas de reprodución e a barra de navegación están activadas."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_PLAYLIST_TABS,
+   "Amosar lapelas de listas de reprodución"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CONTENT_SHOW_PLAYLIST_TABS,
+   "Amosar as lapelas de listas de reprodución. Non afecta a RGUI. A barra de navegación debe estar activada en GLUI. (Requírese reiniciar en Ozone/XMB)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_EXPLORE,
@@ -7772,6 +7881,10 @@ MSG_HASH(
    "Permitir que o contido sexa dixitalizado e engadido a unha lista de reprodución sen un núcleo instalado que o admita."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SCAN_SERIAL_AND_CRC,
+   "Escanear verifica CRC en posibles duplicados"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_SCAN_SERIAL_AND_CRC,
    "Ás veces, as ISO duplican series, especialmente con títulos de PSP/PSN. Confiar só no serial ás veces pode facer que o escáner poña contido no sistema incorrecto. Isto engade unha comprobación CRC, que ralentiza considerablemente a exploración, pero pode ser máis precisa."
    )
@@ -8270,6 +8383,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_STEAM_RICH_PRESENCE_FORMAT,
    "Formato de contido enriquecido Presente"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STEAM_RICH_PRESENCE_FORMAT,
+   "Decidir que información relacionada co contido se compartirá."
    )
 
 MSG_HASH(
@@ -8868,6 +8985,10 @@ MSG_HASH(
    "Retomar"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_RESUME_CONTENT,
+   "Reanudar o contido e saír do Menú Rápido."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESTART_CONTENT,
    "Reiniciar"
    )
@@ -8878,6 +8999,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,
    "Pechar contido"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOSE_CONTENT,
+   "Pechar o contido. Calquera troco non gardado poderá ser perdido."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TAKE_SCREENSHOT,
@@ -9012,8 +9137,16 @@ MSG_HASH(
    "Opcións do Núcleo"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_CORE_OPTIONS,
+   "Trocar as opcións para o contido."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INPUT_REMAPPING_OPTIONS,
    "Controis"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CORE_INPUT_REMAPPING_OPTIONS,
+   "Trocar os controis para o contido."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_CHEAT_OPTIONS,
@@ -9634,6 +9767,10 @@ MSG_HASH(
    "Aplicar automaticamente os cambios feitos aos ficheiros de sombreadores no disco."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_HELP_SHADER_WATCH_FOR_CHANGES,
+   "Vixiar os arquivos de sombreadores para novos trocos. Despois de gardar os trocos nun sombreado no disco, este será recompilado e aplicado automaticamente ao contido."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_REMEMBER_LAST_DIR,
    "Lembra o último directorio de Sombreadores usado"
    )
@@ -10091,6 +10228,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CYCLE_THUMBNAILS,
    "Ciclo de miniaturas"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RANDOM_SELECT,
+   "Escolla aleatoria"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_BACK,
@@ -10771,6 +10912,10 @@ MSG_HASH(
    "Transparencia"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_MENU_RGUI_TRANSPARENCY,
+   "Activar a visualización de fondo do contido mentres o Menú Rápido está activo. Desactivar a transparencia pode alterar as cores do tema."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_RGUI_SHADOWS,
    "Efectos de sombra"
    )
@@ -11075,6 +11220,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_LEFT_THUMBNAILS,
    "Tipo de miniatura para mostrar á esquerda."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ICON_THUMBNAILS,
+   "Miniatura da icona"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ICON_THUMBNAILS,
+   "Tipo de miniatura da icona de lista de reprodución a mostrar."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DYNAMIC_WALLPAPER,
@@ -15555,9 +15708,53 @@ MSG_HASH(
    "parou."
    )
 #ifdef HAVE_GAME_AI
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_GAME_AI_MENU_OPTION,
+   "Substitución do xogador IA"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_GAME_AI_MENU_OPTION,
+   "O xogador de IA anula la subetiqueta"
+   )
 
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CORE_GAME_AI_OPTIONS,
+   "IA do Xogo"
+   )
 
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_GAME_AI_OVERRIDE_P1,
+   "Substituír p1"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_GAME_AI_OVERRIDE_P1,
+   "Substituír xogador p1"
+   )
 
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_GAME_AI_OVERRIDE_P2,
+   "Substituír p2"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_GAME_AI_OVERRIDE_P2,
+   "Substituír xogador p2"
+   )
 
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_GAME_AI_SHOW_DEBUG,
+   "Amosar depuración"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_GAME_AI_SHOW_DEBUG,
+   "Amosar depuración"
+   )
 
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_GAME_AI,
+   "Amosar \"Xogo IA\""
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_GAME_AI,
+   "Amosar a opción 'IA do xogo'."
+   )
 #endif

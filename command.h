@@ -41,6 +41,7 @@ RETRO_BEGIN_DECLS
 
 enum event_command
 {
+   CMD_SPECIAL = -1,
    CMD_EVENT_NONE = 0,
    /* Resets RetroArch. */
    CMD_EVENT_RESET,
@@ -228,6 +229,8 @@ enum event_command
    CMD_EVENT_DISK_APPEND_IMAGE,
    /* Stops rumbling. */
    CMD_EVENT_RUMBLE_STOP,
+   /* Toggles turbo fire. */
+   CMD_EVENT_TURBO_FIRE_TOGGLE,
    /* Toggles mouse grab. */
    CMD_EVENT_GRAB_MOUSE_TOGGLE,
    /* Toggles game focus. */
@@ -490,6 +493,7 @@ static const struct cmd_map map[] = {
    { "RECORDING_TOGGLE",       RARCH_RECORDING_TOGGLE },
    { "STREAMING_TOGGLE",       RARCH_STREAMING_TOGGLE },
 
+   { "TURBO_FIRE_TOGGLE",      RARCH_TURBO_FIRE_TOGGLE },
    { "GRAB_MOUSE_TOGGLE",      RARCH_GRAB_MOUSE_TOGGLE },
    { "GAME_FOCUS_TOGGLE",      RARCH_GAME_FOCUS_TOGGLE },
    { "FULLSCREEN_TOGGLE",      RARCH_FULLSCREEN_TOGGLE_KEY },

@@ -68,6 +68,14 @@ MSG_HASH(
    "Den zu verwendenden Core wählen."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CORE_LIST_UNLOAD,
+   "Core entladen"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CORE_LIST_UNLOAD,
+   "Den geladenen Core freigeben."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_HELP_CORE_LIST,
    "Nach einer Libretro-Core-Implementierung suchen. In welchem Verzeichnis der Browser beginnt, hängt von dem Core-Verzeichnispfad ab.\nIst als Core-Verzeichnis ein Ordner ausgewählt, wird dieser als Startverzeichnis genutzt. Ist das Core-Verzeichnis ein vollständiger Pfad, wird in dem Ordner begonnen, in dem sich die Datei befindet."
    )
@@ -2573,11 +2581,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_X,
-   "Benutzerdefinierte Ausrichtung des Ansichtsfensters wird verwendet, um das Ansichtsfenster horizontal zu versetzen (wenn es breiter als die Inhaltshöhe ist). 0.0 bedeutet ganz links und 1.0 bedeutet ganz rechts."
+   "Horizontale Position des Inhalts, wenn das Ansichtsfenster breiter als die Inhaltsbreite ist. 0.0 ist ganz links, 0.5 ist Mitte, 1.0 ist ganz rechts."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_Y,
-   "Benutzerdefinierte Ausrichtung des Ansichtsfensters wird verwendet, um das Ansichtsfenster vertikal zu versetzen (wenn es höher als die Inhaltshöhe ist). 0.0 bedeutet oben und 1.0 bedeutet unten."
+   "Vertikale Position des Inhalts, wenn das Ansichtsfenster höher als die Inhaltshöhe ist. 0.0 ist oben, 0.5 ist Mitte, 1.0 ist unten."
    )
 #if defined(RARCH_MOBILE)
 MSG_HASH(
@@ -2598,11 +2606,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
-   "Benutzerdefinierte Ausrichtung des Ansichtsfensters wird verwendet, um das Ansichtsfenster horizontal zu versetzen (wenn es breiter als die Inhaltshöhe ist). 0.0 bedeutet ganz links und 1.0 bedeutet ganz rechts. (Hochformat)"
+   "Horizontale Position des Inhalts, wenn das Ansichtsfenster breiter als die Inhaltsbreite ist. 0.0 ist ganz links, 0.5 ist Mitte, 1.0 ist ganz rechts. (Hochformat)"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
-   "Benutzerdefinierte Ausrichtung des Ansichtsfensters wird verwendet, um das Ansichtsfenster vertikal zu versetzen (wenn es höher als die Inhaltshöhe ist). 0.0 bedeutet oben und 1.0 bedeutet unten. (Hochformat)"
+   "Vertikale Position des Inhalts, wenn das Ansichtsfenster höher als die Inhaltshöhe ist. 0.0 ist oben, 0.5 ist Mitte, 1.0 ist unten. (Hochformat)"
    )
 #endif
 MSG_HASH(
@@ -3397,21 +3405,34 @@ MSG_HASH(
    MSG_INPUT_BIND_HOLD,
    "Halten"
    )
+
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ENABLE,
+   "Turbo"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_ENABLE,
+   "Deaktiviert stoppt alle Turbofeuer-Vorgänge."
+   )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_PERIOD,
    "Turbo-Periode"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TURBO_PERIOD,
-   "Die Periode (in Frames), in der die turbo-aktivierten Tasten betätigt werden."
+   "Die Periode in Frames, in der die Turbo-aktivierten Tasten betätigt werden."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_DUTY_CYCLE,
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DUTY_CYCLE,
    "Turbo-Haltedauer"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_DUTY_CYCLE,
-   "Die Anzahl der Frames aus der Turbo-Periode, für die die Tasten gedrückt gehalten werden. Wenn diese Zahl gleich oder größer als die Turbo-Periode ist, bleiben die Tasten gedrückt."
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_DUTY_CYCLE,
+   "Die Anzahl der Frames aus der Turbo-Periode, für die die Tasten gedrückt gehalten werden. Wenn diese Zahl gleich oder größer als die Turbo-Periode ist, werden die Tasten nie losgelassen."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_TURBO_DUTY_CYCLE_HALF,
+   "Halbe Periode"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_MODE,
@@ -3439,35 +3460,43 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_CLASSIC,
-   "Klassischer Modus, Zwei-Tasten-Bedienung. Eine Taste halten und die Turbotaste antippen, um die Drücken-Loslassen-Sequenz zu aktivieren.\nDie Turbotaste kann unter Einstellungen/Eingabe/Port-1-Steuerung zugewiesen werden."
+   "Klassischer Modus, Zwei-Tasten-Bedienung. Eine Taste halten und die Turbotaste antippen, um die Drücken-Loslassen-Sequenz zu aktivieren.\nDie Turbotaste kann unter Einstellungen/Eingabe/Port-X-Steuerung zugewiesen werden."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_CLASSIC_TOGGLE,
-   "Klassischer Umschalt-Modus, Zwei-Tasten-Vorgang. Eine Taste gedrückt halten und auf die Turbotaste tippen, um Turbo für diesen Taste zu aktivieren. Um Turbo zu deaktivieren: Den Knopf gedrückt halten und die Turbotaste erneut drücken.\nDie Turbotaste kann in den Einstellungen/Eingabe/Port-1-Steuerung zugewiesen werden."
+   "Klassischer Umschalt-Modus, Zwei-Tasten-Bedienung. Eine Taste gedrückt halten und auf die Turbotaste tippen, um Turbo für diese Taste zu aktivieren. Um Turbo zu deaktivieren: Den Knopf gedrückt halten und die Turbotaste erneut drücken.\nDie Turbotaste kann in den Einstellungen/Eingabe/Port-X-Steuerung zugewiesen werden."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_SINGLEBUTTON,
-   "Umschaltmodus. Die Turbotaste einmal drücken, um die Drücken-Loslassen-Sequenz für die gewählte Standardtaste zu aktivieren, und sie erneut drücken, um sie auszuschalten.\nDie Turbotaste kann unter Einstellungen/Eingabe/Port-1-Steuerung zugewiesen werden."
+   "Umschalt-Modus. Die Turbotaste einmal drücken, um die Drücken-Loslassen-Sequenz für die gewählte Standardtaste zu aktivieren, und sie erneut drücken, um sie auszuschalten.\nDie Turbotaste kann unter Einstellungen/Eingabe/Port-X-Steuerung zugewiesen werden."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_SINGLEBUTTON_HOLD,
-   "Haltemodus. Die Drücken-Loslassen-Sequenz für die ausgewählte Standardtaste ist aktiv, solange die Turbotaste gedrückt gehalten wird.\nDie Turbotaste kann unter Einstellungen/Eingabe/Anschluss-1-Steuerung zugewiesen werden.\nUm die Autofire-Funktion der Heimcomputer-Ära zu emulieren, die Turbo- und Standardtasten so einstellen, dass sie mit der Joystick-Feuertaste übereinstimmen."
+   "Halte-Modus. Die Drücken-Loslassen-Sequenz für die ausgewählte Standardtaste ist aktiv, solange die Turbotaste gedrückt gehalten wird.\nDie Turbotaste kann unter Einstellungen/Eingabe/Port-X-Steuerung zugewiesen werden.\nUm die Autofire-Funktion der Heimcomputer-Ära zu emulieren, die Turbo- und Standardtasten so einstellen, dass sie mit der Joystick-Feuertaste übereinstimmen."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DEFAULT_BUTTON,
-   "Standard-Taste für Turbo"
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BIND,
+   "Turbo-Zuweisung"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_TURBO_DEFAULT_BUTTON,
-   "Standard aktive Taste für Turbo-Modus 'Einzeltaste'."
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_BIND,
+   "Turbo aktiviert RetroPad-Zuweisung. Leer verwendet die Port-spezifische Zuweisung."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_ALLOW_TURBO_DPAD,
-   "Erlaube Turbo bei Steuerkreuz-Richtungseingaben"
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BUTTON,
+   "Turbo-Taste"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_ALLOW_TURBO_DPAD,
-   "Wenn aktiviert, können digitale Richtungseingaben (auch bekannt als Steuerkreuz oder \"Hatswitch\") Turbo sein."
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_BUTTON,
+   "Zielturbo-Taste im „Einzeltaste“-Modus."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ALLOW_DPAD,
+   "Turbo bei Steuerkreuz-Richtungseingaben erlauben"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_ALLOW_DPAD,
+   "Wenn aktiviert, können digitale Richtungseingaben (auch bekannt als Steuerkreuz oder „Hatswitch“) Turbo sein."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_FIRE_SETTINGS,
@@ -3475,7 +3504,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TURBO_FIRE_SETTINGS,
-   "Einstellungen für Turbofeuer ändern.\nHinweis: Für die Turbofunktion muss dem Eingabegerät im entsprechenden Menü „Port X Steuerung“ eine Turbotaste zugewiesen werden."
+   "Turbo-Einstellungen ändern."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_HAPTIC_FEEDBACK_SETTINGS,
@@ -3951,6 +3980,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_REPLAY_SLOT_MINUS,
    "Verringert den Index des aktuell ausgewählten Replayslots."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_META_TURBO_FIRE_TOGGLE,
+   "Turbo-Feuer (Umschalten)"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_META_TURBO_FIRE_TOGGLE,
+   "Schaltet Turbo-Feuer an/aus."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_GRAB_MOUSE_TOGGLE,
@@ -5710,6 +5747,10 @@ MSG_HASH(
    "Eingabe (Automatische Konfiguration) Verbindungsbenachrichtigungen"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Eingabe (Automatische Konfiguration)-Fehlerbenachrichtigungen"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_CHEATS_APPLIED,
    "Cheat-Code-Benachrichtigungen"
    )
@@ -5728,6 +5769,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG,
    "Eine Bildschirmmeldung anzeigen, wenn Eingabegeräte angeschlossen/getrennt werden."
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Zeigt eine Nachricht auf dem Bildschirm an, wenn Eingabegeräte nicht konfiguriert werden konnten."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_REMAP_LOAD,

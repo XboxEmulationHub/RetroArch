@@ -72,6 +72,14 @@ MSG_HASH(
    "Выберите ядро для запуска."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CORE_LIST_UNLOAD,
+   "Выгрузить ядро"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CORE_LIST_UNLOAD,
+   "Выгружает загруженное ядро."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_HELP_CORE_LIST,
    "Выбор ядра libretro. Браузер открывает путь, заданный для каталога 'Ядра'. Если он пуст, обзор начинается в корне.\nЕсли каталог ядер является директорией, она исп. как папка верхнего уровня. Если каталог ядер это абсолютный путь, то браузер открывает папку расположения файла."
    )
@@ -1458,11 +1466,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AI_SERVICE_SETTINGS,
-   "AI-сервис"
+   "ИИ-сервис"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AI_SERVICE_SETTINGS,
-   "Настройки AI-сервиса (перевод, синтез речи и т.д.)."
+   "Настройки ИИ-сервиса (перевод, синтез речи и др.)."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ACCESSIBILITY_SETTINGS,
@@ -2665,11 +2673,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_X,
-   "Установка смещения области просмотра по горизонтали (если ширина превышает высоту контента). 0.0 соответствует левому краю, 1.0 - правому."
+   "Положение контента по горизонтали, если область вывода превышает ширину контента. 0.0 слева, 0.5 по центру, 1.0 справа."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_Y,
-   "Установка смещения области просмотра по вертикали (если высота превышает высоту контента). 0.0 соответствует левому краю, 1.0 - правому."
+   "Положение контента по вертикали, если область вывода превышает высоту контента. 0.0 сверху, 0.5 по центру, 1.0 снизу."
    )
 #if defined(RARCH_MOBILE)
 MSG_HASH(
@@ -2690,11 +2698,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
-   "Установка смещения области просмотра по горизонтали (если ширина превышает высоту контента). 0.0 соответствует левому краю, 1.0 - правому. Для портретного режима."
+   "Положение контента по горизонтали, если область вывода превышает ширину контента. 0.0 слева, 0.5 по центру, 1.0 справа (портретная ориентация)."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
-   "Установка смещения области просмотра по вертикали (если высота превышает высоту контента). 0.0 соответствует левому краю, 1.0 - правому. Для портретного режима."
+   "Положение контента по вертикали, если область вывода превышает высоту контента. 0.0 сверху, 0.5 по центру, 1.0 снизу (портретная ориентация)."
    )
 #endif
 MSG_HASH(
@@ -3509,21 +3517,34 @@ MSG_HASH(
    MSG_INPUT_BIND_HOLD,
    "Удерживайте"
    )
+
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ENABLE,
+   "Турбо-кнопки"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_ENABLE,
+   "При отключении действие всех турбо-кнопок остановлено."
+   )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_PERIOD,
    "Период турбо"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TURBO_PERIOD,
-   "Длительность нажатия турбо-кнопок (в кадрах)."
+   "Интервал в кадрах, в течение которого турбо-кнопки нажаты."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_DUTY_CYCLE,
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DUTY_CYCLE,
    "Цикл действия турбо"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_DUTY_CYCLE,
-   "Количество кадров в периоде турборежима, в течение которых кнопки будут нажаты. Если данное значение больше или равно периоду турбо, кнопки будут нажаты постоянно."
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_DUTY_CYCLE,
+   "Количество кадров в периоде турборежима, когда кнопки остаются нажатыми. Если это значение больше или равно периоду турбо, кнопки будут нажаты постоянно."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_TURBO_DUTY_CYCLE_HALF,
+   "Полпериода"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_MODE,
@@ -3551,35 +3572,43 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_CLASSIC,
-   "Классический режим, две кнопки для срабатывания. Удерживая кнопку действия однократно нажмите кнопку Турбо, чтобы запустить цикл нажать-отпустить. Кнопку Турбо можно назначить в Настройки/Ввод/Привязки порта 1."
+   "Классический режим, две кнопки для срабатывания. Однократно нажмите активатор турбо, удерживая кнопку действия для запуска цикла нажать-отпустить. Активатор турбо можно назначить в Настройки/Ввод/Привязки порта X."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_CLASSIC_TOGGLE,
-   "Классический режим, две кнопки для срабатывания. Удерживая кнопку действия однократно нажмите кнопку Турбо. Повторно нажмите кнопку Турбо, удерживая кнопку действия для откл. турбо. Кнопку Турбо можно назначить в Настройки/Ввод/Привязки порта 1."
+   "Классический режим переключения, две кнопки для срабатывания. Однократно нажмите активатор турбо, удерживая кнопку действия. Для отключения повторно нажмите активатор турбо, удерживая кнопку действия. Активатор турбо можно назначить в Настройки/Ввод/Привязки порта X."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_SINGLEBUTTON,
-   "Режим переключения. Однократно нажмите кнопку Турбо, чтобы запустить цикл нажать-отпустить для выбранной по умолчанию кнопки. Для откл. нажмите кнопку Турбо повторно. Кнопку Турбо можно назначить в Настройки/Ввод/Привязки порта 1."
+   "Режим переключения. Однократно нажмите активатор турбо, чтобы запустить цикл нажать-отпустить для выбранной по умолчанию турбо-кнопки. Нажмите повторно для отключения. Активатор турбо можно назначить в Настройки/Ввод/Привязки порта X."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_SINGLEBUTTON_HOLD,
-   "Режим с удержанием. Пока зажата кнопка Турбо, для кнопки по умолчанию действует цикл нажать-отпустить. Кнопку Турбо можно назначить в Настройки/Ввод/Привязки порта 1. Для эмуляции автом. огня привяжите Турбо и кнопку по умолчанию к одной кнопке стрельбы геймпада."
+   "Режим удержания. Цикл нажать-отпустить для выбранной по умолчанию кнопки действует до тех пор, пока удерживается турбо-кнопка. Активатор турбо можно назначить в Настройки/Ввод/Привязки порта X. Для эмуляции автом. огня назначьте активатор и турбо-кнопку на одну и ту же кноп[...]"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DEFAULT_BUTTON,
-   "Турбо-кнопка по умолчанию"
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BIND,
+   "Активатор турбо"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_TURBO_DEFAULT_BUTTON,
-   "Кнопка действия, используемая с режимами турбо 'Одна кнопка'."
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_BIND,
+   "Привязка RetroPad для активации турбо-режима. При пустом значении используется привязка, заданная для порта."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_ALLOW_TURBO_DPAD,
-   "Разрешать турбо для диагоналей D-Pad"
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BUTTON,
+   "Турбо-кнопка"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_ALLOW_TURBO_DPAD,
-   "При включении разрешает турбо для нажатий цифровых диагоналей."
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_BUTTON,
+   "Целевая турбо-кнопка, используемая в режимах 'Одна кнопка'."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ALLOW_DPAD,
+   "Разрешить турбо для d-pad"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_ALLOW_DPAD,
+   "При включении позволяет использовать турбо для цифровых кнопок направлений (известных как d-pad или крестовина)."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_FIRE_SETTINGS,
@@ -3587,7 +3616,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TURBO_FIRE_SETTINGS,
-   "Настройки турбо-кнопок.\nПримечание: для работы функции требуется привязать турбо-кнопку к устройству ввода в соответствующем меню 'Привязки порта X'."
+   "Настройка параметров турбо."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_HAPTIC_FEEDBACK_SETTINGS,
@@ -4073,6 +4102,14 @@ MSG_HASH(
    "Понижает номер текущего слота повтора."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_META_TURBO_FIRE_TOGGLE,
+   "Турбо (переключение)"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_META_TURBO_FIRE_TOGGLE,
+   "Включает/выключает режим турбо."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_GRAB_MOUSE_TOGGLE,
    "Захват мыши (переключение)"
    )
@@ -4164,11 +4201,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_AI_SERVICE,
-   "AI-сервис"
+   "ИИ-сервис"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_AI_SERVICE,
-   "Захватывает изображение текущего контента для перевода и/или озвучивает любой текст на экране. 'AI-сервис' должен быть включен и настроен."
+   "Захватывает изображение запущенного контента для перевода и/или озвучивает текст на экране. ИИ-сервис должен быть включен и настроен."
    )
 
 MSG_HASH(
@@ -4460,7 +4497,7 @@ MSG_HASH(
    "Пистолет D-Pad вправо"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ENABLE,
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO,
    "Турбо"
    )
 
@@ -5850,6 +5887,10 @@ MSG_HASH(
    "Уведомление о подключении устройства ввода"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Уведомление об ошибке настройки устройств ввода"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_CHEATS_APPLIED,
    "Уведомление о загрузке чит-кодов"
    )
@@ -5859,7 +5900,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_PATCH_APPLIED,
-   "Уведомление о патче"
+   "Уведомление о применении патча"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_PATCH_APPLIED,
@@ -5868,6 +5909,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG,
    "Отображать сообщение при подключении/отключении устройств ввода."
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Отображать сообщение при невозможности настроить устройство ввода."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_REMAP_LOAD,
@@ -6959,11 +7004,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_AI_SERVICE,
-   "Показывать 'AI-сервис'"
+   "Показывать 'ИИ-сервис'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SETTINGS_SHOW_AI_SERVICE,
-   "Показывать настройки 'AI-сервиса'."
+   "Показывать настройки 'ИИ-сервиса'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_ACCESSIBILITY,
@@ -7138,7 +7183,7 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AI_SERVICE_MODE,
-   "Режим вывода для AI-сервиса"
+   "Режим вывода ИИ-сервиса"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AI_SERVICE_MODE,
@@ -7146,7 +7191,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AI_SERVICE_URL,
-   "Сетевой адрес AI-сервиса"
+   "Сетевой адрес ИИ-сервиса"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AI_SERVICE_URL,
@@ -7154,11 +7199,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AI_SERVICE_ENABLE,
-   "Вкл. AI-сервис"
+   "Вкл. ИИ-сервис"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AI_SERVICE_ENABLE,
-   "Запуск AI-сервиса при нажатии горячей клавиши."
+   "Включает запуск ИИ-сервиса при нажатии горячей клавиши."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AI_SERVICE_PAUSE,
@@ -8079,11 +8124,11 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PRIVACY_SETTINGS,
-   "Конфиденциальность"
+   "Приватность"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PRIVACY_SETTINGS,
-   "Настройки конфиденциальности."
+   "Настройки приватности."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ACCOUNTS_LIST,
@@ -13859,7 +13904,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_FAILED_TO_ALLOCATE_MEMORY_FOR_PATCHED_CONTENT,
-   "Не удалось выделить память для пропатченного содержимого ..."
+   "Не удалось выделить память для пропатченного контента..."
    )
 MSG_HASH(
    MSG_FAILED_TO_APPLY_SHADER,
@@ -15901,9 +15946,17 @@ MSG_HASH(
    MENU_ENUM_LABEL_VALUE_GAME_AI_OVERRIDE_P1,
    "Заменить Игрока 1"
    )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_GAME_AI_OVERRIDE_P1,
+   "Заменить Игрока 1"
+   )
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_GAME_AI_OVERRIDE_P2,
+   "Заменить Игрока 2"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_GAME_AI_OVERRIDE_P2,
    "Заменить Игрока 2"
    )
 

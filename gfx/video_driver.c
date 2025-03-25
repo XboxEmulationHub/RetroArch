@@ -1006,7 +1006,7 @@ video_pixel_scaler_t *video_driver_pixel_converter_init(
    if (!scaler_ctx_gen_filter(scalr_ctx))
       goto error;
 
-   if (!(scalr_out = calloc(sizeof(uint16_t), size * size)))
+   if (!(scalr_out = calloc(size * size, sizeof(uint16_t))))
       goto error;
 
    scalr->scaler_out                        = scalr_out;
@@ -3645,7 +3645,7 @@ void video_driver_frame(const void *data, unsigned width,
    static retro_time_t curr_time;
    static retro_time_t fps_time;
    static float last_fps, frame_time;
-   static uint16_t frame_time_accumulator;
+   static int32_t frame_time_accumulator;
    /* Mark the start of nonblock state for
     * ignoring initial previous frame time */
    static int8_t nonblock_active;
@@ -3729,7 +3729,7 @@ void video_driver_frame(const void *data, unsigned width,
             || (last_frame_duped && !!data))
       )
    {
-      uint16_t frame_time_accumulator_prev = frame_time_accumulator;
+      int32_t frame_time_accumulator_prev  = frame_time_accumulator;
       uint16_t frame_time_delta            = new_time - last_time;
       uint16_t frame_time_target           = video_info.frame_time_target;
 
@@ -3797,11 +3797,17 @@ void video_driver_frame(const void *data, unsigned width,
       video_st->frame_time_samples[write_index] = frame_time;
       fps_time                                  = new_time;
 
-      /* Consider frame dropped when frame time exceeds 1.75x target */
+      /* Try to count dropped frames */
       if (     video_st->frame_count > 4
-            && !menu_is_alive
-            && frame_time > 1000000.0f / video_st->av_info.timing.fps * 1.75f)
-         video_st->frame_drop_count++;
+            && !menu_is_alive)
+      {
+         float frame_time_av_info = 1000000.0f / video_st->av_info.timing.fps;
+
+         if (     (frame_time > frame_time_av_info * 1.75f)
+               || (runloop_st->core_run_time > frame_time_av_info * 1.5f)
+            )
+            video_st->frame_drop_count++;
+      }
 
       if (video_info.fps_show)
       {

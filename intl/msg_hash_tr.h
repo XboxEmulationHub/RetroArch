@@ -68,6 +68,14 @@ MSG_HASH(
    "Kullanılacak çekirdeği seçin."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CORE_LIST_UNLOAD,
+   "Çekirdeği Serbest Bırak"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CORE_LIST_UNLOAD,
+   "Yüklenen çekirdeği serbest bırakın."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_HELP_CORE_LIST,
    "Bir libretro çekirdek uygulamasına göz atın. Tarayıcının nerede başlayacağı, Çekirdek Dizin yolunuza bağlıdır. Boşsa, kök dizinde başlar.\nÇekirdek Dizin bir dizinse, menü bunu üst klasör olarak kullanır. Çekirdek Dizin tam yol ise, dosyanın bulunduğu klasörde başlar."
    )
@@ -2645,11 +2653,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_X,
-   "Görüntü alanını yatay olarak dengelemek için kullanılan özel görüntü alanı sapması (içerik yüksekliğinden daha genişse).  0,0 en sol, 1,0 ise en sağ anlamına gelir."
+   "Görünüm alanı içerik genişliğinden daha geniş olduğunda içeriğin yatay konumu. 0,0 en sol, 0,5 merkez, 1,0 en sağdır."
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_Y,
-   "Görüntü alanını dikey olarak dengelemek için kullanılan özel görüntü alanı sapması (içerik yüksekliğinden daha uzunsa).  0,0 üst, 1,0 ise alt anlamına gelir."
+   "Görünüm içerik yüksekliğinden daha uzun olduğunda içeriğin dikey konumu. 0,0 üst, 0,5 orta, 1,0 alt anlamına gelir."
    )
 #if defined(RARCH_MOBILE)
 MSG_HASH(
@@ -2670,11 +2678,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
-   "Görüntü alanını yatay olarak dengelemek için kullanılan özel görüntü alanı sapması (içerik yüksekliğinden daha genişse).  0,0 en sol, 1,0 ise en sağ anlamına gelir. (Portre Yönü)"
+   "Görünüm alanı içerik genişliğinden daha geniş olduğunda içeriğin yatay konumu. 0,0 en sol, 0,5 merkez, 1,0 en sağdır. (Dikey Yönlendirme)"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
-   "Görüntü alanını dikey olarak dengelemek için kullanılan özel görüntü alanı sapması (içerik yüksekliğinden daha uzunsa).  0,0 üst, 1,0 ise alt anlamına gelir. (Portre Yönü)"
+   "Görünüm içerik yüksekliğinden daha uzun olduğunda içeriğin dikey konumu. 0,0 üst, 0,5 orta, 1,0 alt konumdur. (Dikey Yönlendirme)"
    )
 #endif
 MSG_HASH(
@@ -3489,21 +3497,34 @@ MSG_HASH(
    MSG_INPUT_BIND_HOLD,
    "Bekleme"
    )
+
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ENABLE,
+   "Turbo Ateş"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_ENABLE,
+   "Devre dışı bırakıldığında tüm turbo ateş operasyonları durur."
+   )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_PERIOD,
    "Turbo Aralığı"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TURBO_PERIOD,
-   "Turbo özellikli düğmeler arasında geçiş yapılan süre (kare cinsinden)."
+   "Turbo-etkin düğmelere basıldığında kare cinsinden süre."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_DUTY_CYCLE,
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DUTY_CYCLE,
    "Turbo Görev Döngüsü"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_DUTY_CYCLE,
-   "Düğmelerin basılı tutulduğu Turbo Periyodundan kare sayısı. Bu sayı Turbo Periyoduna eşit veya ondan büyükse, düğmeler asla bırakılmaz."
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_DUTY_CYCLE,
+   "Turbo süresinde düğmelerin basılı tutulduğu kare sayısı. Bu sayı Turbo süresine eşit veya daha büyükse, düğmeler asla serbest bırakılmayacaktır."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_TURBO_DUTY_CYCLE_HALF,
+   "Yarı Dönem"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_MODE,
@@ -3531,34 +3552,42 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_CLASSIC,
-   "Klasik mod, iki düğmeli işlem. Basın-bırakın dizisini etkinleştirmek için bir düğmeyi basılı tutun ve Turbo düğmesine dokunun.\nTurbo düğmesi Ayarlar/Giriş/Port 1 Kontrollerinde atanabilir."
+   "Klasik mod, iki düğmeli işlem. Basın-bırakın dizisini etkinleştirmek için bir düğmeyi basılı tutun ve Turbo düğmesine dokunun.\nTurbo bağlantısı Ayarlar/Giriş/Port X Kontrollerinde atanabilir."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_CLASSIC_TOGGLE,
-   "Klasik geçiş, iki düğmeli işlem. Bir düğmeyi basılı tutun ve o düğme için turboyu etkinleştirmek için Turbo düğmesine dokunun. Turboyu devre dışı bırakmak için: düğmeyi basılı tutun ve Turbo düğmesine tekrar basın.\nTurbo düğmesi Ayarlar/Giriş/Bağlantı Noktası 1 Kontrolleri'nden atanabilir."
+   "Klasik geçiş, iki düğmeli işlem. Bir düğmeyi basılı tutun ve o düğme için turboyu etkinleştirmek için Turbo düğmesine dokunun. Turboyu devre dışı bırakmak için: düğmeyi basılı tutun ve Turbo düğmesine tekrar basın.\nTurbo bağlantısı Ayarlar/Giriş/Port X Kontrolleri'nden atanabilir."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_SINGLEBUTTON,
-   "Geçiş kipi. Seçilen varsayılan düğme için basma-bırakma sırasını etkinleştirmek için Turbo düğmesine bir kez basın, kapatmak için bir kez daha basın.\nTurbo düğmesi Ayarlar/Giriş/Port 1 Kontrollerinde atanabilir."
+   "Geçiş kipi. Seçilen varsayılan düğme için basma-bırakma sırasını etkinleştirmek için Turbo düğmesine bir kez basın, kapatmak için bir kez daha basın.\nTurbo bağlantısı Ayarlar/Giriş/Port X Kontrollerinde atanabilir."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_TURBO_MODE_SINGLEBUTTON_HOLD,
-   "Tutma kipi. Seçilen varsayılan düğme için basma-bırakma dizisi, Turbo düğmesi basılı tutulduğu sürece etkindir.\nTurbo düğmesi Ayarlar/Giriş/Port 1 Kontrollerinde atanabilir.\nEv bilgisayarı çağının otomatik ateşleme işlevini taklit etmek için Turbo'yu ayarlayın ve varsayılan düğmeler, joystick ateşleme düğmesiyle aynı olacaktır."
+   "Tutma modu. Seçili varsayılan düğme için basma-bırakma dizisi Turbo düğmesi basılı tutulduğu sürece etkindir.\nTurbo bağlama Ayarlar/Giriş/Port X Kontrolleri'nde atanabilir.\nEv bilgisayarı döneminin otomatik ateşleme işlevini taklit etmek için Bağlama ve Düğmeyi aynı joystick ateşleme düğmesine ayarlayın."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DEFAULT_BUTTON,
-   "Varsayılan Turbo Düğmesi"
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BIND,
+   "Turbo Bağlantısı"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_TURBO_DEFAULT_BUTTON,
-   "Turbo Kipi için varsayılan etkin düğme 'Tek Düğme'."
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_BIND,
+   "RetroPad bağlantısı turbo etkinleştirir. Boş porta özgü bağlamayı kullanır."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_INPUT_ALLOW_TURBO_DPAD,
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BUTTON,
+   "Turbo Düğmesi"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_BUTTON,
+   "'Tek Tuş' modunda hedef turbo düğmesi."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ALLOW_DPAD,
    "Turbo D-Pad Yönlerine İzin Ver"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_ALLOW_TURBO_DPAD,
+   MENU_ENUM_SUBLABEL_INPUT_TURBO_ALLOW_DPAD,
    "Etkinleştirilirse, dijital yönlü girişler (aynı zamanda d-pad veya 'hatswitch' olarak da bilinir) turbo olabilir."
    )
 MSG_HASH(
@@ -3567,7 +3596,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TURBO_FIRE_SETTINGS,
-   "Turbo ateş ayarlarını değiştirin.\nNot: turbo işlevi, ilgili 'Port X Kontrolleri' menüsünde giriş cihazınıza bir turbo düğmesinin eşlenmesini gerektirir."
+   "Turbo ateş ayarlarını değiştir."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_HAPTIC_FEEDBACK_SETTINGS,
@@ -4051,6 +4080,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_REPLAY_SLOT_MINUS,
    "Seçili olan tekrar oynatma aralığı sayısını azaltır."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_META_TURBO_FIRE_TOGGLE,
+   "Turbo Ateş (Değiştir)"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_META_TURBO_FIRE_TOGGLE,
+   "Turbo ateşi açar/kapatır."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_GRAB_MOUSE_TOGGLE,
@@ -5826,6 +5863,10 @@ MSG_HASH(
    "Giriş (Otomatik Yapılandırma) Bağlantı Bildirimleri"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Giriş (Otomatik Yapılandırma) Arıza Bildirimleri"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_CHEATS_APPLIED,
    "Hile Kodu Bildirimleri"
    )
@@ -5844,6 +5885,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG,
    "Giriş cihazlarını bağlarken/bağlantısını keserken bir ekran mesajı görüntüleyin."
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+   "Giriş cihazları yapılandırılamadığında ekranda bir mesaj görüntüleyin."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_REMAP_LOAD,

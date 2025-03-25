@@ -86,6 +86,7 @@
 
 #ifdef EMSCRIPTEN
 #include <emscripten/emscripten.h>
+#include "gfx/common/gl_common.h"
 #endif
 
 #ifdef HAVE_LIBNX
@@ -320,6 +321,7 @@ struct rarch_state
    char path_default_shader_preset[PATH_MAX_LENGTH];
    char path_content[PATH_MAX_LENGTH];
    char path_libretro[PATH_MAX_LENGTH];
+   char path_libretro_last[PATH_MAX_LENGTH];
    char path_config_file[PATH_MAX_LENGTH];
    char path_config_append_file[PATH_MAX_LENGTH];
    char path_config_override_file[PATH_MAX_LENGTH];
@@ -2428,6 +2430,8 @@ char *path_get_ptr(enum rarch_path_type type)
          break;
       case RARCH_PATH_CORE:
          return p_rarch->path_libretro;
+      case RARCH_PATH_CORE_LAST:
+         return p_rarch->path_libretro_last;
       case RARCH_PATH_NONE:
       case RARCH_PATH_NAMES:
          break;
@@ -2464,6 +2468,8 @@ const char *path_get(enum rarch_path_type type)
          break;
       case RARCH_PATH_CORE:
          return p_rarch->path_libretro;
+      case RARCH_PATH_CORE_LAST:
+         return p_rarch->path_libretro_last;
       case RARCH_PATH_NONE:
       case RARCH_PATH_NAMES:
          break;
@@ -2496,6 +2502,8 @@ size_t path_get_realsize(enum rarch_path_type type)
          return sizeof(p_rarch->path_config_override_file);
       case RARCH_PATH_CORE:
          return sizeof(p_rarch->path_libretro);
+      case RARCH_PATH_CORE_LAST:
+         return sizeof(p_rarch->path_libretro_last);
       case RARCH_PATH_NONE:
       case RARCH_PATH_NAMES:
          break;
@@ -2527,6 +2535,10 @@ bool path_set(enum rarch_path_type type, const char *path)
       case RARCH_PATH_CORE:
          strlcpy(p_rarch->path_libretro, path,
                sizeof(p_rarch->path_libretro));
+         break;
+      case RARCH_PATH_CORE_LAST:
+         strlcpy(p_rarch->path_libretro_last, path,
+               sizeof(p_rarch->path_libretro_last));
          break;
       case RARCH_PATH_DEFAULT_SHADER_PRESET:
          strlcpy(p_rarch->path_default_shader_preset, path,
@@ -2603,6 +2615,10 @@ bool path_is_empty(enum rarch_path_type type)
          if (string_is_empty(p_rarch->path_libretro))
             return true;
          break;
+      case RARCH_PATH_CORE_LAST:
+         if (string_is_empty(p_rarch->path_libretro_last))
+            return true;
+         break;
       case RARCH_PATH_BASENAME:
          if (string_is_empty(runloop_state_get_ptr()->runtime_content_path_basename))
             return true;
@@ -2626,26 +2642,29 @@ void path_clear(enum rarch_path_type type)
 
    switch (type)
    {
+      case RARCH_PATH_CONTENT:
+         *p_rarch->path_content = '\0';
+         break;
       case RARCH_PATH_CORE:
          *p_rarch->path_libretro = '\0';
          break;
-      case RARCH_PATH_CONFIG:
-         *p_rarch->path_config_file = '\0';
-         break;
-      case RARCH_PATH_CONTENT:
-         *p_rarch->path_content = '\0';
+      case RARCH_PATH_CORE_LAST:
+         *p_rarch->path_libretro_last = '\0';
          break;
       case RARCH_PATH_CORE_OPTIONS:
          *p_rarch->path_core_options_file = '\0';
          break;
-      case RARCH_PATH_DEFAULT_SHADER_PRESET:
-         *p_rarch->path_default_shader_preset = '\0';
+      case RARCH_PATH_CONFIG:
+         *p_rarch->path_config_file = '\0';
          break;
       case RARCH_PATH_CONFIG_APPEND:
          *p_rarch->path_config_append_file = '\0';
          break;
       case RARCH_PATH_CONFIG_OVERRIDE:
          *p_rarch->path_config_override_file = '\0';
+         break;
+      case RARCH_PATH_DEFAULT_SHADER_PRESET:
+         *p_rarch->path_default_shader_preset = '\0';
          break;
       case RARCH_PATH_NONE:
       case RARCH_PATH_NAMES:
@@ -2664,11 +2683,15 @@ void path_clear(enum rarch_path_type type)
 static void path_clear_all(void)
 {
    path_clear(RARCH_PATH_CONTENT);
+   path_clear(RARCH_PATH_CORE);
+   path_clear(RARCH_PATH_CORE_LAST);
+   path_clear(RARCH_PATH_CORE_OPTIONS);
    path_clear(RARCH_PATH_CONFIG);
    path_clear(RARCH_PATH_CONFIG_APPEND);
    path_clear(RARCH_PATH_CONFIG_OVERRIDE);
-   path_clear(RARCH_PATH_CORE_OPTIONS);
+   path_clear(RARCH_PATH_DEFAULT_SHADER_PRESET);
    path_clear(RARCH_PATH_BASENAME);
+   path_clear(RARCH_PATH_SUBSYSTEM);
 }
 
 static void ram_state_to_file(void)
@@ -3654,6 +3677,15 @@ bool command_event(enum event_command cmd, void *data)
                content_clear_subsystem();
             }
          }
+
+#ifdef HAVE_MENU
+         menu_st->flags                 |=  MENU_ST_FLAG_ENTRIES_NEED_REFRESH
+                                         |  MENU_ST_FLAG_PREVENT_POPULATE;
+         {
+            bool pending_push = false;
+            menu_driver_ctl(MENU_NAVIGATION_CTL_CLEAR, &pending_push);
+         }
+#endif
          break;
       case CMD_EVENT_CLOSE_CONTENT:
 #ifdef HAVE_MENU
@@ -3670,6 +3702,7 @@ bool command_event(enum event_command cmd, void *data)
          if (!(menu_state_get_ptr()->flags & MENU_ST_FLAG_ALIVE))
          {
             menu_state_get_ptr()->flags |= MENU_ST_FLAG_PENDING_CLOSE_CONTENT;
+            menu_state_get_ptr()->flags |= MENU_ST_FLAG_PENDING_RELOAD_CORE;
             command_event(CMD_EVENT_MENU_TOGGLE, NULL);
          }
 #else
@@ -5148,6 +5181,10 @@ bool command_event(enum event_command cmd, void *data)
             }
          }
          break;
+      case CMD_EVENT_TURBO_FIRE_TOGGLE:
+         configuration_set_bool(settings,
+               settings->bools.input_turbo_enable, !settings->bools.input_turbo_enable);
+         break;
       case CMD_EVENT_GRAB_MOUSE_TOGGLE:
          {
             bool ret              = false;
@@ -5448,6 +5485,10 @@ bool command_event(enum event_command cmd, void *data)
 
       /* Deprecated */
       case CMD_EVENT_SEND_DEBUG_INFO:
+         break;
+
+      /* Do nothing about the special negative value */
+      case CMD_SPECIAL:
          break;
    }
 
@@ -5955,8 +5996,10 @@ int rarch_main(int argc, char *argv[], void *data)
 }
 
 #if defined(EMSCRIPTEN)
-#include "gfx/common/gl_common.h"
 
+#ifdef PROXY_TO_PTHREAD
+bool platform_emscripten_is_window_hidden(void);
+#endif
 #ifdef HAVE_RWEBAUDIO
 void RWebAudioRecalibrateTime(void);
 #endif
@@ -5974,6 +6017,13 @@ void emscripten_mainloop(void)
    uint32_t runloop_flags                 = runloop_get_flags();
    bool runloop_is_slowmotion             = (runloop_flags & RUNLOOP_FLAG_SLOWMOTION) ? true : false;
    bool runloop_is_paused                 = (runloop_flags & RUNLOOP_FLAG_PAUSED)     ? true : false;
+
+#ifdef PROXY_TO_PTHREAD
+   // ensure the same behavior when requestAnimationFrame is emulated (i.e. pause when window is hidden)
+   // todo: is this an emscripten bug?
+   if (!input_driver_nonblock_state && platform_emscripten_is_window_hidden())
+      return;
+#endif
 
 #ifdef HAVE_RWEBAUDIO
    RWebAudioRecalibrateTime();
@@ -6122,7 +6172,9 @@ static void retroarch_print_features(void)
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_THREAD,          "Threads",         "Threading support");
 #endif
 #ifdef HAVE_GDI
+#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_GDI,            "GDI",               "Video driver");
+#endif
 #endif
 #ifdef HAVE_D3D8
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_D3D8,            "Direct3D 8",       "Video driver");

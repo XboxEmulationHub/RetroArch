@@ -4518,7 +4518,7 @@ static void core_input_state_poll_maybe(void)
    runloop_state_t *runloop_st = &runloop_state;
    const enum poll_type_override_t
       core_poll_type_override  = runloop_st->core_poll_type_override;
-   unsigned new_poll_type      = (core_poll_type_override > POLL_TYPE_OVERRIDE_DONTCARE)
+   enum poll_type new_poll_type      = (core_poll_type_override > POLL_TYPE_OVERRIDE_DONTCARE)
       ? (core_poll_type_override - 1)
       : runloop_st->current_core.poll_type;
    if (new_poll_type == POLL_TYPE_NORMAL)
@@ -4531,7 +4531,7 @@ static retro_input_state_t core_input_state_poll_return_cb(void)
    runloop_state_t *runloop_st = &runloop_state;
    const enum poll_type_override_t
       core_poll_type_override  = runloop_st->core_poll_type_override;
-   unsigned new_poll_type      = (core_poll_type_override > POLL_TYPE_OVERRIDE_DONTCARE)
+   enum poll_type new_poll_type      = (core_poll_type_override > POLL_TYPE_OVERRIDE_DONTCARE)
       ? (core_poll_type_override - 1)
       : runloop_st->current_core.poll_type;
    if (new_poll_type == POLL_TYPE_LATE)
@@ -5583,6 +5583,9 @@ static enum runloop_state_enum runloop_check_state(
    /* Check fullscreen hotkey */
    HOTKEY_CHECK(RARCH_FULLSCREEN_TOGGLE_KEY, CMD_EVENT_FULLSCREEN_TOGGLE, true, NULL);
 
+   /* Check turbo toggle hotkey */
+   HOTKEY_CHECK(RARCH_TURBO_FIRE_TOGGLE, CMD_EVENT_TURBO_FIRE_TOGGLE, true, NULL);
+
    /* Check mouse grab hotkey */
    HOTKEY_CHECK(RARCH_GRAB_MOUSE_TOGGLE, CMD_EVENT_GRAB_MOUSE_TOGGLE, true, NULL);
 
@@ -5805,22 +5808,25 @@ static enum runloop_state_enum runloop_check_state(
    /* Check menu hotkey */
    {
       static bool old_pressed = false;
-      char *menu_driver       = settings->arrays.menu_driver;
       bool pressed            = BIT256_GET(current_bits, RARCH_MENU_TOGGLE)
-            && !string_is_equal(menu_driver, "null");
+            && !string_is_equal(settings->arrays.menu_driver, "null");
       bool core_type_is_dummy = runloop_st->current_core_type == CORE_TYPE_DUMMY;
 
-      if (    (pressed && !old_pressed)
-            || core_type_is_dummy)
+      if (pressed && !old_pressed)
       {
+         bool core_is_running    = runloop_st->flags & RUNLOOP_FLAG_CORE_RUNNING;
+
          if (menu_st->flags & MENU_ST_FLAG_ALIVE)
          {
-            if (rarch_is_initialized && !core_type_is_dummy)
+            if (rarch_is_initialized && !core_type_is_dummy && core_is_running)
                retroarch_menu_running_finished(false);
          }
          else
             retroarch_menu_running();
       }
+      /* Initial menu toggle on startup */
+      else if (core_type_is_dummy && !(menu_st->flags & MENU_ST_FLAG_ALIVE))
+         retroarch_menu_running();
 
       old_pressed             = pressed;
    }
@@ -7314,7 +7320,7 @@ bool runloop_get_savestate_path(char *s, size_t len, int state_slot)
    return true;
 }
 
-bool runloop_get_replay_path(char *s, size_t len, unsigned slot)
+bool runloop_get_replay_path(char *s, size_t len, int slot)
 {
    size_t _len;
    runloop_state_t *runloop_st = &runloop_state;
@@ -7329,7 +7335,7 @@ bool runloop_get_replay_path(char *s, size_t len, unsigned slot)
 
    _len = strlcpy(s, name_replay, len);
    if (slot >= 0)
-      snprintf(s + _len, len - _len, "%d",  slot);
+      snprintf(s + _len, len - _len, "%d", slot);
 
    return true;
 }
@@ -7709,7 +7715,7 @@ void core_run(void)
       current_core             = &runloop_st->current_core;
    const enum poll_type_override_t
       core_poll_type_override  = runloop_st->core_poll_type_override;
-   unsigned new_poll_type      = (core_poll_type_override != POLL_TYPE_OVERRIDE_DONTCARE)
+   enum poll_type new_poll_type      = (core_poll_type_override != POLL_TYPE_OVERRIDE_DONTCARE)
       ? (core_poll_type_override - 1)
       : current_core->poll_type;
    bool early_polling          = new_poll_type == POLL_TYPE_EARLY;
