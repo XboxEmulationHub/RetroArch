@@ -9356,11 +9356,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_OPTIONS_RESET,
-   "Seçenekleri Sıfırla"
+   "Çekirdek Seçeneklerini Sıfırla"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_OPTIONS_RESET,
-   "Tüm temel seçenekleri varsayılan değerlere ayarlar."
+   "Mevcut çekirdeğin tüm seçeneklerini varsayılan değerlere ayarlayın."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_OPTIONS_FLUSH,

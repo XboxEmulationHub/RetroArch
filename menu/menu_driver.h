@@ -391,7 +391,7 @@ typedef struct menu_ctx_driver
    void (*refresh_thumbnail_image)(void *data, unsigned i);
    void (*set_thumbnail_content)(void *data, const char *s);
    int  (*osk_ptr_at_pos)(void *data, int x, int y, unsigned width, unsigned height);
-   void (*update_savestate_thumbnail_path)(void *data, unsigned i);
+   void (*update_savestate_thumbnail_path)(void *data, size_t i);
    void (*update_savestate_thumbnail_image)(void *data);
    int (*pointer_down)(void *data, unsigned x, unsigned y, unsigned ptr,
          menu_file_list_cbs_t *cbs,
@@ -449,7 +449,7 @@ typedef struct
       char file_name[NAME_MAX_LENGTH];
    } last_start_content;
 
-   char menu_state_msg[PATH_MAX_LENGTH * 2];
+   char menu_state_msg[MENU_LABEL_MAX_LENGTH];
    /* Scratchpad variables. These are used for instance
     * by the filebrowser when having to store intermediary
     * paths (subdirs/previous dirs/current dir/path, etc).

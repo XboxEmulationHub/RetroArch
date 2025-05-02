@@ -21,6 +21,7 @@
 
 #include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
+#include "../../frontend/drivers/platform_emscripten.h"
 
 #ifdef HAVE_CONFIG_H
 #include "../../config.h"
@@ -28,9 +29,6 @@
 
 #include "../../retroarch.h"
 #include "../../verbosity.h"
-
-void platform_emscripten_get_canvas_size(int *width, int *height);
-double platform_emscripten_get_dpr(void);
 
 typedef struct
 {
@@ -41,10 +39,7 @@ typedef struct
 
 static void gfx_ctx_emscripten_webgl_swap_interval(void *data, int interval)
 {
-   if (interval == 0)
-      emscripten_set_main_loop_timing(EM_TIMING_SETIMMEDIATE, 0);
-   else
-      emscripten_set_main_loop_timing(EM_TIMING_RAF, interval);
+   platform_emscripten_set_main_loop_interval(interval);
 }
 
 static void gfx_ctx_emscripten_webgl_check_window(void *data, bool *quit,
@@ -244,6 +239,11 @@ static uint32_t gfx_ctx_emscripten_webgl_get_flags(void *data)
 
 static void gfx_ctx_emscripten_webgl_set_flags(void *data, uint32_t flags) { }
 
+static gfx_ctx_proc_t gfx_ctx_emscripten_webgl_get_proc_address(const char *symbol)
+{
+   return emscripten_webgl_get_proc_address(symbol);
+}
+
 const gfx_ctx_driver_t gfx_ctx_emscripten_webgl = {
    gfx_ctx_emscripten_webgl_init,
    gfx_ctx_emscripten_webgl_destroy,
@@ -266,7 +266,7 @@ const gfx_ctx_driver_t gfx_ctx_emscripten_webgl = {
    false,
    gfx_ctx_emscripten_webgl_swap_buffers,
    gfx_ctx_emscripten_webgl_input_driver,
-   NULL,
+   gfx_ctx_emscripten_webgl_get_proc_address,
    NULL,
    NULL,
    NULL,

@@ -364,8 +364,7 @@ command_t* command_stdin_new(void)
 #endif
 
 #if defined(EMSCRIPTEN)
-void PlatformEmscriptenCommandReply(const char *, size_t);
-int PlatformEmscriptenCommandRead(char **, size_t);
+#include "frontend/drivers/platform_emscripten.h"
 typedef struct
 {
    char command_buf[CMD_BUF_SIZE];
@@ -374,7 +373,7 @@ typedef struct
 static void emscripten_command_reply(command_t *_cmd,
    const char *s, size_t len)
 {
-   PlatformEmscriptenCommandReply(s, len);
+   platform_emscripten_command_reply(s, len);
 }
 
 static void emscripten_command_free(command_t *handle)
@@ -386,7 +385,7 @@ static void emscripten_command_free(command_t *handle)
 static void command_emscripten_poll(command_t *handle)
 {
    command_emscripten_t *emscriptencmd = (command_emscripten_t*)handle->userptr;
-   ptrdiff_t msg_len = PlatformEmscriptenCommandRead((char **)(&emscriptencmd->command_buf), CMD_BUF_SIZE);
+   ptrdiff_t msg_len = platform_emscripten_command_read((char **)(&emscriptencmd->command_buf), CMD_BUF_SIZE);
    if (msg_len == 0)
       return;
    command_parse_msg(handle, emscriptencmd->command_buf);
@@ -415,8 +414,6 @@ command_t* command_emscripten_new(void)
    return cmd;
 }
 #endif
-
-
 
 bool command_get_config_param(command_t *cmd, const char* arg)
 {
@@ -812,6 +809,35 @@ bool command_play_replay_slot(command_t *cmd, const char *arg)
 #endif
 }
 
+bool command_save_savefiles(command_t *cmd, const char* arg)
+{
+   char reply[4];
+   bool ret;
+   size_t  _len  = strlcpy(reply, "OK", sizeof(reply));
+   reply[  _len] = '\n';
+   reply[++_len] = '\0';
+   /* In the future, this should probably send each saved file path
+      to the replier. */
+   ret = command_event(CMD_EVENT_SAVE_FILES, NULL);
+   if (!ret)
+     strlcpy(reply, "NO", sizeof(reply));
+   cmd->replier(cmd, reply, _len);
+   return ret;
+}
+
+bool command_load_savefiles(command_t *cmd, const char* arg)
+{
+   char reply[4];
+   bool ret;
+   size_t  _len  = strlcpy(reply, "OK", sizeof(reply));
+   reply[  _len] = '\n';
+   reply[++_len] = '\0';
+   ret = command_event(CMD_EVENT_LOAD_FILES, NULL);
+   if (!ret)
+     strlcpy(reply, "NO", sizeof(reply));
+   cmd->replier(cmd, reply, _len);
+   return ret;
+}
 
 #if defined(HAVE_CHEEVOS)
 bool command_read_ram(command_t *cmd, const char *arg)
@@ -992,7 +1018,7 @@ bool command_get_status(command_t *cmd, const char* arg)
       _len    += strlcpy(reply + _len,
             path_basename(path_get(RARCH_PATH_BASENAME)), sizeof(reply) - _len);
       _len    += snprintf(reply + _len, sizeof(reply) - _len,
-            ",crc32=%x\n", content_get_crc());
+            ",crc32=%lx\n", (unsigned long)content_get_crc());
    }
    else
        _len = strlcpy(reply, "GET_STATUS CONTENTLESS", sizeof(reply));
