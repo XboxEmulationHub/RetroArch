@@ -2835,7 +2835,6 @@ static int action_ok_playlist_entry_collection(const char *path,
       }
       else
       {
-#ifndef IOS
          core_info = playlist_entry_get_core_info(entry);
 
          if (core_info && !string_is_empty(core_info->path))
@@ -2843,7 +2842,6 @@ static int action_ok_playlist_entry_collection(const char *path,
          else
             /* Core path is invalid - just copy what we have
              * and hope for the best... */
-#endif
          {
             strlcpy(core_path, entry->core_path, sizeof(core_path));
             playlist_resolve_path(PLAYLIST_LOAD, true, core_path, sizeof(core_path));
@@ -4012,6 +4010,40 @@ static int action_ok_remap_file_flush(const char *path,
 
    return 0;
 }
+
+static void menu_input_st_string_cb_config_file_save_as(
+      void *userdata, const char *str)
+{
+#ifdef HAVE_CONFIGFILE
+   if (str && *str)
+   {
+      rarch_setting_t *setting        = NULL;
+      struct menu_state *menu_st      = menu_state_get_ptr();
+      const char *label               = menu_st->input_dialog_kb_label;
+
+      if (!string_is_empty(label))
+         setting = menu_setting_find(label);
+
+      if (setting)
+      {
+         if (setting->value.target.string)
+            strlcpy(setting->value.target.string, str, setting->size);
+         if (setting->change_handler)
+            setting->change_handler(setting);
+         menu_setting_generic(setting, 0, false);
+      }
+      else if (!string_is_empty(label))
+         command_event(CMD_EVENT_MENU_SAVE_AS_CONFIG, (void*)str);
+   }
+
+   menu_input_dialog_end();
+#endif
+}
+
+DEFAULT_ACTION_DIALOG_START(action_ok_save_as_config,
+   msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SAVE_AS_CONFIG),
+   (unsigned)idx,
+   menu_input_st_string_cb_config_file_save_as)
 
 static void menu_input_st_string_cb_override_file_save_as(
       void *userdata, const char *str)
@@ -5728,6 +5760,7 @@ int action_ok_close_content(const char *path, const char *label, unsigned type, 
 STATIC_DEFAULT_ACTION_OK_CMD_FUNC(action_ok_cheat_apply_changes,      CMD_EVENT_CHEATS_APPLY)
 STATIC_DEFAULT_ACTION_OK_CMD_FUNC(action_ok_quit,                     CMD_EVENT_QUIT)
 STATIC_DEFAULT_ACTION_OK_CMD_FUNC(action_ok_save_new_config,          CMD_EVENT_MENU_SAVE_CONFIG)
+STATIC_DEFAULT_ACTION_OK_CMD_FUNC(action_ok_save_main_config,         CMD_EVENT_MENU_SAVE_MAIN_CONFIG)
 STATIC_DEFAULT_ACTION_OK_CMD_FUNC(action_ok_resume_content,           CMD_EVENT_RESUME)
 STATIC_DEFAULT_ACTION_OK_CMD_FUNC(action_ok_restart_content,          CMD_EVENT_RESET)
 STATIC_DEFAULT_ACTION_OK_CMD_FUNC(action_ok_screenshot,               CMD_EVENT_TAKE_SCREENSHOT)
@@ -7795,7 +7828,7 @@ static int action_ok_unload_core(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
    struct menu_state *menu_st  = menu_state_get_ptr();
-   int ret                     = generic_action_ok_command(CMD_EVENT_UNLOAD_CORE);
+   generic_action_ok_command(CMD_EVENT_UNLOAD_CORE);
    path_clear(RARCH_PATH_CORE_LAST);
    menu_st->flags             |=  MENU_ST_FLAG_ENTRIES_NEED_REFRESH
                                |  MENU_ST_FLAG_PREVENT_POPULATE;
@@ -8634,6 +8667,7 @@ static int action_ok_delete_playlist(const char *path,
 {
    playlist_t       *playlist = playlist_get_cached();
    struct menu_state *menu_st = menu_state_get_ptr();
+   menu_entry_t entry;
 
    if (!playlist)
       return -1;
@@ -8646,7 +8680,12 @@ static int action_ok_delete_playlist(const char *path,
       menu_st->driver_ctx->environ_cb(MENU_ENVIRON_RESET_HORIZONTAL_LIST,
                NULL, menu_st->userdata);
 
-   return action_cancel_pop_default(NULL, NULL, 0, 0);
+   MENU_ENTRY_INITIALIZE(entry);
+   menu_entry_get(&entry, 0, 0, NULL, false);
+
+   /* Ozone sidebar quick manager needs 'MENU_ACTION_CANCEL' instead
+    * of 'action_cancel_pop_default' to return back to sidebar cleanly */
+   return menu_entry_action(&entry, 0, MENU_ACTION_CANCEL);
 }
 
 #ifdef HAVE_NETWORKING
@@ -8959,7 +8998,7 @@ static int menu_cbs_init_bind_ok_compare_label(menu_file_list_cbs_t *cbs,
                size_t idx, size_t entry_idx);
       } temp_ok_list_t;
 
-      temp_ok_list_t ok_list[] = {
+      static const temp_ok_list_t ok_list[] = {
          {MENU_ENUM_LABEL_QUICK_MENU_START_RECORDING,          action_ok_start_recording},
          {MENU_ENUM_LABEL_QUICK_MENU_START_STREAMING,          action_ok_start_streaming},
          {MENU_ENUM_LABEL_QUICK_MENU_STOP_RECORDING,           action_ok_stop_recording},
@@ -9084,6 +9123,8 @@ static int menu_cbs_init_bind_ok_compare_label(menu_file_list_cbs_t *cbs,
          {MENU_ENUM_LABEL_QUIT_RETROARCH,                      action_ok_quit},
          {MENU_ENUM_LABEL_CLOSE_CONTENT,                       action_ok_close_content},
          {MENU_ENUM_LABEL_SAVE_NEW_CONFIG,                     action_ok_save_new_config},
+         {MENU_ENUM_LABEL_SAVE_MAIN_CONFIG,                    action_ok_save_main_config},
+         {MENU_ENUM_LABEL_SAVE_AS_CONFIG,                      action_ok_save_as_config},
          {MENU_ENUM_LABEL_HELP,                                action_ok_help},
          {MENU_ENUM_LABEL_HELP_CONTROLS,                       action_ok_help_controls},
          {MENU_ENUM_LABEL_HELP_WHAT_IS_A_CORE,                 action_ok_help_what_is_a_core},
@@ -9339,7 +9380,7 @@ static int menu_cbs_init_bind_ok_compare_label(menu_file_list_cbs_t *cbs,
                size_t idx, size_t entry_idx);
       } temp_ok_list_t;
 
-      temp_ok_list_t ok_list[] = {
+      static const temp_ok_list_t ok_list[] = {
          {MENU_ENUM_LABEL_OPEN_ARCHIVE_DETECT_CORE,            action_ok_open_archive_detect_core},
          {MENU_ENUM_LABEL_OPEN_ARCHIVE,                        action_ok_open_archive},
          {MENU_ENUM_LABEL_LOAD_ARCHIVE_DETECT_CORE,            action_ok_load_archive_detect_core},
@@ -9680,6 +9721,8 @@ static int menu_cbs_init_bind_ok_compare_type(menu_file_list_cbs_t *cbs,
                      msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_FONT_PATH))
                   || string_is_equal(menu_label,
                      msg_hash_to_str(MENU_ENUM_LABEL_XMB_FONT))
+                  || string_is_equal(menu_label,
+                     msg_hash_to_str(MENU_ENUM_LABEL_OZONE_FONT))
                   || string_is_equal(menu_label,
                      msg_hash_to_str(MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN))
                   || string_is_equal(menu_label,

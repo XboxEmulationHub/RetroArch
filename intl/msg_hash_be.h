@@ -1573,10 +1573,6 @@ MSG_HASH(
    "Увод"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_DRIVER,
-   "Драйвер увода на выкарыстанне. Некаторыя драйверы відэа прымусова ўжываюць іншыя драйверы ўвода."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_HELP_INPUT_DRIVER_UDEV,
    "Драйвер udev счытвае падзеі evdev для падтрымкі клавіятуры. Таксама маецца падтрымка зваротнага выкліку клавіятуры, мышак і тачпадаў.\nПа змаўчанні ў большасці дыстрыбутываў узлы /dev/input даступныя толькі пры наяўнасці root-правоў (рэжым 600). Вы можаце ўсталяваць udev для доступу да я[...]"
    )
@@ -2118,20 +2114,8 @@ MSG_HASH(
    "Пераключэнне паміж роднымі ды ўльтрашырокімі суперраздзяляльнасцямі."
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_CRT_SWITCH_X_AXIS_CENTERING,
-   "Цэнтраванне па восі X"
-   )
-MSG_HASH(
    MENU_ENUM_SUBLABEL_CRT_SWITCH_X_AXIS_CENTERING,
    "Прайдзіце праз гэтыя наладкі, калі выява не належным чынам адцэнтравана на дысплэі."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_CRT_SWITCH_PORCH_ADJUST,
-   "Карэкцыя імпульсу"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_CRT_SWITCH_PORCH_ADJUST,
-   "Прайдзіце праз гэтыя наладкі, каб наладзіць карэкцыю імпульсу для змены памеру выявы."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CRT_SWITCH_HIRES_MENU,
@@ -2646,10 +2630,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_ADAPTIVE_VSYNC,
    "Адаптыўны VSync"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_VIDEO_ADAPTIVE_VSYNC,
-   "VSync будзе адключацца пры зніжэнні прадукцыйнасці ніжэй мэтавай частаты абнаўлення. Дапамагае ліквідаваць запавольванні пры пагаршэнні прадукцыйнасці і падвышае энергаэфектыўнасць."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_FRAME_DELAY,
@@ -4273,7 +4253,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO,
-   "Турба"
+   "Турба-кнопкі"
    )
 
 /* Settings > Latency */
@@ -6244,10 +6224,6 @@ MSG_HASH(
    "Паказ 'Налады'"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_SETTINGS,
-   "Паказваць меню 'Налады'. (Патрабуецца перазапуск на Ozone/XMB)"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_SETTINGS_PASSWORD,
    "Пароль для адлюстравання ўкладкі 'Налады'"
    )
@@ -6260,48 +6236,24 @@ MSG_HASH(
    "Паказ 'Упадабанае'"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_FAVORITES,
-   "Паказваць меню 'Упадабанае'. (Патрабуецца перазапуск на Ozone/XMB)"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_IMAGES,
    "Паказ 'Відарысы'"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_IMAGES,
-   "Паказваць меню 'Відарысы'. (Патрабуецца перазапуск на Ozone/XMB)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_MUSIC,
    "Паказ 'Музыка'"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_MUSIC,
-   "Паказваць меню 'Музыка'. (Патрабуецца перазапуск на Ozone/XMB)"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_VIDEO,
    "Паказ 'Відэа'"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_VIDEO,
-   "Паказваць меню 'Відэа'. (Патрабуецца перазапуск на Ozone/XMB)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_NETPLAY,
    "Паказ 'Сеткавая гульня'"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_NETPLAY,
-   "Паказваць меню 'Сеткавая гульня'. (Патрабуецца перазапуск на Ozone/XMB)"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_HISTORY,
    "Паказ 'Гісторыя'"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_HISTORY,
-   "Паказваць меню нядаўняй гісторыі. (Патрабуецца перазапуск на Ozone/XMB)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_ADD_ENTRY,
@@ -6328,24 +6280,12 @@ MSG_HASH(
    "Паказ картак плэй-лістоў"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_PLAYLIST_TABS,
-   "Паказваць карткі плэй-лістоў. Не мае ўплыву на RGUI. Панэль навігацыі мае быць уключаная ў GLUI. (Патрабуецца перазапуск на Ozone/XMB)"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_EXPLORE,
    "Паказ 'Агляд'"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_EXPLORE,
-   "Паказваць опцыю даследчыка змесціва. (Патрабуецца перазапуск на Ozone/XMB)"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_CONTENTLESS_CORES,
    "Паказ 'Аўтаномныя ядры'"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_CONTENT_SHOW_CONTENTLESS_CORES,
-   "Тыпы ядраў (пры іх наяўнасці), якія адлюстроўваюцца ў меню 'Аўтаномныя ядры'. У рэжыме 'Уручную' бачнасць кожнага ядра можна наладзіць у меню 'Кіраванне ядрамі' (патрабуецца перазапуск для Ozone/XMB)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SHOW_CONTENTLESS_CORES_ALL,
@@ -11527,6 +11467,18 @@ MSG_HASH(
 /* Ozone: Settings > User Interface > Appearance */
 
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT,
+   "Шрыфт"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_FONT,
+   "Выбраць асноўны шрыфт для меню інтэрфейсу."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE,
+   "Памер шрыфта"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_OZONE_COLLAPSE_SIDEBAR,
    "Згортваць бакавую панэль"
    )
@@ -11573,6 +11525,18 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_OZONE_THUMBNAIL_SCALE_FACTOR,
    "Змяняе памер вобласці мініяцюр."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR_NONE,
+   "Няма"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR_NORMAL,
+   "Звычайна"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR_MAXIMUM,
+   "Найбольшы"
    )
 
 MSG_HASH(
@@ -14144,10 +14108,6 @@ MSG_HASH(
 MSG_HASH(
    MSG_REWIND_REACHED_END,
    "Дасягнута мяжа буфера перамоткі."
-   )
-MSG_HASH(
-   MSG_SAVED_NEW_CONFIG_TO,
-   "Новая канфігурацыя захавана ў"
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT,

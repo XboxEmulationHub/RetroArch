@@ -963,7 +963,7 @@ bool playlist_push_runtime(playlist_t *playlist,
 
    if (string_is_empty(entry->core_path))
    {
-      RARCH_ERR("Cannot push NULL or empty core path into the playlist.\n");
+      RARCH_ERR("[Playlist]: Cannot push NULL or empty core path into the playlist.\n");
       goto error;
    }
 
@@ -980,7 +980,7 @@ bool playlist_push_runtime(playlist_t *playlist,
 
    if (string_is_empty(real_core_path))
    {
-      RARCH_ERR("Cannot push NULL or empty core path into the playlist.\n");
+      RARCH_ERR("[Playlist]: Cannot push NULL or empty core path into the playlist.\n");
       goto error;
    }
 
@@ -1144,58 +1144,31 @@ enum playlist_thumbnail_name_flags playlist_get_next_thumbnail_name_flag(playlis
 void playlist_resolve_path(enum playlist_file_mode mode,
       bool is_core, char *s, size_t len)
 {
+   bool resolve_symlinks = true;
+
 #if IOS
    char tmp[PATH_MAX_LENGTH];
-   int _len = 0;
 
    if (mode == PLAYLIST_LOAD)
    {
-      if (   is_core
-          && string_starts_with(s, ":/modules/")
-          && string_ends_with(s, ".dylib"))
-      {
-         /* iOS cores used to be packaged as .dylib files in the modules
-          * directory; App Store rules require turning them into Frameworks and
-          * putting them in the Frameworks directory. Because some playlists
-          * include the old core path, we'll translate it here.
-          */
-         s[string_index_last_occurance(s, '.')] = '\0';
-         if (string_ends_with(s, "_ios"))
-            s[string_index_last_occurance(s, '_')] = '\0';
-         _len += strlcpy(tmp + _len, ":/Frameworks/", STRLEN_CONST(":/Frameworks/") + 1);
-         _len += strlcpy(tmp + _len, s + STRLEN_CONST(":/modules/"), sizeof(tmp) - _len);
-         /* iOS framework names, to quote Apple:
-          * "must contain only alphanumerics, dots, hyphens and must not end with a dot."
-          *
-          * Since core names include underscore, which is not allowed, but not dot,
-          * which is, we change underscore to dot.
-          */
-         string_replace_all_chars(tmp, '_', '.');
-         strlcpy(tmp + _len, ".framework", sizeof(tmp));
-         fill_pathname_expand_special(s, tmp, len);
-      }
-      else
-      {
-         fill_pathname_expand_special(tmp, s, sizeof(tmp));
-         strlcpy(s, tmp, len);
-      }
+      /* This is probably safe for all platforms, it should end up being just a
+       * lot of string copies without changing it */
+      fill_pathname_expand_special(tmp, s, sizeof(tmp));
+      strlcpy(s, tmp, len);
    }
    else
    {
-      /* iOS needs to call realpath here since the call
-       * above fails due to possibly buffer related issues.
-       * Try to expand the path to ensure that it gets saved
-       * correctly. The path can be abbreviated if saving to
-       * a playlist from another playlist (ex: content history to favorites)
-       */
-      char tmp2[PATH_MAX_LENGTH];
+      /* Try to expand the path to ensure that it gets saved correctly. The path
+       * can be abbreviated if saving to a playlist from another playlist (ex:
+       * content history to favorites). This is probably safe for all
+       * platforms */
       fill_pathname_expand_special(tmp, s, sizeof(tmp));
-      realpath(tmp, tmp2);
-      fill_pathname_abbreviate_special(s, tmp2, len);
+      path_resolve_realpath(tmp, sizeof(tmp), resolve_symlinks);
+      /* iOS requries this because the full path can change after app update;
+       * it's probably safe for all platforms... */
+      fill_pathname_abbreviate_special(s, tmp, len);
    }
 #else
-   bool resolve_symlinks = true;
-
    if (mode == PLAYLIST_LOAD)
       return;
 
@@ -1322,7 +1295,7 @@ bool playlist_push(playlist_t *playlist,
 
    if (string_is_empty(entry->core_path))
    {
-      RARCH_ERR("Cannot push NULL or empty core path into the playlist.\n");
+      RARCH_ERR("[Playlist]: Cannot push NULL or empty core path into the playlist.\n");
       goto error;
    }
 
@@ -1339,7 +1312,7 @@ bool playlist_push(playlist_t *playlist,
 
    if (string_is_empty(real_core_path))
    {
-      RARCH_ERR("Cannot push NULL or empty core path into the playlist.\n");
+      RARCH_ERR("[Playlist]: Cannot push NULL or empty core path into the playlist.\n");
       goto error;
    }
 
@@ -1353,7 +1326,7 @@ bool playlist_push(playlist_t *playlist,
 
       if (string_is_empty(core_name))
       {
-         RARCH_ERR("Cannot push NULL or empty core name into the playlist.\n");
+         RARCH_ERR("[Playlist]: Cannot push NULL or empty core name into the playlist.\n");
          goto error;
       }
    }
@@ -1585,13 +1558,13 @@ void playlist_write_runtime_file(playlist_t *playlist)
    if (!(file = intfstream_open_file(playlist->config.path,
          RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE)))
    {
-      RARCH_ERR("Failed to write to playlist file: \"%s\".\n", playlist->config.path);
+      RARCH_ERR("[Playlist]: Failed to write to file: \"%s\".\n", playlist->config.path);
       return;
    }
 
    if (!(writer = rjsonwriter_open_stream(file)))
    {
-      RARCH_ERR("Failed to create JSON writer\n");
+      RARCH_ERR("[Playlist]: Failed to create JSON writer\n");
       goto end;
    }
 
@@ -1724,7 +1697,7 @@ void playlist_write_runtime_file(playlist_t *playlist)
                                | CNT_PLAYLIST_FLG_OLD_FMT
                                | CNT_PLAYLIST_FLG_COMPRESSED);
 
-   RARCH_LOG("[Playlist]: Written to playlist file: \"%s\".\n", playlist->config.path);
+   RARCH_LOG("[Playlist]: Written to file: \"%s\".\n", playlist->config.path);
 end:
    intfstream_close(file);
    free(file);
@@ -1747,11 +1720,13 @@ void playlist_write_file(playlist_t *playlist)
    bool pl_old_fmt      = ((playlist->flags & CNT_PLAYLIST_FLG_OLD_FMT)    > 0);
 
    if (   !playlist
-       || !((playlist->flags & CNT_PLAYLIST_FLG_MOD)
+       || string_is_empty(playlist->config.path)
+       || !( (playlist->flags & CNT_PLAYLIST_FLG_MOD)
 #if defined(HAVE_ZLIB)
-       || (pl_compressed != playlist->config.compress)
+          || (pl_compressed != playlist->config.compress)
 #endif
-       || (pl_old_fmt    != playlist->config.old_format)))
+          || (pl_old_fmt    != playlist->config.old_format)
+          ))
       return;
 
 #if defined(HAVE_ZLIB)
@@ -1766,7 +1741,7 @@ void playlist_write_file(playlist_t *playlist)
 
    if (!file)
    {
-      RARCH_ERR("Failed to write to playlist file: \"%s\".\n", playlist->config.path);
+      RARCH_ERR("[Playlist]: Failed to write to file: \"%s\".\n", playlist->config.path);
       return;
    }
 
@@ -1811,7 +1786,7 @@ void playlist_write_file(playlist_t *playlist)
       rjsonwriter_t* writer = rjsonwriter_open_stream(file);
       if (!writer)
       {
-         RARCH_ERR("Failed to create JSON writer\n");
+         RARCH_ERR("[Playlist]: Failed to create JSON writer\n");
          goto end;
       }
       /*  When compressing playlists, human readability
@@ -2115,7 +2090,7 @@ void playlist_write_file(playlist_t *playlist)
 
       if (!rjsonwriter_free(writer))
       {
-         RARCH_ERR("Failed to write to playlist file: \"%s\".\n", playlist->config.path);
+         RARCH_ERR("[Playlist]: Failed to write to file: \"%s\".\n", playlist->config.path);
       }
 
       playlist->flags  &= ~(CNT_PLAYLIST_FLG_OLD_FMT);
@@ -2128,7 +2103,7 @@ void playlist_write_file(playlist_t *playlist)
    else
       playlist->flags  &= ~(CNT_PLAYLIST_FLG_COMPRESSED);
 
-   RARCH_LOG("[Playlist]: Written to playlist file: \"%s\".\n", playlist->config.path);
+   RARCH_LOG("[Playlist]: Written to file: \"%s\".\n", playlist->config.path);
 end:
    intfstream_close(file);
    free(file);
@@ -2295,7 +2270,7 @@ static bool JSONStartObjectHandler(void *context)
             /* Hit max item limit.
              * Note: We can't just abort here, since there may
              * be more metadata to read at the end of the file... */
-            RARCH_WARN("JSON file contains more entries than current playlist capacity. Excess entries will be discarded.\n");
+            RARCH_WARN("[Playlist]: JSON file contains more entries than current playlist capacity. Excess entries will be discarded.\n");
             pCtx->flags             |= JSON_CTX_FLG_CAPACITY_EXCEEDED;
             pCtx->current_entry      = NULL;
             /* In addition, since we are discarding excess entries,
@@ -2652,7 +2627,7 @@ static bool playlist_read_file(playlist_t *playlist)
 
       if (!(parser = rjson_open_stream(file)))
       {
-         RARCH_ERR("Failed to create JSON parser\n");
+         RARCH_ERR("[Playlist]: Failed to create JSON parser\n");
          goto end;
       }
 
@@ -2676,15 +2651,15 @@ static bool playlist_read_file(playlist_t *playlist)
       {
          if (context.flags & JSON_CTX_FLG_OOM)
          {
-            RARCH_WARN("Ran out of memory while parsing JSON playlist\n");
+            RARCH_WARN("[Playlist]: Ran out of memory while parsing JSON playlist\n");
             res = false;
          }
          else
          {
-            RARCH_WARN("Error parsing chunk:\n---snip---\n%.*s\n---snip---\n",
+            RARCH_WARN("[Playlist]: Error parsing chunk:\n---snip---\n%.*s\n---snip---\n",
                   rjson_get_source_context_len(parser),
                   rjson_get_source_context_buf(parser));
-            RARCH_WARN("Error: Invalid JSON at line %d, column %d - %s.\n",
+            RARCH_WARN("[Playlist]: Error: Invalid JSON at line %d, column %d - %s.\n",
                   (int)rjson_get_source_line(parser),
                   (int)rjson_get_source_column(parser),
                   (*rjson_get_error(parser) ? rjson_get_error(parser) : "format error"));

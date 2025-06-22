@@ -2110,7 +2110,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
                }
             }
 
-            RARCH_LOG("[Environ]: SET_INPUT_DESCRIPTORS:\n");
+            RARCH_LOG("[Environ]: SET_INPUT_DESCRIPTORS.\n");
 
             {
                unsigned log_level = settings->uints.libretro_log_level;
@@ -2135,6 +2135,19 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
                         RARCH_DBG("      \"%s\" => \"%s\"\n",
                               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_JOYPAD_B + bind_index),
+                              description);
+                     }
+
+                     for (retro_id = RARCH_FIRST_CUSTOM_BIND; retro_id < RARCH_ANALOG_BIND_LIST_END; retro_id++)
+                     {
+                        unsigned bind_index     = input_config_bind_order[retro_id];
+                        const char *description = sys_info->input_desc_btn[mapped_port][bind_index];
+
+                        if (!description)
+                           continue;
+
+                        RARCH_DBG("      \"%s\" => \"%s\"\n",
+                              msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_ANALOG_LEFT_X_PLUS + bind_index - RARCH_FIRST_CUSTOM_BIND),
                               description);
                      }
                   }
@@ -5566,12 +5579,11 @@ static enum runloop_state_enum runloop_check_state(
 
 #ifdef HAVE_MENU
    last_input                       = current_bits;
-   if (
-         ((menu_toggle_gamepad_combo != INPUT_COMBO_NONE)
-          && input_driver_button_combo(
-             menu_toggle_gamepad_combo,
-             current_time,
-             &last_input)))
+   if (     menu_toggle_gamepad_combo != INPUT_COMBO_NONE
+         && input_driver_button_combo(
+               menu_toggle_gamepad_combo,
+               current_time,
+               &last_input))
       BIT256_SET(current_bits, RARCH_MENU_TOGGLE);
 
    if (menu_st->input_driver_flushing_input > 0)
@@ -5627,21 +5639,13 @@ static enum runloop_state_enum runloop_check_state(
       BIT256_CLEAR_ALL(current_bits);
 #endif
 
-   /* Check fullscreen hotkey */
-   HOTKEY_CHECK(RARCH_FULLSCREEN_TOGGLE_KEY, CMD_EVENT_FULLSCREEN_TOGGLE, true, NULL);
-
-   /* Check turbo toggle hotkey */
-   HOTKEY_CHECK(RARCH_TURBO_FIRE_TOGGLE, CMD_EVENT_TURBO_FIRE_TOGGLE, true, NULL);
-
-   /* Check mouse grab hotkey */
-   HOTKEY_CHECK(RARCH_GRAB_MOUSE_TOGGLE, CMD_EVENT_GRAB_MOUSE_TOGGLE, true, NULL);
-
    /* Automatic mouse grab on focus */
    if (     settings->bools.input_auto_mouse_grab
          && (is_focused)
          && (is_focused != (((runloop_st->flags & RUNLOOP_FLAG_FOCUSED)) > 0))
          && !(input_st->flags & INP_FLAG_GRAB_MOUSE_STATE))
       command_event(CMD_EVENT_GRAB_MOUSE_TOGGLE, NULL);
+
    if (is_focused)
       runloop_st->flags |=  RUNLOOP_FLAG_FOCUSED;
    else
@@ -6106,6 +6110,15 @@ static enum runloop_state_enum runloop_check_state(
       }
    }
 
+   /* Check fullscreen hotkey */
+   HOTKEY_CHECK(RARCH_FULLSCREEN_TOGGLE_KEY, CMD_EVENT_FULLSCREEN_TOGGLE, true, NULL);
+
+   /* Check turbo toggle hotkey */
+   HOTKEY_CHECK(RARCH_TURBO_FIRE_TOGGLE, CMD_EVENT_TURBO_FIRE_TOGGLE, true, NULL);
+
+   /* Check mouse grab hotkey */
+   HOTKEY_CHECK(RARCH_GRAB_MOUSE_TOGGLE, CMD_EVENT_GRAB_MOUSE_TOGGLE, true, NULL);
+
    /* Check Game Focus hotkey */
    {
       enum input_game_focus_cmd_type game_focus_cmd = GAME_FOCUS_CMD_TOGGLE;
@@ -6287,6 +6300,9 @@ static enum runloop_state_enum runloop_check_state(
    /* Stop checking the rest of the hotkeys if menu is alive */
    if (menu_st->flags & MENU_ST_FLAG_ALIVE)
       return RUNLOOP_STATE_MENU;
+   /* Or when flushing input */
+   if (menu_st->input_driver_flushing_input)
+      goto end;
 #endif
 
 #ifdef HAVE_NETWORKING
@@ -6883,6 +6899,7 @@ static enum runloop_state_enum runloop_check_state(
    }
 #endif
 
+end:
    if (runloop_paused)
    {
       cbs->poll_cb();
@@ -7837,7 +7854,7 @@ void runloop_path_set_basename(const char *path)
    runloop_state_t *runloop_st = &runloop_state;
    char *dst                   = NULL;
 
-   path_set(RARCH_PATH_CONTENT,  path);
+   path_set(RARCH_PATH_CONTENT, path);
    strlcpy(runloop_st->runtime_content_path_basename, path,
          sizeof(runloop_st->runtime_content_path_basename));
 
@@ -7867,7 +7884,10 @@ void runloop_path_set_basename(const char *path)
             "", sizeof(runloop_st->runtime_content_path_basename));
 #endif
 
-   if ((dst = strrchr(runloop_st->runtime_content_path_basename, '.')))
+   /* Truncate path to last dot, but not when the path is
+    * relative and begins with a dot. */
+   if (     (dst = strrchr(runloop_st->runtime_content_path_basename, '.'))
+         && (dst - runloop_st->runtime_content_path_basename > 0))
       *dst = '\0';
 }
 
@@ -7917,14 +7937,14 @@ void runloop_path_set_redirect(settings_t *settings,
    char new_savestate_dir[DIR_MAX_LENGTH];
    char intermediate_savefile_dir[DIR_MAX_LENGTH];
    char intermediate_savestate_dir[DIR_MAX_LENGTH];
-   runloop_state_t *runloop_st            = &runloop_state;
-   struct retro_system_info *sysinfo      = &runloop_st->system.info;
-   bool sort_savefiles_enable             = settings->bools.sort_savefiles_enable;
-   bool sort_savefiles_by_content_enable  = settings->bools.sort_savefiles_by_content_enable;
-   bool sort_savestates_enable            = settings->bools.sort_savestates_enable;
-   bool sort_savestates_by_content_enable = settings->bools.sort_savestates_by_content_enable;
-   bool savefiles_in_content_dir          = settings->bools.savefiles_in_content_dir;
-   bool savestates_in_content_dir         = settings->bools.savestates_in_content_dir;
+   runloop_state_t *runloop_st       = &runloop_state;
+   struct retro_system_info *sysinfo = &runloop_st->system.info;
+   bool sort_savefiles               = settings->bools.sort_savefiles_enable;
+   bool sort_savefiles_by_content    = settings->bools.sort_savefiles_by_content_enable;
+   bool sort_savestates              = settings->bools.sort_savestates_enable;
+   bool sort_savestates_by_content   = settings->bools.sort_savestates_by_content_enable;
+   bool savefiles_in_content_dir     = settings->bools.savefiles_in_content_dir;
+   bool savestates_in_content_dir    = settings->bools.savestates_in_content_dir;
 
    content_dir_name[0] = '\0';
 
@@ -7935,9 +7955,8 @@ void runloop_path_set_redirect(settings_t *settings,
 
    /* Get content directory name, if per-content-directory
     * saves/states are enabled */
-   if ((   sort_savefiles_by_content_enable
-        || sort_savestates_by_content_enable)
-       && !string_is_empty(runloop_st->runtime_content_path_basename))
+   if (     (sort_savefiles_by_content || sort_savestates_by_content)
+         && !string_is_empty(runloop_st->runtime_content_path_basename))
       fill_pathname_parent_dir_name(content_dir_name,
             runloop_st->runtime_content_path_basename,
             sizeof(content_dir_name));
@@ -7956,8 +7975,8 @@ void runloop_path_set_redirect(settings_t *settings,
    }
 
    /* Set savestate directory if empty based on content directory */
-   if (   string_is_empty(intermediate_savestate_dir)
-       || savestates_in_content_dir)
+   if (     string_is_empty(intermediate_savestate_dir)
+         || savestates_in_content_dir)
    {
       fill_pathname_basedir(intermediate_savestate_dir,
             runloop_st->runtime_content_path_basename,
@@ -7976,74 +7995,75 @@ void runloop_path_set_redirect(settings_t *settings,
    {
 #ifdef HAVE_MENU
       if (!string_is_equal(sysinfo->library_name,
-               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NO_CORE)))
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NO_CORE)))
 #endif
       {
          /* Per-core and/or per-content-directory saves */
-         if ((sort_savefiles_enable
-              || sort_savefiles_by_content_enable)
-             && !string_is_empty(new_savefile_dir))
+         if (     (sort_savefiles || sort_savefiles_by_content)
+               && !string_is_empty(new_savefile_dir))
          {
             /* Append content directory name to save location */
-            if (sort_savefiles_by_content_enable)
-               fill_pathname_join_special(new_savefile_dir,
-                  intermediate_savefile_dir,
-                  content_dir_name,
-                  sizeof(new_savefile_dir));
+            if (sort_savefiles_by_content)
+               fill_pathname_join_special(
+                     new_savefile_dir,
+                     intermediate_savefile_dir,
+                     content_dir_name,
+                     sizeof(new_savefile_dir));
 
             /* Append library_name to the save location */
-            if (sort_savefiles_enable)
-               fill_pathname_join(new_savefile_dir,
-                  new_savefile_dir,
-                  sysinfo->library_name,
-                  sizeof(new_savefile_dir));
+            if (sort_savefiles)
+               fill_pathname_join(
+                     new_savefile_dir,
+                     new_savefile_dir,
+                     sysinfo->library_name,
+                     sizeof(new_savefile_dir));
 
             /* If path doesn't exist, try to create it,
              * if everything fails revert to the original path. */
-            if (!path_is_directory(new_savefile_dir))
-               if (!path_mkdir(new_savefile_dir))
-               {
-                  RARCH_LOG("%s %s\n",
-                            msg_hash_to_str(MSG_REVERTING_SAVEFILE_DIRECTORY_TO),
-                            intermediate_savefile_dir);
-                  strlcpy(new_savefile_dir,
-                        intermediate_savefile_dir,
-                        sizeof(new_savefile_dir));
-               }
+            if (     !path_is_directory(new_savefile_dir)
+                  && !path_mkdir(new_savefile_dir))
+            {
+               RARCH_LOG("%s %s\n",
+                     msg_hash_to_str(MSG_REVERTING_SAVEFILE_DIRECTORY_TO),
+                     intermediate_savefile_dir);
+               strlcpy(new_savefile_dir,
+                     intermediate_savefile_dir,
+                     sizeof(new_savefile_dir));
+            }
          }
 
          /* Per-core and/or per-content-directory savestates */
-         if ((sort_savestates_enable || sort_savestates_by_content_enable)
-             && !string_is_empty(new_savestate_dir))
+         if (     (sort_savestates || sort_savestates_by_content)
+               && !string_is_empty(new_savestate_dir))
          {
             /* Append content directory name to savestate location */
-            if (sort_savestates_by_content_enable)
+            if (sort_savestates_by_content)
                fill_pathname_join_special(
-                  new_savestate_dir,
-                  intermediate_savestate_dir,
-                  content_dir_name,
-                  sizeof(new_savestate_dir));
+                     new_savestate_dir,
+                     intermediate_savestate_dir,
+                     content_dir_name,
+                     sizeof(new_savestate_dir));
 
             /* Append library_name to the savestate location */
-            if (sort_savestates_enable)
+            if (sort_savestates)
                fill_pathname_join(
-                  new_savestate_dir,
-                  new_savestate_dir,
-                  sysinfo->library_name,
-                  sizeof(new_savestate_dir));
+                     new_savestate_dir,
+                     new_savestate_dir,
+                     sysinfo->library_name,
+                     sizeof(new_savestate_dir));
 
             /* If path doesn't exist, try to create it.
              * If everything fails, revert to the original path. */
-            if (!path_is_directory(new_savestate_dir))
-               if (!path_mkdir(new_savestate_dir))
-               {
-                  RARCH_LOG("%s %s\n",
-                            msg_hash_to_str(MSG_REVERTING_SAVESTATE_DIRECTORY_TO),
-                            intermediate_savestate_dir);
-                  strlcpy(new_savestate_dir,
-                          intermediate_savestate_dir,
-                          sizeof(new_savestate_dir));
-               }
+            if (     !path_is_directory(new_savestate_dir)
+                  && !path_mkdir(new_savestate_dir))
+            {
+               RARCH_LOG("%s %s\n",
+                     msg_hash_to_str(MSG_REVERTING_SAVESTATE_DIRECTORY_TO),
+                     intermediate_savestate_dir);
+               strlcpy(new_savestate_dir,
+                     intermediate_savestate_dir,
+                     sizeof(new_savestate_dir));
+            }
          }
       }
    }

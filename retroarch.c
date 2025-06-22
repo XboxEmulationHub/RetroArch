@@ -2,7 +2,7 @@
  *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
  *  Copyright (C) 2011-2021 - Daniel De Matteis
  *  Copyright (C) 2012-2015 - Michael Lelli
- *  Copyright (C) 2014-2017 - Jean-Andr� Santoni
+ *  Copyright (C) 2014-2017 - Jean-Andr  Santoni
  *  Copyright (C) 2016-2019 - Brad Parker
  *
  *  RetroArch is free software: you can redistribute it and/or modify it under the terms
@@ -47,6 +47,10 @@
 #if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
 #include <objbase.h>
 #include <process.h>
+#endif
+
+#if defined(WEBOS)
+#include <sys/resource.h>
 #endif
 
 #include <stdio.h>
@@ -324,6 +328,7 @@ struct rarch_state
    char path_libretro[PATH_MAX_LENGTH];
    char path_libretro_last[PATH_MAX_LENGTH];
    char path_config_file[PATH_MAX_LENGTH];
+   char path_config_default_file[PATH_MAX_LENGTH];
    char path_config_append_file[PATH_MAX_LENGTH];
    char path_config_override_file[PATH_MAX_LENGTH];
    char path_core_options_file[PATH_MAX_LENGTH];
@@ -1979,8 +1984,8 @@ bool driver_ctl(enum driver_ctl_state state, void *data)
             video_monitor_set_refresh_rate(*hz);
 
             /* Sets audio monitor rate to new value. */
-            audio_st->source_ratio_original   =
-            audio_st->source_ratio_current    =
+            audio_st->src_ratio_orig   =
+            audio_st->src_ratio_curr   =
             (double)audio_output_sample_rate / audio_st->input;
 
             driver_adjust_system_rates(runloop_st, video_st, settings);
@@ -2535,13 +2540,13 @@ bool path_set(enum rarch_path_type type, const char *path)
          strlcpy(p_rarch->path_default_shader_preset, path,
                sizeof(p_rarch->path_default_shader_preset));
          break;
-      case RARCH_PATH_CONFIG_APPEND:
-         strlcpy(p_rarch->path_config_append_file, path,
-               sizeof(p_rarch->path_config_append_file));
-         break;
       case RARCH_PATH_CONFIG:
          strlcpy(p_rarch->path_config_file, path,
                sizeof(p_rarch->path_config_file));
+         break;
+      case RARCH_PATH_CONFIG_APPEND:
+         strlcpy(p_rarch->path_config_append_file, path,
+               sizeof(p_rarch->path_config_append_file));
          break;
       case RARCH_PATH_CONFIG_OVERRIDE:
          strlcpy(p_rarch->path_config_override_file, path,
@@ -4117,36 +4122,48 @@ bool command_event(enum event_command cmd, void *data)
 
             /* Note: Sorting is disabled by default for
              * all content history playlists */
-            RARCH_LOG("[Playlist]: %s: \"%s\".\n", _msg,
-                  path_content_history);
-            playlist_config_set_path(&playlist_config, path_content_history);
-            g_defaults.content_history = playlist_init(&playlist_config);
-            playlist_set_sort_mode(
-                  g_defaults.content_history, PLAYLIST_SORT_MODE_OFF);
-
-            RARCH_LOG("[Playlist]: %s: \"%s\".\n", _msg,
-                  path_content_music_history);
-            playlist_config_set_path(&playlist_config, path_content_music_history);
-            g_defaults.music_history = playlist_init(&playlist_config);
-            playlist_set_sort_mode(
-                  g_defaults.music_history, PLAYLIST_SORT_MODE_OFF);
-
-#if defined(HAVE_FFMPEG) || defined(HAVE_MPV)
-            RARCH_LOG("[Playlist]: %s: \"%s\".\n", _msg,
-                  path_content_video_history);
-            playlist_config_set_path(&playlist_config, path_content_video_history);
-            g_defaults.video_history = playlist_init(&playlist_config);
-            playlist_set_sort_mode(
-                  g_defaults.video_history, PLAYLIST_SORT_MODE_OFF);
-#endif
+            if (!string_is_empty(path_content_history))
+            {
+               RARCH_LOG("[Playlist]: %s: \"%s\".\n", _msg,
+                     path_content_history);
+               playlist_config_set_path(&playlist_config, path_content_history);
+               g_defaults.content_history = playlist_init(&playlist_config);
+               playlist_set_sort_mode(
+                     g_defaults.content_history, PLAYLIST_SORT_MODE_OFF);
+            }
 
 #ifdef HAVE_IMAGEVIEWER
-            RARCH_LOG("[Playlist]: %s: \"%s\".\n", _msg,
-                  path_content_image_history);
-            playlist_config_set_path(&playlist_config, path_content_image_history);
-            g_defaults.image_history = playlist_init(&playlist_config);
-            playlist_set_sort_mode(
-                  g_defaults.image_history, PLAYLIST_SORT_MODE_OFF);
+            if (!string_is_empty(path_content_image_history))
+            {
+               RARCH_LOG("[Playlist]: %s: \"%s\".\n", _msg,
+                     path_content_image_history);
+               playlist_config_set_path(&playlist_config, path_content_image_history);
+               g_defaults.image_history = playlist_init(&playlist_config);
+               playlist_set_sort_mode(
+                     g_defaults.image_history, PLAYLIST_SORT_MODE_OFF);
+            }
+#endif
+
+            if (!string_is_empty(path_content_music_history))
+            {
+               RARCH_LOG("[Playlist]: %s: \"%s\".\n", _msg,
+                     path_content_music_history);
+               playlist_config_set_path(&playlist_config, path_content_music_history);
+               g_defaults.music_history = playlist_init(&playlist_config);
+               playlist_set_sort_mode(
+                     g_defaults.music_history, PLAYLIST_SORT_MODE_OFF);
+            }
+
+#if defined(HAVE_FFMPEG) || defined(HAVE_MPV)
+            if (!string_is_empty(path_content_video_history))
+            {
+               RARCH_LOG("[Playlist]: %s: \"%s\".\n", _msg,
+                     path_content_video_history);
+               playlist_config_set_path(&playlist_config, path_content_video_history);
+               g_defaults.video_history = playlist_init(&playlist_config);
+               playlist_set_sort_mode(
+                     g_defaults.video_history, PLAYLIST_SORT_MODE_OFF);
+            }
 #endif
          }
          break;
@@ -4644,6 +4661,36 @@ bool command_event(enum event_command cmd, void *data)
                   p_rarch->path_config_file))
             return false;
 #endif
+         break;
+      case CMD_EVENT_MENU_SAVE_AS_CONFIG:
+         {
+            char as_path[PATH_MAX_LENGTH];
+            char conf_path[PATH_MAX_LENGTH];
+
+            snprintf(as_path, sizeof(as_path), "%s", (char *)data);
+
+            /* Prepend '.cfg' extension if missing */
+            if (!string_ends_with(as_path, FILE_PATH_CONFIG_EXTENSION))
+               strlcat(as_path, FILE_PATH_CONFIG_EXTENSION, sizeof(as_path));
+
+            fill_pathname_join(conf_path,
+                  settings->paths.directory_menu_config,
+                  as_path, sizeof(conf_path));
+
+            if (!string_is_empty(conf_path))
+               path_set(RARCH_PATH_CONFIG, conf_path);
+#ifdef HAVE_CONFIGFILE
+            command_event_save_current_config(OVERRIDE_NONE);
+#endif
+         }
+         break;
+      case CMD_EVENT_MENU_SAVE_MAIN_CONFIG:
+         {
+#ifdef HAVE_CONFIGFILE
+            open_default_config_file();
+            command_event_save_current_config(OVERRIDE_NONE);
+#endif
+         }
          break;
       case CMD_EVENT_PAUSE_TOGGLE:
          {
@@ -5893,6 +5940,16 @@ int rarch_main(int argc, char *argv[], void *data)
    }
 #endif
 
+#if defined(WEBOS)
+   // compatibility with webOS 3 - 5
+   if(getenv("XDG_RUNTIME_DIR") == NULL) {
+      setenv("XDG_RUNTIME_DIR", "/tmp/xdg", 0);
+    }
+
+   struct rlimit limit = {0, 0};
+   setrlimit(RLIMIT_CORE, &limit);
+#endif
+
    rtime_init();
 
 #if defined(ANDROID)
@@ -7007,8 +7064,11 @@ static bool retroarch_parse_input_and_config(
       BSV_MOVIE_ARG NETPLAY_ARG DYNAMIC_ARG FFMPEG_RECORD_ARG CONFIG_FILE_ARG;
 
 #if defined(WEBOS)
-   argv                            = &(argv[1]);
-   argc                            = argc - 1;
+   if (argc > 1 && argv[1][0] == '{')
+   {
+      argv                            = &(argv[1]);
+      argc                            = argc - 1;
+   }
 #endif
 
 #ifndef HAVE_MENU
@@ -8655,6 +8715,7 @@ enum retro_language retroarch_get_language_from_iso(const char *iso639)
       {"be", RETRO_LANGUAGE_BELARUSIAN},
       {"gl", RETRO_LANGUAGE_GALICIAN},
       {"no", RETRO_LANGUAGE_NORWEGIAN},
+      {"ga", RETRO_LANGUAGE_IRISH},
    };
 
    if (string_is_empty(iso639))
@@ -8695,7 +8756,7 @@ void retroarch_favorites_init(void)
 
    retroarch_favorites_deinit();
 
-   if (!playlist_config.capacity)
+   if (!playlist_config.capacity || string_is_empty(path_content_favorites))
       return;
 
    RARCH_LOG("[Playlist]: %s: \"%s\".\n",

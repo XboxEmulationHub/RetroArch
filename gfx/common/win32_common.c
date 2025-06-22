@@ -723,7 +723,6 @@ static LRESULT win32_menu_loop(HWND owner, WPARAM wparam)
             char win32_file[PATH_MAX_LENGTH] = {0};
             settings_t *settings    = config_get_ptr();
             char    *title_cp       = NULL;
-            size_t converted        = 0;
             const char *extensions  = "Libretro core (.dll)\0*.dll\0All Files\0*.*\0\0";
             const char *title       = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_LIST);
             const char *initial_dir = settings->paths.directory_libretro;
@@ -762,7 +761,6 @@ static LRESULT win32_menu_loop(HWND owner, WPARAM wparam)
             char win32_file[PATH_MAX_LENGTH] = {0};
             char *title_cp          = NULL;
             wchar_t *title_wide     = NULL;
-            size_t converted        = 0;
             const char *extensions  = "All Files (*.*)\0*.*\0\0";
             const char *title       = msg_hash_to_str(
                   MENU_ENUM_LABEL_VALUE_LOAD_CONTENT_LIST);
@@ -1088,10 +1086,7 @@ static LRESULT CALLBACK wnd_proc_common(
          }
          break;
       case WM_COMMAND:
-         {
-            settings_t *settings     = config_get_ptr();
-            win32_menu_loop(main_window.hwnd, wparam);
-         }
+         win32_menu_loop(main_window.hwnd, wparam);
          break;
    }
    return 0;
@@ -1190,16 +1185,18 @@ static LRESULT CALLBACK wnd_proc_common_internal(HWND hwnd,
             g_win32_flags |= WIN32_CMN_FLAG_TASKBAR_CREATED;
 #endif
          break;
-#ifdef HAVE_CLIP_WINDOW
       case WM_SETFOCUS:
+#ifdef HAVE_CLIP_WINDOW
          if (input_state_get_ptr()->flags & INP_FLAG_GRAB_MOUSE_STATE)
             win32_clip_window(true);
+#endif
          break;
       case WM_KILLFOCUS:
+#ifdef HAVE_CLIP_WINDOW
          if (input_state_get_ptr()->flags & INP_FLAG_GRAB_MOUSE_STATE)
             win32_clip_window(false);
-         break;
 #endif
+         break;
       case WM_DISPLAYCHANGE:  /* Fix size after display mode switch when using SR */
          {
             HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
@@ -1463,16 +1460,34 @@ static LRESULT CALLBACK wnd_proc_common_dinput_internal(HWND hwnd,
             g_win32_flags |= WIN32_CMN_FLAG_TASKBAR_CREATED;
 #endif
          break;
-#ifdef HAVE_CLIP_WINDOW
       case WM_SETFOCUS:
+#ifdef HAVE_CLIP_WINDOW
          if (input_state_get_ptr()->flags & INP_FLAG_GRAB_MOUSE_STATE)
             win32_clip_window(true);
+#endif
+#if !defined(_XBOX)
+         {
+            void* input_data = (void*)(LONG_PTR)GetWindowLongPtr(main_window.hwnd, GWLP_USERDATA);
+            if (input_data && dinput_handle_message(input_data,
+                     message, wparam, lparam))
+               return 0;
+         }
+#endif
          break;
       case WM_KILLFOCUS:
+#ifdef HAVE_CLIP_WINDOW
          if (input_state_get_ptr()->flags & INP_FLAG_GRAB_MOUSE_STATE)
             win32_clip_window(false);
-         break;
 #endif
+#if !defined(_XBOX)
+         {
+            void* input_data = (void*)(LONG_PTR)GetWindowLongPtr(main_window.hwnd, GWLP_USERDATA);
+            if (input_data && dinput_handle_message(input_data,
+                     message, wparam, lparam))
+               return 0;
+         }
+#endif
+         break;
       case WM_DISPLAYCHANGE:  /* Fix size after display mode switch when using SR */
          {
             HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);

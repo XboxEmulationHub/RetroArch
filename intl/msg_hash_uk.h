@@ -568,6 +568,10 @@ MSG_HASH(
    "Блокувати встановлене ядро"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_CORE_LOCK,
+   "Запобігти зміні встановлених в даний момент. Може використовуватися для уникнення небажаних оновлень, коли контент вимагає конкретної версії ядра (наприклад,. Аркада ПЗУ набору) або власний формат стану \"збереження\"."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_SET_STANDALONE_EXEMPT,
    "Виключити з меню 'Автономні ядра'"
    )
@@ -649,6 +653,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_JIT_AVAILABLE,
    "JIT доступно"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_BUNDLE_IDENTIFIER,
+   "Ідентифікатор Комплекта"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_FRONTEND_IDENTIFIER,
@@ -1128,6 +1136,22 @@ MSG_HASH(
    "Зберегти поточну конфігурацію в окремий файл."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SAVE_AS_CONFIG,
+   "Зберегти Конфігурацію Як"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_SAVE_AS_CONFIG,
+   "Зберегти поточну конфігурацію як файл користувацької конфігурації."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SAVE_MAIN_CONFIG,
+   "Зберегти Основну Конфігурацію"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_SAVE_MAIN_CONFIG,
+   "Зберегти поточну конфігурацію як основну конфігурацію."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESET_TO_DEFAULT_CONFIG,
    "Відновити стандартні налаштування"
    )
@@ -1578,7 +1602,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_DRIVER,
-   "Драйвер вводу для використання. Деякі відеодрайвери примусово використовують інший драйвер вводу."
+   "Введіть драйвер для подальшого використання. Деякі відео-драйвери змушують іншого вхідного драйвера. (Необхідно перезавантажити)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_INPUT_DRIVER_UDEV,
@@ -2131,7 +2155,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CRT_SWITCH_X_AXIS_CENTERING,
-   "Центрування по осі X"
+   "Горизонтальний центрування"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CRT_SWITCH_X_AXIS_CENTERING,
@@ -2139,11 +2163,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CRT_SWITCH_PORCH_ADJUST,
-   "Корекція імпульсу"
+   "Горизонтальний розмір"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CRT_SWITCH_PORCH_ADJUST,
-   "Оберіть значення, щоб налаштувати параметри імпульсу для зміни розміру зображення."
+   "Перемикання між цими варіантами, щоб змінити горизонтальні налаштування для зміни розміру зображення."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CRT_SWITCH_VERTICAL_ADJUST,
+   "Вертикальне Центрування"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CRT_SWITCH_HIRES_MENU,
@@ -2677,7 +2705,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_ADAPTIVE_VSYNC,
-   "VSync буде увімкнено, поки продуктивність не знизиться за межі цільового курсу. Може мінімізувати заїкання, коли продуктивність падає нижче в режимі реального часу, і бути більш енергоефективною."
+   "VSync буде увімкнена, доки продуктивність не впаде нижче цільової частоти оновлення. Може зменшити затримки та ривки зображення, коли продуктивність падає нижче реального часу, а також бути більш енергоефективною. Несумісна з опцією 'Затримка Кадру'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_FRAME_DELAY,
@@ -4357,7 +4385,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO,
-   "Турбо"
+   "Турбо Кнопки"
    )
 
 /* Settings > Latency */
@@ -6309,7 +6337,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_SETTINGS,
-   "Показувати меню 'Параметри'. (Для перезапуску необхідно перезавантажити пристрій Ozone/XMB)"
+   "Показувати меню \"Налаштування\"."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_SETTINGS_PASSWORD,
@@ -6325,7 +6353,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_FAVORITES,
-   "Показувати меню «Улюблене». (Для перезавантаження потрібен Ozone/XMB)"
+   "Показувати меню \"Уподобання\"."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_FAVORITES_FIRST,
+   "Показати улюблені спочатку"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CONTENT_SHOW_FAVORITES_FIRST,
+   "Показувати 'Вибране' перед 'Історію'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_IMAGES,
@@ -6333,7 +6369,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_IMAGES,
-   "Відображати меню 'Зображення'. (Перезапуск необхідного для Ozone/XMB)"
+   "Показати меню \"Зображення\"."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_MUSIC,
@@ -6341,7 +6377,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_MUSIC,
-   "Показувати меню 'Музика'. (Потрібно перезапустити з Ozone/XMB)"
+   "Показувати меню \"Музика\"."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_VIDEO,
@@ -6349,7 +6385,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_VIDEO,
-   "Показувати меню 'Відео'. (Для перезапуску потрібен Ozone/XMB)"
+   "Показати меню \"Відео\"."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_NETPLAY,
@@ -6357,7 +6393,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_NETPLAY,
-   "Відображати меню 'Netplay'. (Перезапустіть необхідну для Ozone/XMB)"
+   "Показати меню 'Netplay'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_HISTORY,
@@ -6365,11 +6401,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_HISTORY,
-   "Показати останнє меню історії. (Для перезапуску, потрібен Ozone/XMB)"
+   "Показати нещодавнє меню історії."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_ADD_ENTRY,
    "Показати 'Зміст імпорту'"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CONTENT_SHOW_ADD_ENTRY,
+   "Показувати запис \"Імпорт вмісту\" в головному меню або плейлістах."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_ADD_CONTENT_ENTRY_DISPLAY_MAIN_TAB,
@@ -6393,7 +6433,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_PLAYLIST_TABS,
-   "Показати вкладки списку відтворення. Не впливає на RGUI. Панель навігації має бути ввімкнена в GLUI. (Потрібен перезапуск Ozone/XMB)"
+   "Показати вкладки плейліста. Не впливає на RGUI. Навігаційну панель має бути ввімкнена в GLUI."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_EXPLORE,
@@ -6401,7 +6441,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_EXPLORE,
-   "Показати кнопку провідника вмісту. (Перезапустити необхідні для Ozone/XMB)"
+   "Показати параметр провідника вмісту."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_CONTENTLESS_CORES,
@@ -6409,7 +6449,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_CONTENTLESS_CORES,
-   "Визначає тип ядра (якщо є) для відображення в меню 'Без змісту'. Якщо встановлено значення 'Користувачна', індивідуальна базова видимість може бути переключена через меню 'Керувати Cores'. (Перезапустити необхідну для Ozone/XMB)"
+   "Визначає тип ядра (якщо є) для відображення в меню 'Без змісту'. Якщо встановлено значення 'Користувач', індивідуальна базова видимість може бути переключена через меню 'Керувати Cores'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SHOW_CONTENTLESS_CORES_ALL,
@@ -8984,12 +9024,20 @@ MSG_HASH(
    "Зберегти стан у вибрану вами комірку."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_HELP_SAVE_STATE,
+   "Зберегти стан в поточний слот. Примітка: збереження станів зазвичай не є портативним і не може працювати з іншими версіями цього ядра."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LOAD_STATE,
    "Завантажити стан"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_LOAD_STATE,
    "Завантажити збережений стан з обраного вами слота."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_LOAD_STATE,
+   "Завантажити збережений стан з обраного в даний час слота. Примітка: може не працювати, якщо стан був збережений в іншій версії ядра."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_UNDO_LOAD_STATE,
@@ -11635,6 +11683,86 @@ MSG_HASH(
 /* Ozone: Settings > User Interface > Appearance */
 
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT,
+   "Шрифт"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_FONT,
+   "Виберіть інший основний шрифт, який буде використовуватися в меню."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE,
+   "Масштаб шрифту"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_FONT_SCALE,
+   "Визначає, чи повинен розмір шрифту в меню мати власне масштабування, а також чи слід масштабувати його глобально або встановлювати окремі значення для кожної частини меню."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_GLOBAL,
+   "Глобально"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_SEPARATE,
+   "Окремі значення"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_GLOBAL,
+   "Коефіцієнт Масштабування Шрифту"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_FONT_SCALE_FACTOR_GLOBAL,
+   "Лінійно масштабувати розмір шрифту по всьому меню."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_TITLE,
+   "Коефіцієнт Масштабування Шрифту Заголовка"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_FONT_SCALE_FACTOR_TITLE,
+   "Масштабувати розмір шрифту для тексту заголовка в меню."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_SIDEBAR,
+   "Коефіцієнт Масштабування Шрифту Лівої Бічної Панелі"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_FONT_SCALE_FACTOR_SIDEBAR,
+   "Масштабувати розмір шрифту для тексту в лівій бічній панелі."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_LABEL,
+   "Коефіцієнт Масштабування Шрифту Міток"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_FONT_SCALE_FACTOR_LABEL,
+   "Масштабувати розмір шрифту для міток пунктів меню та записів у списках відтворення. Також впливає на розмір тексту в вікнах довідок."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_SUBLABEL,
+   "Коефіцієнт Масштабування Шрифту Підміток"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_FONT_SCALE_FACTOR_SUBLABEL,
+   "Масштабувати розмір шрифту для підміток пунктів меню та записів у списку відтворення."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_TIME,
+   "Коефіцієнт Масштабування Шрифту Дати й Часу"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_FONT_SCALE_FACTOR_TIME,
+   "Масштабувати розмір шрифту індикатора часу і дати у верхньому правому куті меню."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_FOOTER,
+   "Коефіцієнт Масштабування Шрифту Нижнього Колонтитула"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_FONT_SCALE_FACTOR_FOOTER,
+   "Масштабувати розмір шрифту тексту в нижньому колонтитулі меню. Також впливає на розмір тексту в правій бічній панелі з мініатюрами."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_OZONE_COLLAPSE_SIDEBAR,
    "Згорнути бічну панель"
    )
@@ -11681,6 +11809,34 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_OZONE_THUMBNAIL_SCALE_FACTOR,
    "Масштабувати розмір мініатюри (основного розміру)."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_PADDING_FACTOR,
+   "Коефіцієнт Відступу"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_PADDING_FACTOR,
+   "Масштабувати розмір горизонтального відступу."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR,
+   "Роздільник Заголовка"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_OZONE_HEADER_SEPARATOR,
+   "Альтернативна ширина для роздільників верхнього та нижнього колонтитулів."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR_NONE,
+   "Немає"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR_NORMAL,
+   "Звичайний"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR_MAXIMUM,
+   "Максимальний"
    )
 
 MSG_HASH(
@@ -14250,6 +14406,10 @@ MSG_HASH(
    "Відмотати назад."
    )
 MSG_HASH(
+   MSG_REWIND_BUFFER_CAPACITY_INSUFFICIENT,
+   "Недостатньо ємності буфера."
+   )
+MSG_HASH(
    MSG_REWIND_UNSUPPORTED,
    "Перемотування недоступний, тому що в цьому базовому відсутні серіалізовані служби збереження стану."
    )
@@ -14271,7 +14431,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_SAVED_NEW_CONFIG_TO,
-   "Збережено нову конфігурацію в"
+   "Конфігурацію збережено у"
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT,

@@ -328,8 +328,6 @@ static void winraw_update_mouse_state(winraw_input_t *wr,
       }
       else
       {
-         int bottom      = wr->prev_rect.bottom;
-         int right       = wr->prev_rect.right;
          wr->active_rect = wr->prev_rect;
          winraw_init_mouse_xy_mapping(wr);
          wr->rect_delay  = 0;
@@ -639,6 +637,10 @@ static void winraw_poll(void *data)
 
    for (i = 0; i < wr->mouse_cnt; ++i)
    {
+      /* Clear buttons when not focused */
+      if (!winraw_focus)
+         g_mice[i].flags = 0;
+
       wr->mice[i].x       = g_mice[i].x;
       wr->mice[i].y       = g_mice[i].y;
       wr->mice[i].dlt_x   = InterlockedExchange(&g_mice[i].dlt_x, 0);

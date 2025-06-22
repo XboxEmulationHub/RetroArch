@@ -200,7 +200,6 @@ void runahead_secondary_core_destroy(void *data)
 
 static char *get_tmpdir_alloc(const char *override_dir)
 {
-   const char *src    = NULL;
    char *path         = NULL;
 #ifdef _WIN32
 #ifdef LEGACY_WIN32
@@ -225,6 +224,7 @@ static char *get_tmpdir_alloc(const char *override_dir)
    free(wide_str);
 #endif
 #else
+   const char *src    = NULL;
 #if defined ANDROID
    src                = override_dir;
 #else

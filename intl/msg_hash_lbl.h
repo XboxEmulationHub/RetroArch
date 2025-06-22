@@ -2367,6 +2367,10 @@ MSG_HASH(
    "rgui_menu_theme_preset"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_OZONE_FONT,
+   "ozone_font"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_OZONE_MENU_COLOR_THEME,
    "ozone_menu_color_theme"
    )
@@ -3637,6 +3641,14 @@ MSG_HASH(
    "save_new_config"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_SAVE_AS_CONFIG,
+   "save_as_config"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_SAVE_MAIN_CONFIG,
+   "save_main_config"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_SAVE_STATE,
    "save_state"
    )
@@ -4148,11 +4160,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_CRT_SWITCH_X_AXIS_CENTERING,
-	  "crt_switch_center_adjust"
+	  "crt_switch_horizontal_shift"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_CRT_SWITCH_PORCH_ADJUST,
-	  "crt_switch_porch_adjust"
+	  "crt_switch_horizontal_size"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_CRT_SWITCH_VERTICAL_ADJUST,
+	  "crt_switch_vertical_size"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VIDEO_ASPECT_RATIO,
@@ -4559,6 +4575,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VIDEO_NOTCH_WRITE_OVER,
    "video_notch_write_over"
+)
+MSG_HASH(
+   MENU_ENUM_LABEL_VIDEO_USE_METAL_ARG_BUFFERS,
+   "video_use_metal_arg_buffers"
 )
 MSG_HASH(
    MENU_ENUM_LABEL_VIDEO_OUTPUT_SETTINGS,
