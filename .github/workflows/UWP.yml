@@ -1,0 +1,189 @@
+name: UWP
+'on':
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+jobs:
+  XboxOne:
+    runs-on: windows-latest
+    steps:
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+      - name: Checkout Repository
+        uses: actions/checkout@v4.1.7
+        with:
+          fetch-depth: 0
+          submodules: false
+      - name: Download ANGLE Cores, DLLs and Extract
+        run: >
+          curl -L "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/Angle%%20Cores.zip" --output Angle_Cores.zip
+          "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/DLLs.zip.001" --output DLLs.zip.001 
+          "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/DLLs.zip.002" --output DLLs.zip.002 &&
+          7z x Angle_Cores.zip -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores" *.* -r -y && 7z x DLLs.zip.001 -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64" *.* -r -y &&
+          del /q /f "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\.empty" "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\.empty"
+        shell: cmd
+      - name: Compile ANGLE build
+        run: |
+          msbuild pkg\msvc-UWP\RetroArch-msvcUWP.sln `
+          /p:AppxBundle=Always `
+          /p:UapAppxPackageBuildMode==SideloadOnly `
+          /p:AppxBundlePlatforms="x64" `
+          /p:Configuration="ReleaseANGLE" `
+          /p:Platform="x64" `
+          /restore
+        shell: pwsh
+      - name: Grab AppX package
+        shell: cmd
+        run: >
+          cd pkg\msvc-uwp\x64\ReleaseANGLE\RetroArch-msvcUWP && copy /B *ReleaseANGLE.appx ..\..\RetroArch-XboxOne.appx
+      - name: Upload AppX package
+        uses: actions/upload-artifact@v4
+        with:
+          name: "RetroArch-XboxOne"
+          path: ./pkg/msvc-uwp/x64/RetroArch-XboxOne.appx
+  SeriesConsoles:
+    runs-on: windows-latest
+    steps:
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+      - name: Checkout Repository
+        uses: actions/checkout@v4.1.7
+        with:
+          fetch-depth: 0
+          submodules: false
+      - name: Download and Extract DLLs
+        run: >
+          curl -L "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/DLLs.zip.001" --output DLLs.zip.001 
+          "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/DLLs.zip.002" --output DLLs.zip.002 &&
+          7z x DLLs.zip.001 -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64" *.* -r -y &&
+          del /q /f "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\.empty" "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\.empty"
+        shell: cmd
+      - name: Compile Mesa build
+        run: |
+          msbuild pkg\msvc-UWP\RetroArch-msvcUWP.sln `
+          /p:AppxBundle=Always `
+          /p:UapAppxPackageBuildMode==SideloadOnly `
+          /p:AppxBundlePlatforms="x64" `
+          /p:Configuration="Release" `
+          /p:Platform="x64" `
+          /restore
+        shell: pwsh
+      - name: Grab AppX package
+        shell: cmd
+        run: >
+          cd pkg\msvc-uwp\x64\Release\RetroArch-msvcUWP && copy /B *x64.appx ..\..\RetroArch-SeriesConsoles.appx
+      - name: Upload AppX package
+        uses: actions/upload-artifact@v4.3.5
+        with:
+          name: "RetroArch-SeriesConsoles"
+          path: ./pkg/msvc-uwp/x64/RetroArch-SeriesConsoles.appx      
+
+  XboxOneAllCores:
+    runs-on: windows-latest
+    steps:
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+      - name: Checkout Repository
+        uses: actions/checkout@v4.1.7
+        with:
+          fetch-depth: 0
+          submodules: false
+      - name: Download Cores, DLLs and Extract
+        run: >          
+          curl -L "https://buildbot.libretro.com/nightly/windows/x86_64/RetroArch_cores.7z" --output Cores.7z
+          "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/Angle%%20Cores.zip" --output Angle_Cores.zip
+          "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/DLLs.zip.001" --output DLLs.zip.001 
+          "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/DLLs.zip.002" --output DLLs.zip.002 &&
+          7z e Cores.7z -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\" && 7z x Angle_Cores.zip -aoa -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores" *.* -r -y && 7z x DLLs.zip.001 -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64" *.* -r -y &&
+          del /q /f "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\.empty" "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\.empty" "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\citra2018_libretro.dll" "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\citra_libretro.dll"
+        shell: cmd
+      - name: Compile ANGLE build
+        run: |
+          msbuild pkg\msvc-UWP\RetroArch-msvcUWP.sln `
+          /p:AppxBundle=Always `
+          /p:UapAppxPackageBuildMode==SideloadOnly `
+          /p:AppxBundlePlatforms="x64" `
+          /p:Configuration="ReleaseANGLE" `
+          /p:Platform="x64" `
+          /restore
+        shell: pwsh
+      - name: Grab AppX package
+        shell: cmd
+        run: >
+          cd pkg\msvc-uwp\x64\ReleaseANGLE\RetroArch-msvcUWP && copy /B *ReleaseANGLE.appx ..\..\RetroArch-XboxOne-AllCores.appx
+      - name: Upload AppX package
+        uses: actions/upload-artifact@v4
+        with:
+          name: "RetroArch-XboxOne-AllCores"
+          path: ./pkg/msvc-uwp/x64/RetroArch-XboxOne-AllCores.appx
+  
+  SeriesConsolesAllCores:
+    runs-on: windows-latest
+    steps:
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+      - name: Checkout Repository
+        uses: actions/checkout@v4.1.7
+        with:
+          fetch-depth: 0
+          submodules: false
+      - name: Download Cores, DLLs and Extract
+        run: >          
+          curl -L "https://buildbot.libretro.com/nightly/windows/x86_64/RetroArch_cores.7z" --output Cores.7z
+          "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/DLLs.zip.001" --output DLLs.zip.001 
+          "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/DLLs.zip.002" --output DLLs.zip.002 &&
+          7z e Cores.7z -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\" && 7z x DLLs.zip.001 -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64" *.* -r -y &&
+          del /q /f "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\.empty" "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\.empty" "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\citra2018_libretro.dll" "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\citra_libretro.dll"
+        shell: cmd
+      - name: Compile Mesa build
+        run: |
+          msbuild pkg\msvc-UWP\RetroArch-msvcUWP.sln `
+          /p:AppxBundle=Always `
+          /p:UapAppxPackageBuildMode==SideloadOnly `
+          /p:AppxBundlePlatforms="x64" `
+          /p:Configuration="Release" `
+          /p:Platform="x64" `
+          /restore
+        shell: pwsh
+      - name: Grab AppX package
+        shell: cmd
+        run: >
+          cd pkg\msvc-uwp\x64\Release\RetroArch-msvcUWP && copy /B *x64.appx ..\..\RetroArch-SeriesConsoles-AllCores.appx
+      - name: Upload AppX package
+        uses: actions/upload-artifact@v4.3.5
+        with:
+          name: "RetroArch-SeriesConsoles-AllCores"
+          path: ./pkg/msvc-uwp/x64/RetroArch-SeriesConsoles-AllCores.appx      
+
+  Publish-release:
+    needs: [XboxOne, SeriesConsoles, XboxOneAllCores, SeriesConsolesAllCores]
+    name: Publish Release
+    if: github.ref == 'refs/heads/master'
+    permissions: write-all
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Get current date
+        id: date
+        run: echo "::set-output name=date::$(date +'%m-%d-%Y')"
+        
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4.1.7
+        with:
+          path: ./artifacts/
+          
+      - name: Create a new release
+        uses: marvinpinto/action-automatic-releases@latest
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          automatic_release_tag: ${{ steps.date.outputs.date }}
+          prerelease: false
+          title: Xbox Builds [${{ steps.date.outputs.date }}]
+          files: | 
+            ./artifacts/RetroArch-XboxOne/RetroArch-XboxOne.appx
+            ./artifacts/RetroArch-SeriesConsoles/RetroArch-SeriesConsoles.appx
+            ./artifacts/RetroArch-XboxOne-AllCores/RetroArch-XboxOne-AllCores.appx
+            ./artifacts/RetroArch-SeriesConsoles-AllCores/RetroArch-SeriesConsoles-AllCores.appx       
