@@ -529,15 +529,10 @@ static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_AUDIOIO;
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_OSS;
 #elif defined(HAVE_JACK)
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_JACK;
-#elif defined(HAVE_COREAUDIO3) || defined(HAVE_COREAUDIO)
-/* SDL microphone does not play well with coreaudio audio driver */
-#if defined(HAVE_SDL2) && defined(HAVE_MICROPHONE)
-static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_SDL2;
 #elif defined(HAVE_COREAUDIO3)
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_COREAUDIO3;
 #elif defined(HAVE_COREAUDIO)
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_COREAUDIO;
-#endif
 #elif defined(HAVE_WASAPI)
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_WASAPI;
 #elif defined(HAVE_XAUDIO)
@@ -577,11 +572,11 @@ static const enum microphone_driver_enum MICROPHONE_DEFAULT_DRIVER = MICROPHONE_
 static const enum microphone_driver_enum MICROPHONE_DEFAULT_DRIVER = MICROPHONE_ALSA;
 #elif defined(HAVE_PIPEWIRE)
 static const enum microphone_driver_enum MICROPHONE_DEFAULT_DRIVER = MICROPHONE_PIPEWIRE;
+#elif defined(HAVE_COREAUDIO)
+static const enum microphone_driver_enum MICROPHONE_DEFAULT_DRIVER = MICROPHONE_COREAUDIO;
 #elif defined(HAVE_SDL2)
 /* The default fallback driver is SDL2, if available. */
 static const enum microphone_driver_enum MICROPHONE_DEFAULT_DRIVER = MICROPHONE_SDL2;
-#elif defined(HAVE_COREAUDIO)
-static const enum microphone_driver_enum MICROPHONE_DEFAULT_DRIVER = MICROPHONE_COREAUDIO;
 #else
 static const enum microphone_driver_enum MICROPHONE_DEFAULT_DRIVER = MICROPHONE_NULL;
 #endif
@@ -2770,7 +2765,7 @@ static void video_driver_default_settings(global_t *global)
          new_path, \
          playlist_tag, \
          sizeof(tmp_str)); \
-   if (path_is_valid(playlist_path)) \
+   if (path_is_valid(playlist_path) && !path_is_valid(new_file)) \
    { \
       if (!filestream_copy(playlist_path, new_file)) \
          RARCH_LOG("[Config] Copied file \"%s\" to \"%s\".\n", playlist_path, new_file); \
@@ -3567,7 +3562,9 @@ config_file_t *open_default_config_file(void)
          /* WARN here to make sure user has a good chance of seeing it. */
          RARCH_ERR("[Config] Failed to create new config file in: \"%s\".\n",
                conf_path);
-         goto error;
+         if (conf)
+            config_file_free(conf);
+         return NULL;
       }
 
       RARCH_LOG("[Config] Created new config file in: \"%s\".\n", conf_path);
@@ -3575,7 +3572,11 @@ config_file_t *open_default_config_file(void)
 #elif defined(OSX)
    if (!fill_pathname_application_data(application_data,
             sizeof(application_data)))
-      goto error;
+   {
+      if (conf)
+         config_file_free(conf);
+      return NULL;
+   }
 
    /* Group config file with menu configs, remaps, etc: */
    strlcat(application_data, "/config", sizeof(application_data));
@@ -3600,7 +3601,9 @@ config_file_t *open_default_config_file(void)
          /* WARN here to make sure user has a good chance of seeing it. */
          RARCH_ERR("[Config] Failed to create new config file in: \"%s\".\n",
                conf_path);
-         goto error;
+         if (conf)
+            config_file_free(conf);
+         return NULL;
       }
 
       RARCH_LOG("[Config] Created new config file in: \"%s\".\n", conf_path);
@@ -3661,7 +3664,9 @@ config_file_t *open_default_config_file(void)
             /* WARN here to make sure user has a good chance of seeing it. */
             RARCH_ERR("[Config] Failed to create new config file in: \"%s\".\n",
                   conf_path);
-            goto error;
+            if (conf)
+               config_file_free(conf);
+            return NULL;
          }
 
          RARCH_LOG("[Config] Created new config file in: \"%s\".\n",
@@ -3671,16 +3676,9 @@ config_file_t *open_default_config_file(void)
 #endif
 
    if (!conf)
-      goto error;
-
+      return NULL;
    path_set(RARCH_PATH_CONFIG, conf_path);
-
    return conf;
-
-error:
-   if (conf)
-      config_file_free(conf);
-   return NULL;
 }
 
 #ifdef RARCH_CONSOLE
@@ -5192,8 +5190,7 @@ const char *input_config_get_prefix(unsigned user, bool meta)
  */
 static void input_config_save_keybinds_user(config_file_t *conf, unsigned user)
 {
-   unsigned i = 0;
-
+   size_t i = 0;
    for (i = 0; input_config_bind_map_get_valid(i); i++)
    {
       char key[64];
@@ -5236,7 +5233,7 @@ static void input_config_save_keybinds_user_override(config_file_t *conf,
       unsigned user, unsigned bind_id,
       const struct retro_keybind *override_bind)
 {
-   unsigned i = bind_id;
+   size_t i = bind_id;
 
    if (input_config_bind_map_get_valid(i))
    {
@@ -5281,8 +5278,8 @@ void config_get_autoconf_profile_filename(
       "~", "#", "%", "&", "*", "{", "}", "\\", ":", "[", "]", "?", "/", "|", "\'", "\"",
       NULL
    };
+   size_t i;
    size_t _len;
-   unsigned i;
 
    settings_t *settings                 = config_st;
    const char *autoconf_dir             = settings->paths.directory_autoconfig;
@@ -5291,7 +5288,7 @@ void config_get_autoconf_profile_filename(
    char *sanitised_name                 = NULL;
 
    if (string_is_empty(device_name))
-      goto end;
+      return;
 
    /* Get currently set joypad driver */
    joypad_driver = input_config_get_device_joypad_driver(user);
@@ -5304,7 +5301,7 @@ void config_get_autoconf_profile_filename(
       joypad_driver = joypad_driver_fallback;
 
       if (string_is_empty(joypad_driver))
-         goto end;
+         return;
    }
 
    sanitised_name = strdup(device_name);
@@ -5318,10 +5315,9 @@ void config_get_autoconf_profile_filename(
          char *tmp = strstr(sanitised_name,
                invalid_filename_chars[i]);
 
-         if (tmp)
-            *tmp = '_';
-         else
+         if (!tmp)
             break;
+         *tmp = '_';
       }
    }
 
@@ -5334,10 +5330,8 @@ void config_get_autoconf_profile_filename(
    else
       _len = fill_pathname_join_special(s, joypad_driver, sanitised_name, len);
    strlcpy(s + _len, ".cfg", len - _len);
-
-end:
-   if (sanitised_name)
-      free(sanitised_name);
+   free(sanitised_name);
+   sanitised_name = NULL;
 }
 
 /**
@@ -5361,7 +5355,7 @@ bool config_save_autoconf_profile(const char *device_name, unsigned user)
    const char *joypad_driver            = NULL;
 
    if (string_is_empty(device_name))
-      goto end;
+      return false;
 
    /* Get currently set joypad driver */
    joypad_driver = input_config_get_device_joypad_driver(user);
@@ -5372,9 +5366,8 @@ bool config_save_autoconf_profile(const char *device_name, unsigned user)
        * current input device then use the value
        * from the settings struct as a fallback */
       joypad_driver = joypad_driver_fallback;
-
       if (string_is_empty(joypad_driver))
-         goto end;
+         return false;
    }
 
    /* Generate autoconfig file path */
@@ -5385,7 +5378,11 @@ bool config_save_autoconf_profile(const char *device_name, unsigned user)
    if (     !(conf = config_file_new_from_path_to_string(autoconf_file))
          && !(conf = config_file_new_alloc())
       )
-      goto end;
+   {
+      if (conf)
+         config_file_free(conf);
+      return false;
+   }
 
    /* Update config file */
    config_set_string(conf, "input_driver",
@@ -5409,22 +5406,17 @@ bool config_save_autoconf_profile(const char *device_name, unsigned user)
       const struct retro_keybind *bind = &input_config_binds[user][i];
       if (bind->valid)
       {
-         save_keybind_joykey(
-               conf, "input", input_config_bind_map_get_base(i),
-               bind, false);
-         save_keybind_axis(
-               conf, "input", input_config_bind_map_get_base(i),
-               bind, false);
+         save_keybind_joykey(conf, "input",
+               input_config_bind_map_get_base(i), bind, false);
+         save_keybind_axis(conf, "input",
+               input_config_bind_map_get_base(i), bind, false);
       }
    }
 
    RARCH_LOG("[Autoconf] Writing autoconf file for device \"%s\" to \"%s\".\n", device_name, autoconf_file);
    ret = config_file_write(conf, autoconf_file, false);
-
-end:
    if (conf)
       config_file_free(conf);
-
    return ret;
 }
 
@@ -6526,7 +6518,6 @@ void config_save_file_salamander(void)
 {
    config_file_t *conf       = NULL;
    const char *libretro_path = path_get(RARCH_PATH_CORE);
-   bool success              = false;
    char config_path[PATH_MAX_LENGTH];
 
    config_path[0] = '\0';
@@ -6544,17 +6535,18 @@ void config_save_file_salamander(void)
    if (     !(conf = config_file_new_from_path_to_string(config_path))
          && !(conf = config_file_new_alloc())
       )
-      goto end;
+   {
+      if (conf)
+         config_file_free(conf);
+      return;
+   }
 
    /* Update config file */
    config_set_path(conf, "libretro_path", libretro_path);
 
    /* Save config file
     * > Only one entry - no need to sort */
-   success = config_file_write(conf, config_path, false);
-
-end:
-   if (success)
+   if (config_file_write(conf, config_path, false))
       RARCH_LOG("[Config] Saving salamander config to: \"%s\".\n",
             config_path);
    else
@@ -6570,9 +6562,7 @@ bool input_config_bind_map_get_valid(unsigned bind_index)
 {
    const struct input_bind_map *keybind =
       (const struct input_bind_map*)INPUT_CONFIG_BIND_MAP_GET(bind_index);
-   if (!keybind)
-      return false;
-   return keybind->valid;
+   return (keybind && keybind->valid);
 }
 
 unsigned input_config_bind_map_get_meta(unsigned bind_index)
@@ -6613,7 +6603,7 @@ uint8_t input_config_bind_map_get_retro_key(unsigned bind_index)
 
 void input_config_reset_autoconfig_binds(unsigned port)
 {
-   unsigned i;
+   size_t i;
 
    if (port >= MAX_USERS)
       return;
@@ -6639,12 +6629,11 @@ void input_config_reset_autoconfig_binds(unsigned port)
 
 void input_config_set_autoconfig_binds(unsigned port, void *data)
 {
-   unsigned i;
+   size_t i;
    config_file_t *config       = (config_file_t*)data;
    struct retro_keybind *binds = NULL;
 
-   if (    (port >= MAX_USERS)
-         || !config)
+   if ((port >= MAX_USERS) || !config)
       return;
 
    binds = input_autoconf_binds[port];
@@ -6665,14 +6654,12 @@ void input_config_set_autoconfig_binds(unsigned port, void *data)
    }
 }
 
-void input_config_parse_mouse_button(
-      char *s,
+void input_config_parse_mouse_button(char *s,
       void *conf_data, const char *prefix,
       const char *btn, void *bind_data)
 {
    int val;
-   char tmp[64];
-   char key[64];
+   char tmp[64], key[64];
    config_file_t *conf        = (config_file_t*)conf_data;
    struct retro_keybind *bind = (struct retro_keybind*)bind_data;
 
@@ -6732,16 +6719,15 @@ void input_config_parse_mouse_button(
    }
 }
 
-void input_config_parse_joy_axis(
-      char *s,
+void input_config_parse_joy_axis(char *s,
       void *conf_data, const char *prefix,
       const char *axis, void *bind_data)
 {
-   char       tmp[64];
-   char       key[64];
-   config_file_t *conf                     = (config_file_t*)conf_data;
-   struct retro_keybind *bind              = (struct retro_keybind*)bind_data;
-   struct config_entry_list *tmp_a         = NULL;
+   char tmp[64];
+   char key[64];
+   config_file_t *conf             = (config_file_t*)conf_data;
+   struct retro_keybind *bind      = (struct retro_keybind*)bind_data;
+   struct config_entry_list *tmp_a = NULL;
 
    tmp[0] = '\0';
 
@@ -6825,16 +6811,14 @@ void input_config_parse_joy_button(
       void *data, const char *prefix,
       const char *btn, void *bind_data)
 {
-   char tmp[64];
-   char key[64];
-   config_file_t *conf                     = (config_file_t*)data;
-   struct retro_keybind *bind              = (struct retro_keybind*)bind_data;
-   struct config_entry_list *tmp_a         = NULL;
+   char tmp[64], key[64];
+   config_file_t *conf             = (config_file_t*)data;
+   struct retro_keybind *bind      = (struct retro_keybind*)bind_data;
+   struct config_entry_list *tmp_a = NULL;
 
-   tmp[0]                                  = '\0';
+   tmp[0]                          = '\0';
 
-   fill_pathname_join_delim(key, s,
-         "btn", '_', sizeof(key));
+   fill_pathname_join_delim(key, s, "btn", '_', sizeof(key));
 
    if (config_get_array(conf, key, tmp, sizeof(tmp)))
    {

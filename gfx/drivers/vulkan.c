@@ -1768,8 +1768,9 @@ static void vulkan_font_render_message(vk_t *vk,
 
    for (;;)
    {
-      const char *delim = strchr(msg, '\n');
-      size_t msg_len    = delim ? (size_t)(delim - msg) : strlen(msg);
+      size_t _msg_len   = strlen(msg);
+      const char *delim = memchr(msg, '\n', _msg_len + 1);
+      size_t msg_len    = delim ? (size_t)(delim - msg) : _msg_len;
 
       /* Draw the line */
       vulkan_font_render_line(vk, font, glyph_q, msg, msg_len,
@@ -4316,8 +4317,8 @@ static void vulkan_draw_quad(vk_t *vk, const struct vk_draw_quad *quad)
          return;
 
       if (
-               string_is_equal_fast(quad->mvp,
-                  &vk->tracker.mvp, sizeof(*quad->mvp))
+               (memcmp(quad->mvp,
+                  &vk->tracker.mvp, sizeof(*quad->mvp)) == 0)
             || quad->texture->view != vk->tracker.view
             || quad->sampler != vk->tracker.sampler)
       {

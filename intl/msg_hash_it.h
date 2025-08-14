@@ -3550,7 +3550,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_DISABLE_RIGHT_ANALOG_IN_MENU,
-   "Impedisci il menu l'entrata della levetta analogica destra. La levetta analogiva destra cicla le miniature nelle playlist."
+   "Impedisci l’input della levetta analogica destra nel menu. La levetta destra scorre le copertine nelle playlist."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_INPUT_SWAP_OK_CANCEL,
@@ -6209,19 +6209,19 @@ MSG_HASH(
 #endif
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_SHOW_ONLINE_UPDATER,
-   "Show 'Aggiornamenti Online'"
+   "Mostra 'Aggiornamenti online'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MENU_SHOW_ONLINE_UPDATER,
-   "Mostra l'opzione 'Aggiornamento online' nel menu principale."
+   "Mostra l'opzione 'Aggiornamenti online' nel menu principale."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_SHOW_CORE_UPDATER,
-   "Mostra 'Scaricamento dei Nuclei'"
+   "Mostra 'Scarica core'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MENU_SHOW_CORE_UPDATER,
-   "Mostra la possibilità di aggiornare i nuclei (e i file di informazioni principali) nell'opzione 'Aggiornamento online'."
+   "Mostra la possibilità di aggiornare i core (e i file di informazioni principali) nell'opzione 'Aggiornamento online'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_SHOW_LEGACY_THUMBNAIL_UPDATER,
@@ -6297,7 +6297,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_FAVORITES_FIRST,
-   "Mostra Prima I Preferiti"
+   "Mostra prima i preferiti"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_FAVORITES_FIRST,
@@ -6349,7 +6349,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_ADD_ENTRY,
-   "Mostra la voce 'Importa contenuto' nel menu principale o nelle scalette."
+   "Mostra la voce 'Importa contenuto' nel menu principale o nelle playlist."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_ADD_CONTENT_ENTRY_DISPLAY_MAIN_TAB,
@@ -6361,15 +6361,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_PLAYLISTS,
-   "Mostra 'Playlists'"
+   "Mostra 'Playlist'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_PLAYLISTS,
-   "Mostra le playlist nel menu principale. Ignorato in GLUI se le schede della playlist e della barra di navigazione sono abilitate."
+   "Mostra le playlist nel menu principale. È ignorato in GLUI se le schede della playlist e della barra di navigazione sono abilitate."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_PLAYLIST_TABS,
-   "Mostra le schede delle Playlist"
+   "Mostra le schede delle playlist"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_PLAYLIST_TABS,
@@ -6640,11 +6640,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_ADD_TO_FAVORITES,
-   "Mostra 'Aggiungi ai Preferiti'"
+   "Mostra 'Aggiungi ai preferiti'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_ADD_TO_FAVORITES,
-   "Mostra l'opzione 'Aggiungi ai Preferiti'."
+   "Mostra l'opzione 'Aggiungi ai preferiti'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_ADD_TO_PLAYLIST,
@@ -6652,11 +6652,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_ADD_TO_PLAYLIST,
-   "Mostra l'opzione 'Aggiungi alla scaletta'."
+   "Mostra l'opzione 'Aggiungi alla playlist'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SET_CORE_ASSOCIATION,
-   "Mostra 'Imposta associazione al nucleo'"
+   "Mostra 'Imposta associazione core'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_SET_CORE_ASSOCIATION,
@@ -6664,11 +6664,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESET_CORE_ASSOCIATION,
-   "Mostra 'Riavvia associazione al nucleo'"
+   "Mostra 'Reimposta associazione core'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_RESET_CORE_ASSOCIATION,
-   "Mostra l'opzione 'Riavvia associazionr del Core' quando il contenuto non è in esecuzione."
+   "Mostra l'opzione 'Reimposta associazione core' quando il contenuto non è in esecuzione."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_DOWNLOAD_THUMBNAILS,
@@ -6839,11 +6839,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_PLAYLISTS,
-   "Mostra 'Playlists'"
+   "Mostra 'Playlist'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SETTINGS_SHOW_PLAYLISTS,
-   "Mostra impostazioni 'Playlists'."
+   "Mostra impostazioni 'Playlist'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_USER,
@@ -7551,11 +7551,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_UPDATER_SETTINGS,
-   "Impostazioni Updater"
+   "Impostazioni aggiornamento core"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_UPDATER_SETTINGS,
-   "Accedi alle impostazioni di aggiornamento core"
+   "Accedi alle impostazioni di aggiornamento dei core"
    )
 
 /* Settings > Network > Updater */
@@ -7578,7 +7578,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_UPDATER_AUTO_EXTRACT_ARCHIVE,
-   "Estrarre automaticamente l'archivio scaricato"
+   "Estrai automaticamente l'archivio scaricato"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_UPDATER_AUTO_EXTRACT_ARCHIVE,
@@ -7586,15 +7586,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_UPDATER_SHOW_EXPERIMENTAL_CORES,
-   "Mostra Core Sperimentali"
+   "Mostra core sperimentali"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_UPDATER_SHOW_EXPERIMENTAL_CORES,
-   "Includi core 'experimental' nella lista Core Downloader. Questi sono tipicamente solo per scopi di sviluppo/test e non sono raccomandati per un uso generale."
+   "Includi core 'sperimentali' nella lista Scarica core. Sono generalmente utilizzati solo per scopi di sviluppo/test e non sono raccomandati per un uso generale."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_UPDATER_AUTO_BACKUP,
-   "Backup dei Core Durante l'aggiornamento"
+   "Backup dei core durante l'aggiornamento"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_UPDATER_AUTO_BACKUP,
@@ -7602,11 +7602,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_UPDATER_AUTO_BACKUP_HISTORY_SIZE,
-   "Dimensione della Cronologia Backup dei Core"
+   "Dimensione della cronologia backup dei Core"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_UPDATER_AUTO_BACKUP_HISTORY_SIZE,
-   "Specifica quanti backup generati automaticamente da mantenere per ogni nucleo installato. Quando questo limite viene raggiunto, la creazione di un nuovo backup tramite un aggiornamento online eliminerà il backup più vecchio. I backup manuali del nucleo non sono influenzati da questa impostazione."
+   "Specifica quanti backup generati automaticamente da mantenere per ogni core installato. Quando questo limite viene raggiunto, la creazione di un nuovo backup tramite un aggiornamento online eliminerà il backup più vecchio. I backup manuali dei core non sono influenzati da questa impostazione."
    )
 
 /* Settings > Playlists */
@@ -7629,11 +7629,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_FAVORITES_SIZE,
-   "Dimensione Preferiti"
+   "Dimensione preferiti"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_FAVORITES_SIZE,
-   "Limita il numero di voci nella scaletta 'Preferiti'. Una volta raggiunto il limite, le nuove aggiunte saranno evitate fino a quando le vecchie voci non saranno rimosse. Impostare un valore di -1 permette voci 'illimitate'.\nATTENZIONE: Ridurre il valore eliminerà le voci esistenti!"
+   "Limita il numero di voci nella playlist 'Preferiti'. Una volta raggiunto il limite, le nuove aggiunte saranno evitate fino a quando le vecchie voci non saranno rimosse. Impostare un valore di -1 permette voci 'illimitate'.\nATTENZIONE: Ridurre il valore eliminerà le voci esistenti!"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_ENTRY_RENAME,
@@ -7677,7 +7677,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_SHOW_INLINE_CORE_NAME,
-   "Mostra i core associati nelle Playlist"
+   "Mostra i core associati nelle playlist"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLIST_SHOW_INLINE_CORE_NAME,
@@ -7697,7 +7697,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLIST_SHOW_HISTORY_ICONS,
-   "Mostra icone specifiche per ogni voce di playlist di cronologia e preferiti. Ha un impatto di prestazioni variabili."
+   "Mostra icone specifiche per ogni voce di cronologia e preferiti della playlist. Ha un impatto variabile sulle prestazioni."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_RUNTIME,
@@ -7705,7 +7705,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_LAST_PLAYED,
-   "Ultima Riproduzione:"
+   "Giocato l'ultima volta:"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_PLAY_COUNT,
+   "Partite giocate:"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TIME_UNIT_SECONDS_SINGLE,
@@ -7864,11 +7868,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_RESET_CORES,
-   "Reimposta Associazioni Core"
+   "Reimposta associazioni core"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLIST_MANAGER_RESET_CORES,
-   "Rimuovi le associazioni di base esistenti per tutte le voci della scaletta."
+   "Rimuovi le associazioni di base esistenti per tutte le voci della playlist."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_LABEL_DISPLAY_MODE,
@@ -7892,7 +7896,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_PLAYLIST_MANAGER_CLEAN_PLAYLIST,
-   "Convalida le associazioni cnuclei e rimuovi le voci non valide e duplicate."
+   "Convalida le associazioni dei core e rimuovi le voci non valide e duplicate."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_MANAGER_REFRESH_PLAYLIST,
@@ -8212,11 +8216,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_FAVORITES_DIRECTORY,
-   "Playlist Preferite"
+   "Playlist preferite"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_FAVORITES_DIRECTORY,
-   "Salva le Playlist preferite in questa directory."
+   "Salva le playlist preferite in questa directory."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_HISTORY_DIRECTORY,
@@ -8804,7 +8808,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ADD_TO_FAVORITES_PLAYLIST,
-   "Aggiungi a Preferiti"
+   "Aggiungi ai preferiti"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_ADD_TO_FAVORITES_PLAYLIST,
@@ -8828,19 +8832,19 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SET_CORE_ASSOCIATION,
-   "Imposta Associazione Core"
+   "Imposta associazione core"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SET_CORE_ASSOCIATION,
-   "Imposta il nucleo associato a questo contenuto."
+   "Imposta il core associato a questo contenuto."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESET_CORE_ASSOCIATION,
-   "Reimposta Associazione Core"
+   "Reimposta associazione core"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RESET_CORE_ASSOCIATION,
-   "Imposta il nucleo associato a questo contenuto."
+   "Reimposta il core associato a questo contenuto."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INFORMATION,
@@ -9005,7 +9009,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ADD_TO_FAVORITES,
-   "Aggiungi a Preferiti"
+   "Aggiungi ai preferiti"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_ADD_TO_FAVORITES,
@@ -10281,7 +10285,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_ENTRY_REMOVE_ENABLE_HIST_FAV,
-   "Cronologia & Preferiti"
+   "Cronologia & preferiti"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PLAYLIST_ENTRY_REMOVE_ENABLE_ALL,
@@ -12127,7 +12131,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_ASSOCIATE_CORE,
-   "Core Associato"
+   "Associa core"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_HIDDEN_PLAYLISTS,
@@ -12466,7 +12470,7 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_UPDATER_SETTINGS,
-   "Impostazioni Aggiornamenti Core"
+   "Impostazioni aggiornamenti core"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ACCOUNTS_CHEEVOS_SETTINGS,
@@ -12939,6 +12943,14 @@ MSG_HASH(
    "Database - Filtro: Valutazione Edge Magazine"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_GENRE,
+   "Database - Filtro: Genere"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_REGION,
+   "Database - Filtro: Regione"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_DATABASE_INFO,
    "Informazione del Database"
    )
@@ -13387,7 +13399,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_ADDED_TO_FAVORITES,
-   "Aggiunto ai Preferiti"
+   "Aggiunto ai preferiti"
    )
 MSG_HASH(
    MSG_ADD_TO_FAVORITES_FAILED,
@@ -13407,7 +13419,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_RESET_CORE_ASSOCIATION,
-   "L'associazione core della voce della playlist è stata resettata."
+   "L'associazione core della voce della playlist è stata reimpostata."
    )
 MSG_HASH(
    MSG_APPENDED_DISK,
@@ -13699,15 +13711,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD,
-   "Caricamento fallito"
+   "Impossibile caricare."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_CONTENT,
-   "Impossibile caricare il contenuto"
+   "Impossibile caricare il contenuto."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_MOVIE_FILE,
-   "Impossibile caricare il file del filmato"
+   "Impossibile caricare il file film."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_OVERLAY,

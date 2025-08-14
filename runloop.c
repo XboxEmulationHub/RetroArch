@@ -40,12 +40,6 @@
 #include <signal.h>
 #endif
 
-#if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0500 || defined(_XBOX)
-#ifndef LEGACY_WIN32
-#define LEGACY_WIN32
-#endif
-#endif
-
 #if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
 #include <objbase.h>
 #include <process.h>
@@ -654,6 +648,12 @@ static void runloop_update_runtime_log(
 
    /* Update 'last played' entry */
    runtime_log_set_last_played_now(runtime_log);
+
+   /* Update play count */
+   runtime_log->play_count++;
+
+   /* Update state slot */
+   runtime_log->state_slot = config_get_ptr()->ints.state_slot;
 
    /* Save runtime log file */
    runtime_log_save(runtime_log);
@@ -2132,28 +2132,31 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
                      for (retro_id = 0; retro_id < RARCH_FIRST_CUSTOM_BIND; retro_id++)
                      {
+                        enum msg_hash_enums _enum;
                         unsigned bind_index     = input_config_bind_order[retro_id];
                         const char *description = sys_info->input_desc_btn[mapped_port][bind_index];
 
                         if (!description)
                            continue;
 
+                        _enum = (enum msg_hash_enums)(MENU_ENUM_LABEL_VALUE_INPUT_JOYPAD_B + bind_index);
                         RARCH_DBG("      \"%s\" => \"%s\"\n",
-                              msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_JOYPAD_B + bind_index),
-                              description);
+                              msg_hash_to_str(_enum), description);
                      }
 
                      for (retro_id = RARCH_FIRST_CUSTOM_BIND; retro_id < RARCH_ANALOG_BIND_LIST_END; retro_id++)
                      {
+                        enum msg_hash_enums _enum;
                         unsigned bind_index     = input_config_bind_order[retro_id];
                         const char *description = sys_info->input_desc_btn[mapped_port][bind_index];
 
                         if (!description)
                            continue;
 
+                        _enum = (enum msg_hash_enums)(MENU_ENUM_LABEL_VALUE_INPUT_ANALOG_LEFT_X_PLUS
+                              + bind_index - RARCH_FIRST_CUSTOM_BIND);
                         RARCH_DBG("      \"%s\" => \"%s\"\n",
-                              msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_ANALOG_LEFT_X_PLUS + bind_index - RARCH_FIRST_CUSTOM_BIND),
-                              description);
+                              msg_hash_to_str(_enum), description);
                      }
                   }
                }
@@ -2744,7 +2747,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
       case RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO:
       {
-         unsigned i;
+         size_t i;
          const struct retro_subsystem_info *info =
                (const struct retro_subsystem_info*)data;
          unsigned log_level   = settings->uints.libretro_log_level;
@@ -2798,7 +2801,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
       case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
       {
-         unsigned i, j;
+         size_t i, j;
          const struct retro_controller_info *info
                                  = (const struct retro_controller_info*)data;
          unsigned log_level      = settings->uints.libretro_log_level;
@@ -2843,7 +2846,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
       {
          if (sys_info)
          {
-            unsigned i;
+            size_t i;
             const struct retro_memory_map *mmaps   =
                   (const struct retro_memory_map*)data;
             rarch_memory_descriptor_t *descriptors = NULL;
@@ -3107,7 +3110,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
       case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE:
       {
-         enum retro_av_enable_flags result = (enum retro_av_enable_flags)0;
+         int result = 0;
          video_driver_state_t *video_st    = video_state_get_ptr();
          audio_driver_state_t *audio_st    = audio_state_get_ptr();
 
@@ -3139,7 +3142,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
          if (data)
          {
             enum retro_av_enable_flags* result_p = (enum retro_av_enable_flags*)data;
-            *result_p = result;
+            *result_p = (enum retro_av_enable_flags)result;
          }
          break;
       }
@@ -4111,7 +4114,7 @@ void runloop_event_deinit_core(void)
    if (settings->bools.video_frame_delay_auto)
       video_st->frame_delay_target = 0;
 
-   driver_uninit(DRIVERS_CMD_ALL, 0);
+   driver_uninit(DRIVERS_CMD_ALL, (enum driver_lifetime_flags)0);
 
 #ifdef HAVE_CONFIGFILE
    if (runloop_st->flags & RUNLOOP_FLAG_OVERRIDES_ACTIVE)
@@ -4130,7 +4133,7 @@ void runloop_event_deinit_core(void)
 
 static bool runloop_path_init_subsystem(runloop_state_t *runloop_st)
 {
-   unsigned i, j;
+   size_t i, j;
    const struct retro_subsystem_info *info = NULL;
    rarch_system_info_t           *sys_info = &runloop_st->system;
    bool subsystem_path_empty               = path_is_empty(RARCH_PATH_SUBSYSTEM);
@@ -4282,43 +4285,66 @@ static bool event_init_content(
 
    runloop_path_init_savefile(runloop_st);
 
-   if (!event_load_save_files(runloop_st->flags &
-            RUNLOOP_FLAG_IS_SRAM_LOAD_DISABLED))
-      RARCH_LOG("[SRAM] %s\n",
-            msg_hash_to_str(MSG_SKIPPING_SRAM_LOAD));
+   if (!event_load_save_files(runloop_st->flags & RUNLOOP_FLAG_IS_SRAM_LOAD_DISABLED))
+      RARCH_LOG("[SRAM] %s\n", msg_hash_to_str(MSG_SKIPPING_SRAM_LOAD));
 
-/*
-   Since the operations are asynchronous we can't
-   guarantee users will not use auto_load_state to cheat on
-   achievements so we forbid auto_load_state from happening
-   if cheevos_enable and cheevos_hardcode_mode_enable
-   are true.
-*/
+   /* Set entry slot from playlist entry if available */
+   {
+#ifdef HAVE_MENU
+      playlist_t *playlist = playlist_get_cached();
+
+      if (playlist)
+      {
+         struct menu_state *menu_st         = menu_state_get_ptr();
+         const struct playlist_entry *entry = NULL;
+
+         if (menu_st && menu_st->driver_data)
+            playlist_get_index(playlist, menu_st->driver_data->rpl_entry_selection_ptr, &entry);
+
+         if (entry && entry->entry_slot > 0)
+            runloop_st->entry_state_slot = entry->entry_slot;
+      }
+#endif
+
+      /* Set current active state slot */
+      if (runloop_st->entry_state_slot > -1)
+         configuration_set_int(settings, settings->ints.state_slot, runloop_st->entry_state_slot);
+   }
+
+   /*
+    * Since the operations are asynchronous we can't
+    * guarantee users will not use auto_load_state to cheat on
+    * achievements so we forbid auto_load_state from happening
+    * if cheevos_enable and cheevos_hardcode_mode_enable
+    * are true.
+    */
 #ifdef HAVE_CHEEVOS
    if (     !cheevos_enable
          || !cheevos_hardcore_mode_enable)
 #endif
    {
 #ifdef HAVE_BSV_MOVIE
-     /* ignore entry state if we're doing bsv playback (we do want it
-        for bsv recording though) */
-     if (!(input_st->bsv_movie_state.flags & BSV_FLAG_MOVIE_START_PLAYBACK))
+      /* Ignore entry state if we're doing bsv playback (we do want it
+         for bsv recording though) */
+      if (!(input_st->bsv_movie_state.flags & BSV_FLAG_MOVIE_START_PLAYBACK))
 #endif
       {
-         if (      runloop_st->entry_state_slot > -1
+         if (     runloop_st->entry_state_slot > -1
                && !command_event_load_entry_state(settings))
          {
-           /* loading the state failed, reset entry slot */
+            /* Loading the state failed, reset entry slot */
             runloop_st->entry_state_slot = -1;
          }
       }
+
 #ifdef HAVE_BSV_MOVIE
-     /* ignore autoload state if we're doing bsv playback or recording */
-     if (!(input_st->bsv_movie_state.flags & (BSV_FLAG_MOVIE_START_RECORDING | BSV_FLAG_MOVIE_START_PLAYBACK)))
+      /* Ignore autoload state if we're doing bsv playback or recording */
+      if (!(input_st->bsv_movie_state.flags & (BSV_FLAG_MOVIE_START_RECORDING | BSV_FLAG_MOVIE_START_PLAYBACK)))
 #endif
       {
-        if (runloop_st->entry_state_slot < 0 && settings->bools.savestate_auto_load)
-          command_event_load_auto_state();
+         if (     runloop_st->entry_state_slot < 0
+               && settings->bools.savestate_auto_load)
+            command_event_load_auto_state();
       }
    }
 
@@ -4326,25 +4352,25 @@ static bool event_init_content(
    movie_stop(input_st);
    if (input_st->bsv_movie_state.flags & BSV_FLAG_MOVIE_START_RECORDING)
    {
-     configuration_set_uint(settings, settings->uints.rewind_granularity, 1);
+      configuration_set_uint(settings, settings->uints.rewind_granularity, 1);
 #ifndef HAVE_THREADS
-     /* Hack: the regular scheduler doesn't do the right thing here at
-        least in emscripten builds.  I would expect that the check in
-        task_movie.c:343 should defer recording until the movie task
-        is done, but maybe that task isn't enqueued again yet when the
-        movie-record task is checked?  Or the finder call in
-        content_load_state_in_progress is not correct?  Either way,
-        the load happens after the recording starts rather than the
-        right way around.
-     */
-     task_queue_wait(NULL,NULL);
+      /* Hack: the regular scheduler doesn't do the right thing here at
+         least in emscripten builds.  I would expect that the check in
+         task_movie.c:343 should defer recording until the movie task
+         is done, but maybe that task isn't enqueued again yet when the
+         movie-record task is checked?  Or the finder call in
+         content_load_state_in_progress is not correct?  Either way,
+         the load happens after the recording starts rather than the
+         right way around.
+      */
+      task_queue_wait(NULL, NULL);
 #endif
-     movie_start_record(input_st, input_st->bsv_movie_state.movie_start_path);
+      movie_start_record(input_st, input_st->bsv_movie_state.movie_start_path);
    }
    else if (input_st->bsv_movie_state.flags & BSV_FLAG_MOVIE_START_PLAYBACK)
    {
-     configuration_set_uint(settings, settings->uints.rewind_granularity, 1);
-     movie_start_playback(input_st, input_st->bsv_movie_state.movie_start_path);
+      configuration_set_uint(settings, settings->uints.rewind_granularity, 1);
+      movie_start_playback(input_st, input_st->bsv_movie_state.movie_start_path);
    }
 #endif
 
@@ -4355,6 +4381,7 @@ static bool event_init_content(
 
 static void runloop_runtime_log_init(runloop_state_t *runloop_st)
 {
+   settings_t *settings                = config_get_ptr();
    const char *content_path            = path_get(RARCH_PATH_CONTENT);
    const char *core_path               = path_get(RARCH_PATH_CORE);
 
@@ -4386,6 +4413,19 @@ static void runloop_runtime_log_init(runloop_state_t *runloop_st)
       strlcpy(runloop_st->runtime_core_path,
             core_path,
             sizeof(runloop_st->runtime_core_path));
+
+   if (     !settings->bools.content_runtime_log
+         && !settings->bools.content_runtime_log_aggregate)
+      return;
+
+   if (     !string_is_empty(content_path)
+         && !string_is_empty(core_path))
+      runtime_log_init(
+            runloop_st->runtime_content_path,
+            runloop_st->runtime_core_path,
+            settings->paths.directory_runtime_log,
+            settings->paths.directory_playlist,
+            true);
 }
 
 void runloop_set_frame_limit(
@@ -4541,8 +4581,8 @@ static void core_input_state_poll_maybe(void)
    const enum poll_type_override_t
       core_poll_type_override  = runloop_st->core_poll_type_override;
    enum poll_type new_poll_type      = (core_poll_type_override > POLL_TYPE_OVERRIDE_DONTCARE)
-      ? (core_poll_type_override - 1)
-      : runloop_st->current_core.poll_type;
+      ? (enum poll_type)(core_poll_type_override - 1)
+      : (enum poll_type)(runloop_st->current_core.poll_type);
    if (new_poll_type == POLL_TYPE_NORMAL)
       input_driver_poll();
 }
@@ -4554,8 +4594,8 @@ static retro_input_state_t core_input_state_poll_return_cb(void)
    const enum poll_type_override_t
       core_poll_type_override  = runloop_st->core_poll_type_override;
    enum poll_type new_poll_type      = (core_poll_type_override > POLL_TYPE_OVERRIDE_DONTCARE)
-      ? (core_poll_type_override - 1)
-      : runloop_st->current_core.poll_type;
+      ? (enum poll_type)(core_poll_type_override - 1)
+      : (enum poll_type)(runloop_st->current_core.poll_type);
    if (new_poll_type == POLL_TYPE_LATE)
       return core_input_state_poll_late;
    return input_driver_state_wrapper;
@@ -4595,7 +4635,7 @@ static bool runloop_event_load_core(runloop_state_t *runloop_st,
       unsigned poll_type_behavior)
 {
    video_driver_state_t *video_st     = video_state_get_ptr();
-   runloop_st->current_core.poll_type = poll_type_behavior;
+   runloop_st->current_core.poll_type = (enum poll_type)poll_type_behavior;
 
    if (!core_verify_api_version(runloop_st))
       return false;
@@ -4634,16 +4674,9 @@ bool runloop_event_init_core(
    float fastforward_ratio         = 0.0f;
    rarch_system_info_t *sys_info   = &runloop_st->system;
 
-#ifdef HAVE_NETWORKING
-   if (netplay_driver_ctl(RARCH_NETPLAY_CTL_IS_ENABLED, NULL))
-   {
-      /* We need this in order for core_info_current_supports_netplay
-         to work correctly at init_netplay,
-         called later at event_init_content. */
-      command_event(CMD_EVENT_CORE_INFO_INIT, NULL);
-      command_event(CMD_EVENT_LOAD_CORE_PERSIST, NULL);
-   }
-#endif
+   /* Init core info files */
+   command_event(CMD_EVENT_CORE_INFO_INIT, NULL);
+   command_event(CMD_EVENT_LOAD_CORE_PERSIST, NULL);
 
    /* Load symbols */
    if (!runloop_init_libretro_symbols(runloop_st,
@@ -4771,7 +4804,12 @@ bool runloop_event_init_core(
    runloop_set_frame_limit(&video_st->av_info, fastforward_ratio);
    runloop_st->frame_limit_last_time    = cpu_features_get_time_usec();
 
+   /* Init runtime log and read current state slot */
    runloop_runtime_log_init(runloop_st);
+
+   if (runloop_st->entry_state_slot > -1)
+      configuration_set_int(settings, settings->ints.state_slot, runloop_st->entry_state_slot);
+
    return true;
 }
 
@@ -5516,7 +5554,7 @@ static enum runloop_state_enum runloop_check_state(
       audio_driver_state_t *audio_st,
       video_driver_state_t *video_st,
       uico_driver_state_t   *uico_st,
-      bool error_on_init,
+      bool err_on_init,
       settings_t *settings,
       retro_time_t current_time,
       bool netplay_allow_pause,
@@ -6106,7 +6144,7 @@ static enum runloop_state_enum runloop_check_state(
       else if (!menu_driver_iterate(menu_st, p_disp, anim_get_ptr(),
                settings, action, current_time))
       {
-         if (error_on_init)
+         if (err_on_init)
          {
             content_ctx_info_t content_info = {0};
             task_push_start_dummy_core(&content_info);
@@ -6737,63 +6775,68 @@ static enum runloop_state_enum runloop_check_state(
 
    /* Check save state slot hotkeys */
    {
-      static bool old_should_slot_increase = false;
-      static bool old_should_slot_decrease = false;
-      bool should_slot_increase            = BIT256_GET(
-            current_bits, RARCH_STATE_SLOT_PLUS);
-      bool should_slot_decrease            = BIT256_GET(
-            current_bits, RARCH_STATE_SLOT_MINUS);
-      bool check1                          = true;
-      bool check2                          = should_slot_increase && !old_should_slot_increase;
-      int addition                         = 1;
-      int state_slot                       = settings->ints.state_slot;
+      int state_slot                = settings->ints.state_slot;
+      static bool old_slot_increase = false;
+      static bool old_slot_decrease = false;
+      bool slot_increase            = BIT256_GET(current_bits, RARCH_STATE_SLOT_PLUS);
+      bool slot_decrease            = BIT256_GET(current_bits, RARCH_STATE_SLOT_MINUS);
+      bool check                    = false;
 
-      if (!check2)
+      if (slot_increase && !old_slot_increase)
       {
-         check2                            = should_slot_decrease && !old_should_slot_decrease;
-         check1                            = state_slot > -1;
-         addition                          = -1;
-
-         /* Wrap-around to 999 */
-         if (check2 && !check1 && state_slot + addition < -1)
-         {
-            state_slot = 1000;
-            check1     = true;
-         }
+         check = true;
+         state_slot++;
+         /* Wrap-around to 0 */
+         if (state_slot > 999)
+            state_slot = 0;
       }
-      /* Wrap-around to -1 (Auto) */
-      else if (state_slot + addition > 999)
-         state_slot = -2;
+      else if (slot_decrease && !old_slot_decrease)
+      {
+         check = true;
+         state_slot--;
+         /* Wrap to 0 */
+         if (state_slot < 0)
+            state_slot = 0;
+      }
 
-      if (check2)
+      if (check)
       {
          size_t _len;
          char msg[128];
-         int cur_state_slot                = state_slot + addition;
 
-         if (check1)
-            configuration_set_int(settings, settings->ints.state_slot,
-                  cur_state_slot);
+         configuration_set_int(settings, settings->ints.state_slot, state_slot);
          _len  = strlcpy(msg, msg_hash_to_str(MSG_STATE_SLOT), sizeof(msg));
-         _len += snprintf(msg + _len, sizeof(msg) - _len,
-                  ": %d", settings->ints.state_slot);
-
-         if (cur_state_slot < 0)
-            _len += strlcpy(msg + _len, " (Auto)", sizeof(msg) - _len);
+         _len += snprintf(msg + _len, sizeof(msg) - _len, ": %d", state_slot);
 
 #ifdef HAVE_GFX_WIDGETS
+#ifdef HAVE_SCREENSHOTS
+         if (dispwidget_get_ptr()->active && settings->bools.savestate_thumbnail_enable)
+         {
+            char path[PATH_MAX_LENGTH * 2];
+            size_t _len;
+
+            _len = strlcpy(path, runloop_st->name.savestate, sizeof(path));
+
+            if (state_slot > 0)
+               _len += snprintf(path + _len, sizeof(path) - _len, "%d", state_slot);
+
+            strlcpy(path + _len, FILE_PATH_PNG_EXTENSION, sizeof(path) - _len);
+
+            snprintf(msg, sizeof(msg), "%d", state_slot);
+            gfx_widget_state_slot_show(dispwidget_get_ptr(), msg, path);
+         }
+         else
+#endif
          if (dispwidget_get_ptr()->active)
             gfx_widget_set_generic_message(msg, 1000);
          else
 #endif
             runloop_msg_queue_push(msg, _len, 2, 60, true, NULL,
                   MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
-
-         RARCH_LOG("[State] %s\n", msg);
       }
 
-      old_should_slot_increase = should_slot_increase;
-      old_should_slot_decrease = should_slot_decrease;
+      old_slot_increase = slot_increase;
+      old_slot_decrease = slot_decrease;
    }
    /* Check replay slot hotkeys */
    {
@@ -7675,7 +7718,7 @@ bool core_reset_cheat(void)
 bool core_set_poll_type(unsigned type)
 {
    runloop_state_t *runloop_st        = &runloop_state;
-   runloop_st->current_core.poll_type = type;
+   runloop_st->current_core.poll_type = (enum poll_type)type;
    return true;
 }
 
@@ -7869,9 +7912,9 @@ void core_run(void)
       current_core             = &runloop_st->current_core;
    const enum poll_type_override_t
       core_poll_type_override  = runloop_st->core_poll_type_override;
-   enum poll_type new_poll_type      = (core_poll_type_override != POLL_TYPE_OVERRIDE_DONTCARE)
-      ? (core_poll_type_override - 1)
-      : current_core->poll_type;
+   enum poll_type new_poll_type= (core_poll_type_override != POLL_TYPE_OVERRIDE_DONTCARE)
+      ? (enum poll_type)(core_poll_type_override - 1)
+      : (enum poll_type)(current_core->poll_type);
    bool early_polling          = new_poll_type == POLL_TYPE_EARLY;
    bool late_polling           = new_poll_type == POLL_TYPE_LATE;
 #ifdef HAVE_NETWORKING
@@ -8245,7 +8288,7 @@ void runloop_path_deinit_subsystem(void)
 
 void runloop_path_set_special(char **argv, unsigned num_content)
 {
-   unsigned i;
+   size_t i;
    char str[PATH_MAX_LENGTH];
    union string_list_elem_attr attr;
    bool is_dir                         = false;

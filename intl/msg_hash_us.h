@@ -7912,6 +7912,10 @@ MSG_HASH(
    "Last Played:"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_PLAY_COUNT,
+   "Play Count:"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TIME_UNIT_SECONDS_SINGLE,
    "second"
    )
@@ -13923,6 +13927,14 @@ MSG_HASH(
    "Database - Filter: Edge Magazine Rating"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_GENRE,
+   "Database - Filter: Genre"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_REGION,
+   "Database - Filter: Region"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_DATABASE_INFO,
    "Database Info"
    )
@@ -14683,15 +14695,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD,
-   "Failed to load"
+   "Failed to load."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_CONTENT,
-   "Failed to load content"
+   "Failed to load content."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_MOVIE_FILE,
-   "Failed to load movie file"
+   "Failed to load movie file."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_OVERLAY,

@@ -2352,6 +2352,14 @@ MSG_HASH(
 /* Settings > Video > Fullscreen Mode */
 
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN,
+   "Полноэкранный режим"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_VIDEO_FULLSCREEN,
+   "Вывод изображения на весь экран. Может быть изменено в любой момент времени. Возможно переопределение ключом командной строки."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_WINDOWED_FULLSCREEN,
    "Оконный полноэкранный режим"
    )
@@ -3072,7 +3080,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AUDIO_OUTPUT_RATE,
-   "Частота аудиовыхода (кГц)"
+   "Выходная частота (Гц)"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_OUTPUT_RATE,
@@ -3512,11 +3520,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ALLOW_DPAD,
-   "Разрешить турбо для d-pad"
+   "Разрешить турбо для D-Pad"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TURBO_ALLOW_DPAD,
-   "При включении позволяет использовать турбо для цифровых кнопок направлений (известных как d-pad или крестовина)."
+   "При включении позволяет использовать турбо-режим для цифровых кнопок направлений D-Pad."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO_FIRE_SETTINGS,
@@ -4181,11 +4189,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_ADC_TYPE,
-   "Указанный аналоговый джойстик будет работать как D-Pad. Режимы 'принудительно' замещают нативный аналоговый ввод ядра."
+   "Использовать указанный аналоговый стик в качестве D-Pad. Режимы 'принудительно' замещают нативный аналоговый ввод ядра."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_INPUT_ADC_TYPE,
-   "Привязывает указанный аналоговый джойстик к D-Pad. Если ядро нативно поддерживает аналоговый ввод, привязка к D-Pad действует только в режиме '(Принудительно)'. При принудительной привязке к D-Pad ядро не будет получать события ввода с указанного аналогового джойстика."
+   "Привязывает указанный аналоговый стик к D-Pad. Если ядро имеет нативную поддержку аналог. управления привязка к D-Pad будет действовать только в режиме '(принудительно)'. В режиме принудительной привязки к D-Pad ядро не получает события ввода с указанного аналог. стика."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_DEVICE_INDEX,
@@ -7840,6 +7848,10 @@ MSG_HASH(
    "Посл. запуск:"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_PLAY_COUNT,
+   "Число запусков:"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TIME_UNIT_SECONDS_SINGLE,
    "секунда"
    )
@@ -10157,6 +10169,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_ACHIEVEMENT_RESUME_CANCEL,
    "Оставить хардкорный режим достижений отключенным для текущего сеанса."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ACHIEVEMENT_RESUME_REQUIRES_RELOAD,
+   "Отключено восстановление достижений в режиме хардкора"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ACHIEVEMENT_RESUME_REQUIRES_RELOAD,
+   "Для восстановления режима хардкора требуется перезагрузить ядро"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ACHIEVEMENT_PAUSE,
@@ -13167,6 +13187,14 @@ MSG_HASH(
    "База данных - фильтр: оценка журнала Edge"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_GENRE,
+   "База данных - фильтр: жанр"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_REGION,
+   "База данных - фильтр: регион"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_DATABASE_INFO,
    "Информация в базе данных"
    )
@@ -13927,11 +13955,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD,
-   "Не удалось загрузить"
+   "Не удалось загрузить."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_CONTENT,
-   "Не удалось загрузить контент"
+   "Не удалось загрузить контент."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_MOVIE_FILE,

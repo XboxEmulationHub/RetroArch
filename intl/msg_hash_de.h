@@ -7692,6 +7692,10 @@ MSG_HASH(
    "Zuletzt gespielt:"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_PLAY_COUNT,
+   "Gespielt:"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TIME_UNIT_SECONDS_SINGLE,
    "Sekunde"
    )
@@ -12811,6 +12815,14 @@ MSG_HASH(
    "Datenbank - Filter: Edge-Bewertung"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_GENRE,
+   "Datenbank - Filter: Genre"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_REGION,
+   "Datenbank - Filter: Region"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_DATABASE_INFO,
    "Datenbank-Informationen"
    )
@@ -13563,15 +13575,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD,
-   "Laden fehlgeschlagen"
+   "Laden fehlgeschlagen."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_CONTENT,
-   "Laden des Inhalts fehlgeschlagen"
+   "Laden des Inhalts fehlgeschlagen."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_MOVIE_FILE,
-   "Laden der Filmdatei fehlgeschlagen"
+   "Laden der Filmdatei fehlgeschlagen."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_OVERLAY,

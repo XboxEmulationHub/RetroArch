@@ -26,12 +26,12 @@
 
 #include <string.h>
 #include <malloc.h>
-#include <math.h>
 
 #include <retro_inline.h>
 #include <retro_common_api.h>
 
 #include <boolean.h>
+#include <retro_math.h>
 
 #include <string/stdstring.h>
 #include <file/file_path.h>
@@ -1015,18 +1015,21 @@ static void gfx_display_d3d12_draw(gfx_display_ctx_draw_t *draw,
 
          sprite->params.rotation   = draw->rotation;
 
-         sprite->colors[3]         = DXGI_COLOR_RGBA(
-               0xFF * draw->coords->color[0],  0xFF * draw->coords->color[1],
-               0xFF * draw->coords->color[2],  0xFF * draw->coords->color[3]);
-         sprite->colors[2]         = DXGI_COLOR_RGBA(
-               0xFF * draw->coords->color[4],  0xFF * draw->coords->color[5],
-               0xFF * draw->coords->color[6],  0xFF * draw->coords->color[7]);
-         sprite->colors[1]         = DXGI_COLOR_RGBA(
-               0xFF * draw->coords->color[8],  0xFF * draw->coords->color[9],
-               0xFF * draw->coords->color[10], 0xFF * draw->coords->color[11]);
-         sprite->colors[0]         = DXGI_COLOR_RGBA(
-               0xFF * draw->coords->color[12], 0xFF * draw->coords->color[13],
-               0xFF * draw->coords->color[14], 0xFF * draw->coords->color[15]);
+         if (draw->coords && draw->coords->color)
+         {
+            sprite->colors[3]      = DXGI_COLOR_RGBA(
+                  0xFF * draw->coords->color[0],  0xFF * draw->coords->color[1],
+                  0xFF * draw->coords->color[2],  0xFF * draw->coords->color[3]);
+            sprite->colors[2]      = DXGI_COLOR_RGBA(
+                  0xFF * draw->coords->color[4],  0xFF * draw->coords->color[5],
+                  0xFF * draw->coords->color[6],  0xFF * draw->coords->color[7]);
+            sprite->colors[1]      = DXGI_COLOR_RGBA(
+                  0xFF * draw->coords->color[8],  0xFF * draw->coords->color[9],
+                  0xFF * draw->coords->color[10], 0xFF * draw->coords->color[11]);
+            sprite->colors[0]      = DXGI_COLOR_RGBA(
+                  0xFF * draw->coords->color[12], 0xFF * draw->coords->color[13],
+                  0xFF * draw->coords->color[14], 0xFF * draw->coords->color[15]);
+         }
       }
       else
       {
@@ -2202,10 +2205,12 @@ static bool d3d12_gfx_set_shader(void* data, enum rarch_shader_type type, const 
          const char *ps_src     = d3d12->shader_preset->pass[i].source.string.fragment;
          size_t _len            = strlcpy(_path, slang_path, sizeof(_path));
          strlcpy(_path + _len, ".vs.hlsl", sizeof(_path) - _len);
-         if (!d3d_compile(vs_src, 0, _path, "main", "vs_5_0", &vs_code)){ }
+         /* TODO/FIXME - add error handling? */
+         d3d_compile(vs_src, 0, _path, "main", "vs_5_0", &vs_code);
 
          strlcpy(_path + _len, ".ps.hlsl", sizeof(_path) - _len);
-         if (!d3d_compile(ps_src, 0, _path, "main", "ps_5_0", &ps_code)){ }
+         /* TODO/FIXME - add error handling? */
+         d3d_compile(ps_src, 0, _path, "main", "ps_5_0", &ps_code);
 
          desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
          if (i == d3d12->shader_preset->passes - 1)
@@ -3023,24 +3028,26 @@ static void d3d12_init_descriptor_heap(D3D12Device device, d3d12_descriptor_heap
 static bool d3d12_create_root_signature(
       D3D12Device device, D3D12_ROOT_SIGNATURE_DESC* desc, D3D12RootSignature* out)
 {
-   D3DBlob signature, error;
-   D3D12SerializeRootSignature(desc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error);
-
-   if (error)
+   D3DBlob sig = NULL;
+   D3DBlob err = NULL;
+   if (FAILED(D3D12SerializeRootSignature(desc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)))
    {
-      RARCH_ERR(
-            "[D3D12] CreateRootSignature failed: \"%s\".\n", (const char*)error->lpVtbl->GetBufferPointer(error));
-      Release(error);
+      if (err)
+      {
+         RARCH_ERR(
+               "[D3D12] CreateRootSignature failed: \"%s\".\n", (const char*)err->lpVtbl->GetBufferPointer(err));
+         Release(err);
+      }
       return false;
    }
 
    device->lpVtbl->CreateRootSignature(
          device, 0,
-         signature->lpVtbl->GetBufferPointer(signature),
-         signature->lpVtbl->GetBufferSize(signature),
+         sig->lpVtbl->GetBufferPointer(sig),
+         sig->lpVtbl->GetBufferSize(sig),
          uuidof(ID3D12RootSignature),
          (void**)out);
-   Release(signature);
+   Release(sig);
 
    return true;
 }
@@ -3528,6 +3535,9 @@ static void d3d12_init_history(d3d12_video_t* d3d12, unsigned width, unsigned he
 static void d3d12_init_render_targets(d3d12_video_t* d3d12, unsigned width, unsigned height)
 {
    size_t i;
+
+   if (!d3d12->shader_preset)
+      return;
 
    for (i = 0; i < d3d12->shader_preset->passes; i++)
    {

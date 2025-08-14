@@ -2698,7 +2698,6 @@ static int action_ok_playlist_entry_collection(const char *path,
    bool core_is_builtin                   = false;
    menu_handle_t *menu                    = menu_state_get_ptr()->driver_data;
    settings_t *settings                   = config_get_ptr();
-   runloop_state_t *runloop_st            = runloop_state_get_ptr();
    bool playlist_sort_alphabetical        = settings->bools.playlist_sort_alphabetical;
    const char *path_content_history       = settings->paths.path_content_history;
    const char *path_content_image_history = settings->paths.path_content_image_history;
@@ -2761,8 +2760,6 @@ static int action_ok_playlist_entry_collection(const char *path,
       strlcpy(content_path, entry->path, sizeof(content_path));
       playlist_resolve_path(PLAYLIST_LOAD, false, content_path, sizeof(content_path));
    }
-
-   runloop_st->entry_state_slot = entry->entry_slot;
 
    /* Cache entry label */
    if (!string_is_empty(entry->label))
@@ -6666,7 +6663,7 @@ static int action_ok_open_picker(const char *path,
 #ifdef HAVE_WIFI
 static void wifi_menu_refresh_callback(retro_task_t *task,
       void *task_data,
-      void *user_data, const char *error)
+      void *user_data, const char *err)
 {
    struct menu_state *menu_st       = menu_state_get_ptr();
 
@@ -6716,7 +6713,7 @@ static int action_ok_netplay_connect_room(const char *path, const char *label,
 }
 
 static void netplay_refresh_rooms_cb(retro_task_t *task, void *task_data,
-      void *user_data, const char *error)
+      void *user_data, const char *err)
 {
    char *room_data              = NULL;
    const char *path             = NULL;
@@ -6738,9 +6735,9 @@ static void netplay_refresh_rooms_cb(retro_task_t *task, void *task_data,
          && !string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_NETPLAY)))
       return;
 
-   if (error)
+   if (err)
    {
-      RARCH_ERR("[Netplay] %s: %s.\n", msg_hash_to_str(MSG_DOWNLOAD_FAILED), error);
+      RARCH_ERR("[Netplay] %s: %s.\n", msg_hash_to_str(MSG_DOWNLOAD_FAILED), err);
       goto done;
    }
    if (!data || !data->data || !data->len || data->status != 200)
@@ -8913,6 +8910,8 @@ static int is_rdb_entry(enum msg_hash_enums enum_idx)
       case MENU_ENUM_LABEL_RDB_ENTRY_RELEASE_MONTH:
       case MENU_ENUM_LABEL_RDB_ENTRY_RELEASE_YEAR:
       case MENU_ENUM_LABEL_RDB_ENTRY_MAX_USERS:
+      case MENU_ENUM_LABEL_RDB_ENTRY_GENRE:
+      case MENU_ENUM_LABEL_RDB_ENTRY_REGION:
          break;
       default:
          return -1;

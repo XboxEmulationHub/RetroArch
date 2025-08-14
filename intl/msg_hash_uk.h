@@ -2352,6 +2352,14 @@ MSG_HASH(
 /* Settings > Video > Fullscreen Mode */
 
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN,
+   "Повноекранний дисплей"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_VIDEO_FULLSCREEN,
+   "Відображення на повноекранному режимі. Може бути змінене під час роботи. Може бути змінене за допомогою перемикача командного рядка."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_WINDOWED_FULLSCREEN,
    "Повноекранний режим у вікні"
    )
@@ -10083,6 +10091,14 @@ MSG_HASH(
    "Вийти з режиму хардкорних досягнень вимкнуто для поточної сесії"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ACHIEVEMENT_RESUME_REQUIRES_RELOAD,
+   "Досягнення у резюме: режим хардкору вимкнено"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ACHIEVEMENT_RESUME_REQUIRES_RELOAD,
+   "Ви повинні перезавантажити ядро, щоб відновити досягнення в режимі \"Хардкор\""
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ACHIEVEMENT_PAUSE,
    "Призупинити Режим Хардкору Досягнень"
    )
@@ -13223,6 +13239,14 @@ MSG_HASH(
    "База даних - Фільтр: рейтинг Magazine Edge"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_GENRE,
+   "База даних - Фільтр: Жанр"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_REGION,
+   "База даних - Фільтр: Регіон"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_DATABASE_INFO,
    "Інформація про базу даних"
    )
@@ -13980,18 +14004,6 @@ MSG_HASH(
 MSG_HASH(
    MSG_FAILED_TO_GET_NICKNAME_FROM_CLIENT,
    "Не вдалося отримати псевдонім від клієнта."
-   )
-MSG_HASH(
-   MSG_FAILED_TO_LOAD,
-   "Не вдалося завантажити"
-   )
-MSG_HASH(
-   MSG_FAILED_TO_LOAD_CONTENT,
-   "Не вдалося завантажити вміст"
-   )
-MSG_HASH(
-   MSG_FAILED_TO_LOAD_MOVIE_FILE,
-   "Не вдалося завантажити відеофайл"
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_OVERLAY,

@@ -7860,6 +7860,10 @@ MSG_HASH(
    "최근 실행:"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_PLAY_COUNT,
+   "플레이 횟수:"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TIME_UNIT_SECONDS_SINGLE,
    "초"
    )
@@ -13247,6 +13251,14 @@ MSG_HASH(
    "데이터베이스 - 필터: Edge 매거진 등급"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_GENRE,
+   "데이터베이스 – 필터: 장르"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_REGION,
+   "데이터베이스 – 필터: 지역"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_DATABASE_INFO,
    "데이터베이스 정보"
    )
@@ -14007,15 +14019,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD,
-   "불러오기 실패"
+   "로드하는 데 실패했습니다."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_CONTENT,
-   "콘텐츠 불러오기 실패"
+   "콘텐츠를 불러오는 데 실패했습니다."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_MOVIE_FILE,
-   "동영상 파일 불러오기 실패"
+   "동영상 파일을 불러오는 데 실패했습니다."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_OVERLAY,

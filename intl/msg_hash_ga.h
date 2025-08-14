@@ -7824,6 +7824,10 @@ MSG_HASH(
    "Seinnte ar deireadh:"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_PLAY_COUNT,
+   "Comhaireamh Imirt:"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TIME_UNIT_SECONDS_SINGLE,
    "soicind"
    )
@@ -13219,6 +13223,14 @@ MSG_HASH(
    "Bunachar Sonraí - Scagaire: Rátáil Iris Edge"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_GENRE,
+   "Bunachar Sonraí - Scagaire: Seánra"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_REGION,
+   "Bunachar Sonraí - Scagaire: Réigiún"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_DATABASE_INFO,
    "Eolas Bunachar Sonraí"
    )
@@ -13975,15 +13987,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD,
-   "Theip ar an luchtú"
+   "Theip ar an lódáil."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_CONTENT,
-   "Theip ar an ábhar a lódáil"
+   "Theip ar an ábhar a lódáil."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_MOVIE_FILE,
-   "Theip ar an gcomhad scannáin a luchtú"
+   "Theip ar an gcomhad scannáin a luchtú."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_OVERLAY,

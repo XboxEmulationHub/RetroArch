@@ -38,12 +38,6 @@
 #include <signal.h>
 #endif
 
-#if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0500 || defined(_XBOX)
-#ifndef LEGACY_WIN32
-#define LEGACY_WIN32
-#endif
-#endif
-
 #if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
 #include <objbase.h>
 #include <process.h>
@@ -582,8 +576,7 @@ midi_driver_t *midi_drivers[]   = {
 
 static midi_driver_t *midi_driver_find_driver(const char *ident)
 {
-   unsigned i;
-
+   size_t i;
    for (i = 0; i < ARRAY_SIZE(midi_drivers); ++i)
    {
       if (string_is_equal(midi_drivers[i]->ident, ident))
@@ -1236,7 +1229,7 @@ static size_t find_driver_nonempty(
 
 int driver_find_index(const char *label, const char *drv)
 {
-   unsigned i;
+   size_t i;
    char str[NAME_MAX_LENGTH];
 
    str[0] = '\0';
@@ -1263,16 +1256,13 @@ int driver_find_index(const char *label, const char *drv)
  **/
 static void driver_find_last(const char *label, char *s, size_t len)
 {
-   unsigned i;
-
+   size_t i;
    for (i = 0;
          find_driver_nonempty(label, i, s, len) > 0; i++) { }
-
    if (i)
       i = i - 1;
    else
       i = 0;
-
    find_driver_nonempty(label, i, s, len);
 }
 
@@ -3609,6 +3599,11 @@ bool command_event(enum event_command cmd, void *data)
              * ends and writes it to a file */
             ram_state_to_file();
 
+            /* Save auto state */
+            if (settings->bools.savestate_auto_save &&
+                runloop_st->current_core_type != CORE_TYPE_DUMMY)
+               command_event_save_auto_state();
+
             /* Save last selected disk index, if required */
             if (sys_info)
                disk_control_save_image_index(&sys_info->disk_control);
@@ -3618,9 +3613,6 @@ bool command_event(enum event_command cmd, void *data)
                   settings->bools.content_runtime_log_aggregate,
                   settings->paths.directory_runtime_log,
                   settings->paths.directory_playlist);
-            if (settings->bools.savestate_auto_save &&
-                runloop_st->current_core_type != CORE_TYPE_DUMMY)
-               command_event_save_auto_state();
 
             if (     (runloop_st->flags & RUNLOOP_FLAG_REMAPS_CORE_ACTIVE)
                   || (runloop_st->flags & RUNLOOP_FLAG_REMAPS_CONTENT_DIR_ACTIVE)
@@ -4214,6 +4206,15 @@ bool command_event(enum event_command cmd, void *data)
              * ends and writes it to a file */
             ram_state_to_file();
 
+            /* Save auto state */
+            if (     runloop_st
+                  && (runloop_st->flags & RUNLOOP_FLAG_CORE_RUNNING)
+                  && settings->bools.savestate_auto_save)
+            {
+               command_event_save_auto_state();
+               content_wait_for_save_state_task();
+            }
+
             /* Save last selected disk index, if required */
             if (sys_info)
                disk_control_save_image_index(&sys_info->disk_control);
@@ -4223,14 +4224,6 @@ bool command_event(enum event_command cmd, void *data)
                   settings->bools.content_runtime_log_aggregate,
                   settings->paths.directory_runtime_log,
                   settings->paths.directory_playlist);
-
-            if (     runloop_st
-                  && (runloop_st->flags & RUNLOOP_FLAG_CORE_RUNNING)
-                  && settings->bools.savestate_auto_save)
-            {
-               command_event_save_auto_state();
-               content_wait_for_save_state_task();
-            }
 
             content_reset_savestate_backups();
             hwr = VIDEO_DRIVER_GET_HW_CONTEXT_INTERNAL(video_st);
@@ -5231,8 +5224,7 @@ bool command_event(enum event_command cmd, void *data)
          break;
       case CMD_EVENT_RUMBLE_STOP:
          {
-            unsigned i;
-
+            size_t i;
             for (i = 0; i < MAX_USERS; i++)
             {
                unsigned joy_idx = settings->uints.input_joypad_index[i];
@@ -5725,12 +5717,12 @@ void retroarch_override_setting_unset(
 
 static void retroarch_override_setting_free_state(void)
 {
-   unsigned i;
+   size_t i;
    for (i = 0; i < RARCH_OVERRIDE_SETTING_LAST; i++)
    {
       if (i == RARCH_OVERRIDE_SETTING_LIBRETRO_DEVICE)
       {
-         unsigned j;
+         size_t j;
          for (j = 0; j < MAX_USERS; j++)
             retroarch_override_setting_unset(
                   RARCH_OVERRIDE_SETTING_LIBRETRO_DEVICE, &j);
@@ -6177,7 +6169,7 @@ const struct retro_subsystem_info *libretro_find_subsystem_info(
       const struct retro_subsystem_info *info, unsigned num_info,
       const char *ident)
 {
-   unsigned i;
+   size_t i;
    for (i = 0; i < num_info; i++)
    {
       if (     string_is_equal(info[i].ident, ident)
@@ -6206,16 +6198,12 @@ const struct retro_controller_description *
 libretro_find_controller_description(
       const struct retro_controller_info *info, unsigned id)
 {
-   unsigned i;
-
+   size_t i;
    for (i = 0; i < info->num_types; i++)
    {
-      if (info->types[i].id != id)
-         continue;
-
-      return &info->types[i];
+      if (info->types[i].id == id)
+         return &info->types[i];
    }
-
    return NULL;
 }
 
@@ -7203,6 +7191,9 @@ static bool retroarch_parse_input_and_config(
    runloop_st->current_core.flags &= ~(RETRO_CORE_FLAG_HAS_SET_INPUT_DESCRIPTORS
                                      | RETRO_CORE_FLAG_HAS_SET_SUBSYSTEMS);
 
+   /* Reset entry slot */
+   runloop_st->entry_state_slot = -1;
+
    /* Load the config file now that we know what it is */
 #ifdef HAVE_CONFIGFILE
    if (!(p_rarch->flags & RARCH_FLAGS_BLOCK_CONFIG_READ))
@@ -7773,7 +7764,6 @@ bool retroarch_main_init(int argc, char *argv[])
    input_st->osk_idx             = OSK_LOWERCASE_LATIN;
    video_st->flags              |= VIDEO_FLAG_ACTIVE;
    audio_state_get_ptr()->flags |= AUDIO_FLAG_ACTIVE;
-   runloop_st->entry_state_slot  = -1;
 
    if (setjmp(global->error_sjlj_context) > 0)
    {
@@ -8104,8 +8094,6 @@ bool retroarch_main_init(int argc, char *argv[])
 #ifdef HAVE_GAME_AI
    game_ai_init();
 #endif
-
-
 
    return true;
 
@@ -8517,15 +8505,15 @@ size_t retroarch_get_capabilities(enum rarch_capabilities type,
    return _len;
 }
 
-void retroarch_fail(int error_code, const char *error)
+void retroarch_fail(int err_code, const char *err)
 {
    global_t *global                = global_get_ptr();
    /* We cannot longjmp unless we're in retroarch_main_init().
     * If not, something went very wrong, and we should
     * just exit right away. */
-   strlcpy(global->error_string, error,
+   strlcpy(global->error_string, err,
          sizeof(global->error_string));
-   longjmp(global->error_sjlj_context, error_code);
+   longjmp(global->error_sjlj_context, err_code);
 }
 
 /* Called on close content, checks if we need to also exit retroarch */
@@ -8670,7 +8658,7 @@ bool retroarch_main_quit(void)
 
 enum retro_language retroarch_get_language_from_iso(const char *iso639)
 {
-   unsigned i;
+   size_t i;
    enum retro_language lang = RETRO_LANGUAGE_ENGLISH;
 
    struct lang_pair

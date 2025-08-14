@@ -1154,7 +1154,11 @@ static float menu_input_get_dpi(
       mets.type         = DISPLAY_METRIC_DPI;
       mets.value        = &dpi;
       if (!video_context_driver_get_metrics(&mets))
+#ifdef VITA
+         dpi            = 220.0f;
+#else
          dpi            = 0.0f;
+#endif
 
       dpi_cached        = true;
       last_video_width  = video_width;
@@ -7955,6 +7959,7 @@ int generic_menu_entry_action(
    {
       menu_st->flags &= ~MENU_ST_FLAG_PENDING_RELOAD_CORE;
 
+#ifdef HAVE_DYNAMIC
       if (!string_is_empty(path_get(RARCH_PATH_CORE_LAST)))
       {
          content_ctx_info_t content_info = {0};
@@ -7969,6 +7974,7 @@ int generic_menu_entry_action(
                             |  MENU_ST_FLAG_PREVENT_POPULATE;
          }
       }
+#endif
    }
 
    return ret;

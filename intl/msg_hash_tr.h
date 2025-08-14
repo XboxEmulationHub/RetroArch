@@ -7824,6 +7824,10 @@ MSG_HASH(
    "Son Oynama:"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_PLAY_COUNT,
+   "Oynama Sayısı:"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TIME_UNIT_SECONDS_SINGLE,
    "saniye"
    )
@@ -13231,6 +13235,14 @@ MSG_HASH(
    "Veritabanı - Filtre: Edge Dergisi Değerlendirmesi"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_GENRE,
+   "Veritabanı - Filtre: Tür"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_REGION,
+   "Veritabanı - Filtre: Bölge"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_DATABASE_INFO,
    "Veritabanı Bilgisi"
    )
@@ -13991,15 +14003,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD,
-   "Yükleme başarısız"
+   "Yükleme başarısız."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_CONTENT,
-   "İçerik yükleme başarısız"
+   "İçerik yükleme başarısız."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_MOVIE_FILE,
-   "Film dosyası yüklenemedi"
+   "Film dosyası yüklenemedi."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_OVERLAY,

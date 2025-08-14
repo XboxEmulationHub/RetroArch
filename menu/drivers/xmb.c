@@ -1180,9 +1180,9 @@ static void xmb_path_dynamic_wallpaper(xmb_handle_t *xmb, char *s, size_t len)
    if (    (xmb->categories_selection_ptr == XMB_SYSTEM_TAB_MAIN && depth > 3)
         || (xmb->categories_selection_ptr > xmb->system_tab_end && depth > 1))
    {
-      if (string_is_empty(xmb->bg_file_path))
-         return;
-      strlcpy(s, xmb->bg_file_path, len);
+      if (!string_is_empty(xmb->bg_file_path))
+         strlcpy(s, xmb->bg_file_path, len);
+      return;
    }
 
    /* Dynamic wallpaper takes precedence as reset background,
@@ -1208,6 +1208,9 @@ static void xmb_path_dynamic_wallpaper(xmb_handle_t *xmb, char *s, size_t len)
 static void xmb_update_dynamic_wallpaper(xmb_handle_t *xmb, bool reset)
 {
    char path[PATH_MAX_LENGTH];
+
+   path[0] = '\0';
+
    xmb_path_dynamic_wallpaper(xmb, path, sizeof(path));
 
    if (!string_is_equal(path, xmb->bg_file_path) || reset)
@@ -5227,7 +5230,7 @@ static int xmb_draw_item(
       {
          xmb_node_t *sidebar_node = (xmb_node_t*)
                (xmb->horizontal_list.size)
-                  ? file_list_get_userdata_at_offset(&xmb->horizontal_list, list->list[i].entry_idx)
+                  ? (xmb_node_t*)file_list_get_userdata_at_offset(&xmb->horizontal_list, list->list[i].entry_idx)
                   : NULL;
 
          if (sidebar_node && sidebar_node->icon)

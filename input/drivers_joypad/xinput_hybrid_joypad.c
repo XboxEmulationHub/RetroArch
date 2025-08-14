@@ -131,7 +131,8 @@ static bool guid_is_xinput_device(const GUID* product_guid)
       {MAKELONG(0x045E, 0x02A1),0x0000,0x0000,{0x00,0x00,0x50,0x49,0x44,0x56,0x49,0x44}}, /* Wired 360 pad */
       {MAKELONG(0x045E, 0x028E),0x0000,0x0000,{0x00,0x00,0x50,0x49,0x44,0x56,0x49,0x44}}  /* wireless 360 pad */
    };
-   unsigned i, num_raw_devs     = 0;
+   size_t i;
+   unsigned num_raw_devs        = 0;
    PRAWINPUTDEVICELIST raw_devs = NULL;
 
    /* Check for well known XInput device GUIDs,
@@ -143,8 +144,8 @@ static bool guid_is_xinput_device(const GUID* product_guid)
 
    for (i = 0; i < ARRAY_SIZE(common_xinput_guids); ++i)
    {
-      if (string_is_equal_fast(product_guid,
-               &common_xinput_guids[i], sizeof(GUID)))
+      if (memcmp(product_guid,
+               &common_xinput_guids[i], sizeof(GUID)) == 0)
          return true;
    }
 
@@ -330,7 +331,7 @@ enum_iteration_done:
 
 static void dinput_joypad_init_hybrid(void *data)
 {
-   unsigned i;
+   int i;
 
    g_last_xinput_pad_idx = 0;
 
@@ -356,7 +357,7 @@ static const char *xinput_joypad_name(unsigned pad)
 
 static void *xinput_joypad_init(void *data)
 {
-   unsigned i, j;
+   int i, j;
    XINPUT_STATE dummy_state;
 
 #if defined(HAVE_DYLIB) && !defined(__WINRT__)
@@ -543,7 +544,7 @@ static int16_t xinput_joypad_state_func(
       const struct retro_keybind *binds,
       unsigned port)
 {
-   unsigned i;
+   int i;
    uint16_t btn_word;
    int16_t ret                = 0;
    uint16_t port_idx          = joypad_info->joy_idx;
@@ -737,7 +738,7 @@ static bool xinput_joypad_rumble(unsigned pad,
 
 static void xinput_joypad_destroy(void)
 {
-   unsigned i;
+   int i;
 
    for (i = 0; i < 4; ++i)
    {

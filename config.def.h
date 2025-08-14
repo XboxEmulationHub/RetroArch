@@ -84,7 +84,7 @@
 
 #define DEFAULT_TOUCH_SCALE 1
 
-#if defined(RARCH_MOBILE) || defined(HAVE_LIBNX) || defined(__WINRT__) || defined(EMSCRIPTEN)
+#if defined(RARCH_MOBILE) || defined(HAVE_LIBNX) || defined(__WINRT__) || defined(EMSCRIPTEN) || defined (VITA)
 #define DEFAULT_POINTER_ENABLE true
 #else
 #define DEFAULT_POINTER_ENABLE false
@@ -590,7 +590,7 @@
  * controller is connected in port 1 */
 #define DEFAULT_OVERLAY_HIDE_WHEN_GAMEPAD_CONNECTED false
 
-#define DEFAULT_OVERLAY_SHOW_MOUSE_CURSOR true
+#define DEFAULT_OVERLAY_SHOW_MOUSE_CURSOR false
 
 #define DEFAULT_DISPLAY_KEYBOARD_OVERLAY false
 
@@ -965,11 +965,7 @@
 #define DEFAULT_OVERLAY_DPAD_DIAGONAL_SENSITIVITY 80
 #define DEFAULT_OVERLAY_ABXY_DIAGONAL_SENSITIVITY 50
 
-#if defined(ANDROID) || defined(_WIN32) || defined(HAVE_STEAM) || TARGET_OS_TV
 #define DEFAULT_MENU_SWAP_OK_CANCEL_BUTTONS true
-#else
-#define DEFAULT_MENU_SWAP_OK_CANCEL_BUTTONS false
-#endif
 #define DEFAULT_MENU_SWAP_SCROLL_BUTTONS false
 
 #if defined(WIIU)

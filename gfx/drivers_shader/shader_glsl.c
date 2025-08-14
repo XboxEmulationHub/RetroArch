@@ -56,8 +56,8 @@ struct cache_vbo
 {
    GLuint vbo_primary;
    GLuint vbo_secondary;
-   size_t size_primary;
-   size_t size_secondary;
+   size_t len_primary;
+   size_t len_secondary;
    GLfloat *buffer_primary;
    GLfloat *buffer_secondary;
 };
@@ -1016,7 +1016,7 @@ static void *gl_glsl_init(void *data, const char *path)
    struct shader_program_info shader_prog_info;
    bool shader_support        = false;
 #ifdef GLSL_DEBUG
-   char *error_string         = NULL;
+   char *err_string           = NULL;
 #endif
    const char *stock_vertex   = NULL;
    const char *stock_fragment = NULL;
@@ -1177,10 +1177,10 @@ static void *gl_glsl_init(void *data, const char *path)
       gl_glsl_find_uniforms(glsl, i, glsl->prg[i].id, &glsl->uniforms[i]);
 
 #ifdef GLSL_DEBUG
-   if (!gl_check_error(&error_string))
+   if (!gl_check_error(&err_string))
    {
-      RARCH_ERR("%s\n", error_string);
-      free(error_string);
+      RARCH_ERR("%s\n", err_string);
+      free(err_string);
       RARCH_WARN("[GLSL] Detected GL error in GLSL.\n");
    }
 #endif
@@ -1297,9 +1297,8 @@ static void gl_glsl_set_params(void *dat, void *shader_data)
    struct glsl_attrib attribs[32];
    float input_size[2], output_size[2], texture_size[2], final_vp_size[2];
    video_shader_ctx_params_t          *params = (video_shader_ctx_params_t*)dat;
-   gl2_t                             *gl_data = (gl2_t*)params->data;
-   unsigned vp_width                          = gl_data->out_vp_width;
-   unsigned vp_height                         = gl_data->out_vp_height;
+   unsigned vp_width                          = params->vp_width;
+   unsigned vp_height                         = params->vp_height;
    unsigned width                             = params->width;
    unsigned height                            = params->height;
    unsigned tex_width                         = params->tex_width;
@@ -1560,7 +1559,7 @@ static void gl_glsl_set_params(void *dat, void *shader_data)
    if (size)
       gl_glsl_set_attribs(glsl, glsl->vbo[glsl->active_idx].vbo_secondary,
             &glsl->vbo[glsl->active_idx].buffer_secondary,
-            &glsl->vbo[glsl->active_idx].size_secondary,
+            &glsl->vbo[glsl->active_idx].len_secondary,
             buffer, size, attribs, attribs_size);
 
    glActiveTexture(GL_TEXTURE0);
@@ -1692,7 +1691,7 @@ static bool gl_glsl_set_coords(void *shader_data,
       gl_glsl_set_attribs(glsl,
             glsl->vbo[glsl->active_idx].vbo_primary,
             &glsl->vbo[glsl->active_idx].buffer_primary,
-            &glsl->vbo[glsl->active_idx].size_primary,
+            &glsl->vbo[glsl->active_idx].len_primary,
             buffer, size,
             attribs, attribs_size);
 

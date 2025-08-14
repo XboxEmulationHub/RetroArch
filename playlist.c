@@ -1094,12 +1094,10 @@ void playlist_update_thumbnail_name_flag(playlist_t *playlist, size_t idx,
 enum playlist_thumbnail_name_flags playlist_get_curr_thumbnail_name_flag(playlist_t *playlist, size_t idx)
 {
    struct playlist_entry *entry = NULL;
-
    if (!playlist || idx >= RBUF_LEN(playlist->entries))
       return    PLAYLIST_THUMBNAIL_FLAG_NONE;
-
    entry = &playlist->entries[idx];
-   return entry->thumbnail_flags;
+   return (enum playlist_thumbnail_name_flags)entry->thumbnail_flags;
 }
 
 
@@ -1109,7 +1107,7 @@ enum playlist_thumbnail_name_flags playlist_get_next_thumbnail_name_flag(playlis
 
    if (!playlist || idx >= RBUF_LEN(playlist->entries))
       return    PLAYLIST_THUMBNAIL_FLAG_NONE;
-   entry = &playlist->entries[idx];
+   entry = (struct playlist_entry*)&playlist->entries[idx];
 
    if (entry->thumbnail_flags & PLAYLIST_THUMBNAIL_FLAG_SHORT_NAME)
             return PLAYLIST_THUMBNAIL_FLAG_NONE;
@@ -1406,7 +1404,9 @@ bool playlist_push(playlist_t *playlist,
             continue;
       }
 
-      if (playlist->entries[i].entry_slot != entry->entry_slot)
+      /* Only write non-redundant entry slot numbers */
+      if (     playlist->entries[i].entry_slot != entry->entry_slot
+            && (int)entry->entry_slot > 0)
       {
          playlist->entries[i].entry_slot  = entry->entry_slot;
          entry_updated                    = true;
@@ -1962,17 +1962,6 @@ void playlist_write_file(playlist_t *playlist)
          rjsonwriter_add_string(writer, playlist->entries[i].path);
          rjsonwriter_raw(writer, ",", 1);
 
-         if (playlist->entries[i].entry_slot)
-         {
-            rjsonwriter_raw(writer, "\n", 1);
-            rjsonwriter_add_spaces(writer, 6);
-            rjsonwriter_add_string(writer, "entry_slot");
-            rjsonwriter_raw(writer, ":", 1);
-            rjsonwriter_raw(writer, " ", 1);
-            rjsonwriter_rawf(writer, "%d", (int)playlist->entries[i].entry_slot);
-            rjsonwriter_raw(writer, ",", 1);
-         }
-
          rjsonwriter_raw(writer, "\n", 1);
          rjsonwriter_add_spaces(writer, 6);
          rjsonwriter_add_string(writer, "label");
@@ -2011,6 +2000,23 @@ void playlist_write_file(playlist_t *playlist)
          rjsonwriter_raw(writer, ":", 1);
          rjsonwriter_raw(writer, " ", 1);
          rjsonwriter_add_string(writer, playlist->entries[i].db_name);
+
+         /* Conditional rows must add "," first */
+
+         /* Typecast required because playlist_entry.entry_slot is unsigned,
+          * and 0 and -1 are redundant, but runloop.entry_state_slot is int16_t
+          * and must be able to be negative, because 0 is a valid slot */
+         if (     (int)playlist->entries[i].entry_slot > 0
+               && !strstr(playlist->config.path, FILE_PATH_BUILTIN))
+         {
+            rjsonwriter_raw(writer, ",", 1);
+            rjsonwriter_raw(writer, "\n", 1);
+            rjsonwriter_add_spaces(writer, 6);
+            rjsonwriter_add_string(writer, "entry_slot");
+            rjsonwriter_raw(writer, ":", 1);
+            rjsonwriter_raw(writer, " ", 1);
+            rjsonwriter_rawf(writer, "%d", (int)playlist->entries[i].entry_slot);
+         }
 
          if (!string_is_empty(playlist->entries[i].subsystem_ident))
          {
@@ -2546,10 +2552,10 @@ static bool JSONObjectMemberHandler(void *context, const char *pValue, size_t le
             else if (string_is_equal(pValue, "sort_mode"))
                pCtx->current_meta_sort_mode_val = &pCtx->playlist->sort_mode;
             break;
-	  case 't':
+         case 't':
             if (string_is_equal(pValue, "thumbnail_match_mode"))
                pCtx->current_meta_thumbnail_match_mode_val     = &pCtx->playlist->thumbnail_match_mode;
-	    break;
+            break;
       }
    }
 
@@ -2572,7 +2578,6 @@ static size_t playlist_get_old_format_metadata_value(
 
 static bool playlist_read_file(playlist_t *playlist)
 {
-   unsigned i;
    int test_char;
    bool res             = true;
 #if defined(HAVE_ZLIB)
@@ -2667,6 +2672,7 @@ static bool playlist_read_file(playlist_t *playlist)
    }
    else
    {
+      size_t i;
       size_t _len = RBUF_LEN(playlist->entries);
       char line_buf[PLAYLIST_ENTRIES][PATH_MAX_LENGTH] = {{0}};
 
@@ -2908,7 +2914,7 @@ bool playlist_init_cached(const playlist_config_t *config)
  **/
 playlist_t *playlist_init(const playlist_config_t *config)
 {
-   playlist_t           *playlist   = (playlist_t*)malloc(sizeof(*playlist));
+   playlist_t *playlist = (playlist_t*)malloc(sizeof(*playlist));
    if (!playlist)
       return NULL;
 
@@ -3110,7 +3116,6 @@ static int playlist_qsort_func(const struct playlist_entry *a,
    ret = strcasecmp(a_str, b_str);
 
 end:
-
    a_str = NULL;
    b_str = NULL;
 

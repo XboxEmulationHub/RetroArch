@@ -11423,6 +11423,14 @@ MSG_HASH(
    "Baza danych - Filtr: Ocena magazynu Edge"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_GENRE,
+   "Baza danych - Filtr: Gatunek"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_REGION,
+   "Baza danych - Filtr: Region"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_DATABASE_INFO,
    "Informacje o bazie danych"
    )
@@ -12147,15 +12155,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD,
-   "Nie udało się załadować"
+   "Nie udało się załadować."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_CONTENT,
-   "Nie udało się wczytać treści"
+   "Nie udało się załadować zawartości."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_MOVIE_FILE,
-   "Nie udało się załadować pliku filmowego"
+   "Nie udało się załadować pliku filmu."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_OVERLAY,

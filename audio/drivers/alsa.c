@@ -226,7 +226,6 @@ static void *alsa_microphone_open_mic(void *driver_context,
    if (!alsa) /* If we weren't given a valid ALSA context... */
       return NULL;
 
-
    /* If the microphone context couldn't be allocated... */
    if (!(mic = calloc(1, sizeof(alsa_microphone_handle_t))))
       return NULL;
@@ -326,10 +325,9 @@ static void *alsa_init(const char *device, unsigned rate, unsigned latency,
 
    RARCH_LOG("[ALSA] Using ALSA version %s.\n", snd_asoundlib_version());
 
-   if (alsa_init_pcm(&alsa->pcm, device, SND_PCM_STREAM_PLAYBACK, rate, latency, 2, &alsa->stream_info, new_rate, SND_PCM_NONBLOCK) < 0)
-   {
+   if (alsa_init_pcm(&alsa->pcm, device, SND_PCM_STREAM_PLAYBACK, rate,
+            latency, 2, &alsa->stream_info, new_rate, SND_PCM_NONBLOCK) < 0)
       goto error;
-   }
 
    return alsa;
 
@@ -369,7 +367,7 @@ static bool alsa_start(void *data, bool is_shutdown)
 
 static ssize_t alsa_write(void *data, const void *buf_, size_t len)
 {
-   ssize_t written        = 0;
+   ssize_t _len = 0;
    alsa_t *alsa           = (alsa_t*)data;
    const uint8_t *buf     = (const uint8_t*)buf_;
    snd_pcm_sframes_t size = BYTES_TO_FRAMES(len, alsa->stream_info.frame_bits);
@@ -377,9 +375,8 @@ static ssize_t alsa_write(void *data, const void *buf_, size_t len)
 
    /* Workaround buggy menu code.
     * If a write happens while we're paused, we might never progress. */
-   if (alsa->is_paused)
-      if (!alsa_start(alsa, false))
-         return -1;
+   if (alsa->is_paused && !alsa_start(alsa, false))
+      return -1;
 
    if (alsa->nonblock)
    {
@@ -399,9 +396,9 @@ static ssize_t alsa_write(void *data, const void *buf_, size_t len)
          else if (frames < 0)
             return -1;
 
-         written += frames;
-         buf     += (frames << 1) * frames_size;
-         size    -= frames;
+         _len  += frames;
+         buf   += (frames << 1) * frames_size;
+         size  -= frames;
       }
    }
    else
@@ -442,13 +439,13 @@ static ssize_t alsa_write(void *data, const void *buf_, size_t len)
          else if (frames < 0)
             return -1;
 
-         written += frames;
-         buf     += (frames << 1) * frames_size;
-         size    -= frames;
+         _len += frames;
+         buf  += (frames << 1) * frames_size;
+         size -= frames;
       }
    }
 
-   return written;
+   return _len;
 }
 
 static bool alsa_alive(void *data)

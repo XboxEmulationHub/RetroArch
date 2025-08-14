@@ -12994,18 +12994,6 @@ MSG_HASH(
    "Misslyckades med att få smeknamn från klient."
    )
 MSG_HASH(
-   MSG_FAILED_TO_LOAD,
-   "Misslyckades att läsa in"
-   )
-MSG_HASH(
-   MSG_FAILED_TO_LOAD_CONTENT,
-   "Misslyckades att läsa in innehåll"
-   )
-MSG_HASH(
-   MSG_FAILED_TO_LOAD_MOVIE_FILE,
-   "Misslyckades med att läsa filmfilen"
-   )
-MSG_HASH(
    MSG_FAILED_TO_LOAD_OVERLAY,
    "Misslyckades med att läsa in överlägg."
    )
@@ -13758,6 +13746,22 @@ MSG_HASH(
    "Misslyckades med att skapa sekundär instans. Run-Ahead kommer nu endast använda en instans."
    )
 MSG_HASH(
+   MSG_PREEMPT_CORE_DOES_NOT_SUPPORT_PREEMPT,
+   "Preemptive Frames är inte tillgängligt eftersom denna kärna saknar stöd för deterministisk sparning av tillstånd."
+   )
+MSG_HASH(
+   MSG_PREEMPT_FAILED_TO_ALLOCATE,
+   "Det gick inte att allokera minne för Preemptive Frames."
+   )
+MSG_HASH(
+   MSG_PREEMPT_FAILED_TO_SAVE_STATE,
+   "Det gick inte att spara tillståndet. Preemptive Frames har inaktiverats."
+   )
+MSG_HASH(
+   MSG_PREEMPT_FAILED_TO_LOAD_STATE,
+   "Det gick inte att läsa in tillståndet. Preemptive Frames har inaktiverats."
+   )
+MSG_HASH(
    MSG_SCANNING_OF_FILE_FINISHED,
    "Genomsökning av fil genomförd."
    )
@@ -14292,6 +14296,10 @@ MSG_HASH(
    "Videogamma"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_SOFT_FILTER,
+   "Mjukt filter"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_BLUETOOTH_SETTINGS,
    "Skanna efter bluetooth-enheter och anslut dem."
    )
@@ -14362,6 +14370,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CPU_PERF_MODE_MANAGED_PER_CONTEXT,
    "Anpassad hanterad"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_VALUE_CPU_PERF_MODE_MANAGED_PER_CONTEXT,
+   "Gör det möjligt att välja vilka styrande faktorer som ska användas i menyer och under spel. Prestanda, Ondemand eller Schedutil rekommenderas under spel."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CPU_PERF_MODE_MAX_PERF,
@@ -14444,6 +14456,18 @@ MSG_HASH(
    "Blockera bildrutor"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_PREFER_FRONT_TOUCH,
+   "Föredra främre tryck"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_INPUT_PREFER_FRONT_TOUCH,
+   "Använd främre istället för bakre tryck."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_ENABLE,
+   "Tryck"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_ICADE_ENABLE,
    "Mappning för tangentbordskontroller"
    )
@@ -14454,6 +14478,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_SMALL_KEYBOARD_ENABLE,
    "Litet tangentbord"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_BLOCK_TIMEOUT,
+   "Tidsgräns för inmatningsblock"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_BLOCK_TIMEOUT,
@@ -14642,13 +14670,41 @@ MSG_HASH(
    )
 #endif
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_SCALE,
+   "Tryckskala"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TOUCH_SCALE,
    "Justera x/y-skalan för pekskärmens koordinater för att anpassa den till OS-nivåns skärmskalning."
    )
 #ifdef UDEV_TOUCH_SUPPORT
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_POINTER,
+   "Tryck på VMouse som pekare"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_MOUSE,
+   "Tryck på VMouse som mus"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TOUCH_VMOUSE_MOUSE,
+   "Aktivera virtuell musemulering med hjälp av inmatningshändelser vid beröring."
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TOUCH_VMOUSE_TOUCHPAD,
    "Aktivera tillsammans med mus för att använda pekskärmen som pekplatta."
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TOUCH_VMOUSE_TRACKBALL,
+   "Aktivera tillsammans med musen för att använda pekskärmen som en styrkula, vilket ger pekaren tröghet."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_GESTURE,
+   "Gester för tryck på VMouse"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_TOUCH_VMOUSE_GESTURE,
+   "Aktivera pekskärmsgester, inklusive tryck, tryck-dra och svep med fingret."
    )
 #endif
 #ifdef HAVE_ODROIDGO2
@@ -14790,6 +14846,14 @@ MSG_HASH(
    "Genomsökning slutförd.<br><br>\nFör att innehållet ska sökas igenom korrekt måste du:\n<ul><li>ha en kompatibel kärna redan hämtat</li>\n<li>ha ”Kärninfofiler” uppdaterade via Online-uppdaterare</li>\n<li>ha ”Databaser” uppdaterade via Online-uppdaterare</li>\n<li>starta om RetroArch om något av ovanstående just har gjorts</li></ul>\nSlutligen måste innehållet matcha befintliga databaser från <a href=\"https://docs. libretro.com/guides/roms-playlists-thumbnails/#sources\">här</a>. Om det fortfarande inte fungerar kan du överväga att <a href=”https://www.github.com/libretro/RetroArch/issues”>skicka in en felrapport</a>."
    )
 #endif
+MSG_HASH(
+   MSG_IOS_TOUCH_MOUSE_ENABLED,
+   "Tryckmus är aktiverad"
+   )
+MSG_HASH(
+   MSG_IOS_TOUCH_MOUSE_DISABLED,
+   "Tryckmus är inaktiverad"
+   )
 MSG_HASH(
    MSG_SDL2_MIC_NEEDS_SDL2_AUDIO,
    "sdl2-mikrofonen kräver sdl2-ljuddrivrutin"

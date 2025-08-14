@@ -55,6 +55,8 @@ typedef struct
    char **current_entry_val;
    char *runtime_string;
    char *last_played_string;
+   char *play_count;
+   char *state_slot;
 } RtlJSONContext;
 
 static bool RtlJSONObjectMemberHandler(void *ctx, const char *s, size_t len)
@@ -71,6 +73,10 @@ static bool RtlJSONObjectMemberHandler(void *ctx, const char *s, size_t len)
          p_ctx->current_entry_val = &p_ctx->runtime_string;
       else if (string_is_equal(s, "last_played"))
          p_ctx->current_entry_val = &p_ctx->last_played_string;
+      else if (string_is_equal(s, "play_count"))
+         p_ctx->current_entry_val = &p_ctx->play_count;
+      else if (string_is_equal(s, "state_slot"))
+         p_ctx->current_entry_val = &p_ctx->state_slot;
       /* Ignore unknown members */
    }
 
@@ -112,6 +118,10 @@ static void runtime_log_read_file(runtime_log_t *runtime_log)
    unsigned last_played_hour   = 0;
    unsigned last_played_minute = 0;
    unsigned last_played_second = 0;
+
+   unsigned play_count         = 0;
+
+   unsigned state_slot         = 0;
 
    RtlJSONContext context      = {0};
    /* Attempt to open log file */
@@ -193,6 +203,37 @@ static void runtime_log_read_file(runtime_log_t *runtime_log)
       }
    }
 
+   /* Play count */
+   if (!string_is_empty(context.play_count))
+   {
+      if (sscanf(context.play_count,
+               "%u",
+               &play_count) != 1)
+      {
+         RARCH_ERR("[Runtime] Invalid \"play count\" entry detected: \"%s\".\n", runtime_log->path);
+         goto end;
+      }
+   }
+
+   /* State slot */
+   if (!string_is_empty(context.state_slot))
+   {
+      if (sscanf(context.state_slot,
+               "%04u",
+               &state_slot) != 1)
+      {
+         RARCH_ERR("[Runtime] Invalid \"state slot\" entry detected: \"%s\".\n", runtime_log->path);
+         goto end;
+      }
+   }
+
+   if (     state_slot > 0
+         && state_slot < 1000)
+   {
+      runloop_state_t *runloop_st  = runloop_state_get_ptr();
+      runloop_st->entry_state_slot = state_slot;
+   }
+
    /* If we reach this point then all is well
     * > Assign values to runtime_log object */
    runtime_log->runtime.hours      = runtime_hours;
@@ -206,12 +247,20 @@ static void runtime_log_read_file(runtime_log_t *runtime_log)
    runtime_log->last_played.minute = last_played_minute;
    runtime_log->last_played.second = last_played_second;
 
+   runtime_log->play_count         = play_count;
+
+   runtime_log->state_slot         = state_slot;
+
 end:
    /* Clean up leftover strings */
    if (context.runtime_string)
       free(context.runtime_string);
    if (context.last_played_string)
       free(context.last_played_string);
+   if (context.play_count)
+      free(context.play_count);
+   if (context.state_slot)
+      free(context.state_slot);
 
    /* Close log file */
    filestream_close(file);
@@ -317,8 +366,10 @@ runtime_log_t *runtime_log_init(
        * no content is provided, 'content' is simply
        * the name of the core itself */
       if (supports_no_game)
-         fill_pathname(content_name, core_name,
-               ".lrtl", sizeof(content_name));
+         fill_pathname(content_name,
+               core_name,
+               FILE_PATH_RUNTIME_EXTENSION,
+               sizeof(content_name));
    }
    /* NOTE: TyrQuake requires a specific hack, since all
     * content has the same name... */
@@ -334,12 +385,16 @@ runtime_log_t *runtime_log_init(
             strlcpy(tmp_buf,
                   content_path, _len * sizeof(char));
             fill_pathname(content_name,
-                  path_basename(tmp_buf), ".lrtl", sizeof(content_name));
+                  path_basename(tmp_buf),
+                  FILE_PATH_RUNTIME_EXTENSION,
+                  sizeof(content_name));
          }
       }
    }
    else
-      fill_pathname(content_name, path_basename(content_path), ".lrtl",
+      fill_pathname(content_name,
+            path_basename(content_path),
+            FILE_PATH_RUNTIME_EXTENSION,
             sizeof(content_name));
 
    if (string_is_empty(content_name))
@@ -369,6 +424,10 @@ runtime_log_t *runtime_log_init(
    runtime_log->last_played.minute = 0;
    runtime_log->last_played.second = 0;
 
+   runtime_log->play_count         = 0;
+
+   runtime_log->state_slot         = 0;
+
    runtime_log->path[0]            = '\0';
 
    strlcpy(runtime_log->path, log_file_path, sizeof(runtime_log->path));
@@ -384,9 +443,9 @@ runtime_log_t *runtime_log_init(
 static retro_time_t runtime_log_convert_hms2usec(unsigned hours,
       unsigned minutes, unsigned seconds)
 {
-   return ( (retro_time_t)hours   * 60 * 60 * 1000000) +
-           ((retro_time_t)minutes * 60      * 1000000) +
-           ((retro_time_t)seconds           * 1000000);
+   return (   (retro_time_t)hours   * 60 * 60 * 1000000)
+           + ((retro_time_t)minutes * 60      * 1000000)
+           + ((retro_time_t)seconds           * 1000000);
 }
 
 /* Setters */
@@ -468,6 +527,10 @@ void runtime_log_reset(runtime_log_t *runtime_log)
    runtime_log->last_played.hour   = 0;
    runtime_log->last_played.minute = 0;
    runtime_log->last_played.second = 0;
+
+   runtime_log->play_count         = 0;
+
+   runtime_log->state_slot         = 0;
 }
 
 /* Getters */
@@ -1109,6 +1172,34 @@ void runtime_log_save(runtime_log_t *runtime_log)
 
    rjsonwriter_add_spaces(writer, 2);
    rjsonwriter_add_string(writer, "last_played");
+   rjsonwriter_raw(writer, ":", 1);
+   rjsonwriter_raw(writer, " ", 1);
+   rjsonwriter_add_string(writer, value_string);
+   rjsonwriter_raw(writer, ",", 1);
+   rjsonwriter_raw(writer, "\n", 1);
+
+   /* > Play count */
+   value_string[0] = '\0';
+   snprintf(value_string, sizeof(value_string),
+         "%u",
+         runtime_log->play_count);
+
+   rjsonwriter_add_spaces(writer, 2);
+   rjsonwriter_add_string(writer, "play_count");
+   rjsonwriter_raw(writer, ":", 1);
+   rjsonwriter_raw(writer, " ", 1);
+   rjsonwriter_add_string(writer, value_string);
+   rjsonwriter_raw(writer, ",", 1);
+   rjsonwriter_raw(writer, "\n", 1);
+
+   /* > Current state slot */
+   value_string[0] = '\0';
+   snprintf(value_string, sizeof(value_string),
+         "%u",
+         runtime_log->state_slot);
+
+   rjsonwriter_add_spaces(writer, 2);
+   rjsonwriter_add_string(writer, "state_slot");
    rjsonwriter_raw(writer, ":", 1);
    rjsonwriter_raw(writer, " ", 1);
    rjsonwriter_add_string(writer, value_string);

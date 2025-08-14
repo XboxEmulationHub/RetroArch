@@ -753,7 +753,7 @@ static bool content_file_extract_from_archive(
       content_state_t *p_content,
       const char *valid_exts,
       const char **content_path,
-      char **error_string)
+      char **err_string)
 {
    const char *tmp_path_ptr = NULL;
    char tmp_path[PATH_MAX_LENGTH];
@@ -775,7 +775,7 @@ static bool content_file_extract_from_archive(
       snprintf(msg, sizeof(msg), "%s: \"%s\".\n",
             msg_hash_to_str(MSG_FAILED_TO_EXTRACT_CONTENT_FROM_COMPRESSED_FILE),
             *content_path);
-      *error_string = strdup(msg);
+      *err_string = strdup(msg);
       return false;
    }
 
@@ -917,7 +917,7 @@ static bool content_file_load(
       struct string_list *content,
       content_information_ctx_t *content_ctx,
       enum msg_hash_enums *error_enum,
-      char **error_string,
+      char **err_string,
       const struct retro_subsystem_info *special)
 {
    size_t i;
@@ -980,7 +980,7 @@ static bool content_file_load(
                snprintf(msg, sizeof(msg), "%s \"%s\"\n",
                      msg_hash_to_str(MSG_COULD_NOT_READ_CONTENT_FILE),
                      content_path);
-               *error_string = strdup(msg);
+               *err_string = strdup(msg);
                return false;
             }
          }
@@ -992,7 +992,7 @@ static bool content_file_load(
             if (    content_compressed
                 && !((content->elems[i].attr.i & BLCK_BLOCK_EXTRACT) != 0)
                 && !content_file_extract_from_archive(content_ctx, p_content,
-                     valid_exts, &content_path, error_string))
+                     valid_exts, &content_path, err_string))
                return false;
 #endif
 #ifdef __WINRT__
@@ -1061,7 +1061,7 @@ static bool content_file_load(
                      snprintf(msg, sizeof(msg), "%s \"%s\". (during copy read or write)\n",
                         msg_hash_to_str(MSG_COULD_NOT_READ_CONTENT_FILE),
                         content_path);
-                     *error_string = strdup(msg);
+                     *err_string = strdup(msg);
                      return false;
                   }
 
@@ -1148,7 +1148,7 @@ static const struct retro_subsystem_info *content_file_init_subsystem(
       const struct retro_subsystem_info *subsystem_data,
       size_t subsystem_current_count,
       enum msg_hash_enums *error_enum,
-      char **error_string,
+      char **err_string,
       bool *ret)
 {
    struct string_list *subsystem              = path_get_subsystem_list();
@@ -1163,8 +1163,9 @@ static const struct retro_subsystem_info *content_file_init_subsystem(
       snprintf(msg, sizeof(msg),
             "Failed to find subsystem \"%s\" in libretro implementation.\n",
             path_get(RARCH_PATH_SUBSYSTEM));
-      *error_string = strdup(msg);
-      goto error;
+      *err_string = strdup(msg);
+      *ret = false;
+      return NULL;
    }
 
    if (special->num_roms)
@@ -1172,7 +1173,8 @@ static const struct retro_subsystem_info *content_file_init_subsystem(
       if (!subsystem)
       {
          *error_enum = MSG_ERROR_LIBRETRO_CORE_REQUIRES_SPECIAL_CONTENT;
-         goto error;
+         *ret = false;
+         return NULL;
       }
 
       if (special->num_roms != subsystem->size)
@@ -1184,8 +1186,9 @@ static const struct retro_subsystem_info *content_file_init_subsystem(
                "subsystem \"%s\", but %u content files were provided.\n",
                special->num_roms, special->desc,
                (unsigned)subsystem->size);
-         *error_string = strdup(msg);
-         goto error;
+         *err_string = strdup(msg);
+         *ret = false;
+         return NULL;
       }
    }
    else if (subsystem && subsystem->size)
@@ -1197,23 +1200,19 @@ static const struct retro_subsystem_info *content_file_init_subsystem(
             "but %u content files were provided.\n",
             special->desc,
             (unsigned)subsystem->size);
-      *error_string = strdup(msg);
-      goto error;
+      *err_string = strdup(msg);
+      *ret = false;
+      return NULL;
    }
 
    *ret = true;
    return special;
-
-error:
-   *ret = false;
-   return NULL;
 }
 
 static void content_file_set_attributes(
       struct string_list *content,
       const struct retro_subsystem_info *special,
-      content_information_ctx_t *content_ctx,
-      char **error_string)
+      content_information_ctx_t *content_ctx)
 {
    struct string_list *subsystem = path_get_subsystem_list();
 
@@ -1285,18 +1284,18 @@ static bool content_file_init(
       content_state_t *p_content,
       struct string_list *content,
       enum msg_hash_enums *error_enum,
-      char **error_string)
+      char **err_string)
 {
    bool subsystem_path_is_empty               = path_is_empty(RARCH_PATH_SUBSYSTEM);
    bool ret                                   = subsystem_path_is_empty;
    const struct retro_subsystem_info *special = subsystem_path_is_empty ?
          NULL : content_file_init_subsystem(content_ctx->subsystem.data,
-               content_ctx->subsystem.size, error_enum, error_string, &ret);
+               content_ctx->subsystem.size, error_enum, err_string, &ret);
 
    if (!ret)
       return false;
 
-   content_file_set_attributes(content, special, content_ctx, error_string);
+   content_file_set_attributes(content, special, content_ctx);
 
    if (content->size > 0)
    {
@@ -1305,7 +1304,7 @@ static bool content_file_init(
       {
          p_content->content_list     = file_list;
          ret = content_file_load(p_content, content, content_ctx,
-               error_enum, error_string, special);
+               error_enum, err_string, special);
 
          content_file_list_free_transient_data(p_content->content_list);
          return ret;
@@ -1397,7 +1396,7 @@ static void content_load_init_wrap(
 static bool content_load(content_ctx_info_t *info,
       content_state_t *p_content)
 {
-   unsigned i;
+   size_t i;
    bool success                      = false;
    int rarch_argc                    = 0;
    char *rarch_argv[MAX_ARGS]        = {NULL};
@@ -2778,7 +2777,7 @@ uint8_t content_get_flags(void)
 /* Clears the pending subsystem rom buffer*/
 void content_clear_subsystem(void)
 {
-   unsigned i;
+   size_t i;
    content_state_t  *p_content          = content_state_get_ptr();
 
    p_content->pending_subsystem_rom_id  = 0;
@@ -2829,7 +2828,7 @@ void content_set_subsystem(unsigned idx)
 /* Sets the subsystem by name */
 bool content_set_subsystem_by_name(const char* subsystem_name)
 {
-   unsigned i;
+   size_t i;
    runloop_state_t         *runloop_st = runloop_state_get_ptr();
    rarch_system_info_t       *sys_info = &runloop_st->system;
    /* Core not loaded completely, use the data we peeked on load core */
@@ -2854,7 +2853,7 @@ bool content_set_subsystem_by_name(const char* subsystem_name)
 
 size_t content_get_subsystem_friendly_name(const char* subsystem_name, char *s, size_t len)
 {
-   unsigned i;
+   size_t i;
    runloop_state_t *runloop_st                  = runloop_state_get_ptr();
    rarch_system_info_t                *sys_info = &runloop_st->system;
    /* Core not loaded completely, use the data we peeked on load core */
@@ -2919,7 +2918,7 @@ void content_unset_does_not_need_content(void)
  */
 static uint32_t file_crc32(uint32_t crc, const char *path)
 {
-   unsigned i;
+   size_t i;
    RFILE *file        = NULL;
    unsigned char *buf = NULL;
    if (!path)
@@ -3017,7 +3016,7 @@ bool content_init(void)
    enum msg_hash_enums error_enum     = MSG_UNKNOWN;
    content_state_t *p_content         = content_state_get_ptr();
    bool ret                           = true;
-   char *error_string                 = NULL;
+   char *err_string                   = NULL;
    runloop_state_t *runloop_st        = runloop_state_get_ptr();
    rarch_system_info_t *sys_info      = &runloop_st->system;
    settings_t *settings               = config_get_ptr();
@@ -3098,7 +3097,7 @@ bool content_init(void)
    if (string_list_initialize(&content))
    {
       if (!content_file_init(&content_ctx, p_content,
-            &content, &error_enum, &error_string))
+            &content, &error_enum, &err_string))
       {
          content_deinit();
          ret = false;
@@ -3133,7 +3132,7 @@ bool content_init(void)
                const char *_msg = msg_hash_to_str(error_enum);
                RARCH_ERR("[Content] %s\n", _msg);
                runloop_msg_queue_push(_msg, strlen(_msg), 2, ret ? 1 : 180, false, NULL,
-                     MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+                     MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_ERROR);
             }
             break;
          case MSG_UNKNOWN:
@@ -3142,19 +3141,19 @@ bool content_init(void)
       }
    }
 
-   if (error_string)
+   if (err_string)
    {
       if (ret)
-         RARCH_LOG("[Content] %s\n", error_string);
+         RARCH_LOG("[Content] %s\n", err_string);
       else
-         RARCH_ERR("[Content] %s\n", error_string);
+         RARCH_ERR("[Content] %s\n", err_string);
 
       /* Do not flush the message queue here
        * > This allows any core-generated error messages
        *   to propagate through to the frontend */
-      runloop_msg_queue_push(error_string, strlen(error_string), 2, ret ? 1 : 180, false, NULL,
-            MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
-      free(error_string);
+      runloop_msg_queue_push(err_string, strlen(err_string), 2, ret ? 1 : 180, false, NULL,
+            MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_ERROR);
+      free(err_string);
    }
 
    return ret;

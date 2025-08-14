@@ -7820,6 +7820,10 @@ MSG_HASH(
    "Última partida:"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_PLAY_COUNT,
+   "Partidas:"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TIME_UNIT_SECONDS_SINGLE,
    "segundo"
    )
@@ -13147,6 +13151,14 @@ MSG_HASH(
    "Filtro de base de datos: puntuación de la revista Edge"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_GENRE,
+   "Filtro de base de datos: género"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_REGION,
+   "Filtro de base de datos: región"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_DATABASE_INFO,
    "Información de base de datos"
    )
@@ -13899,11 +13911,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD,
-   "Error al cargar"
+   "Error al cargar."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_CONTENT,
-   "Error al cargar contenido"
+   "Error al cargar contenido."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_MOVIE_FILE,

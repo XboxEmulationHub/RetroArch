@@ -32,6 +32,7 @@
 #if defined(HAVE_COCOATOUCH) || defined(HAVE_COCOA) || defined(HAVE_COCOA_METAL)
 
 #include "../ui/drivers/cocoa/cocoa_common.m"
+#include "../ui/drivers/cocoa/RetroArchPlaylistManager.m"
 #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
 #include "../gfx/drivers_context/cocoa_gl_ctx.m"
 #endif
@@ -62,7 +63,11 @@
 #endif
 
 #if defined(HAVE_COREAUDIO) && defined(HAVE_MICROPHONE)
-#include "../audio/drivers/coreaudio_mic.m"
+#if defined(OSX)
+#include "../audio/drivers/coreaudio_mic_macos.m"
+#else
+#include "../audio/drivers/coreaudio_mic_ios.m"
+#endif
 #endif
 
 #ifdef HAVE_CORELOCATION

@@ -29,7 +29,6 @@
 #define BUFFER_COUNT 3
 #endif
 
-
 #define SAMPLE_RATE 48000
 #define NUM_CHANNELS 2
 
@@ -75,7 +74,7 @@ static size_t switch_audio_buffer_size(void *data)
 
 static ssize_t switch_audio_write(void *data, const void *s, size_t len)
 {
-   size_t to_write     = len;
+   size_t _len = len;
 	switch_audio_t *swa = (switch_audio_t*)data;
 
    if (!swa)
@@ -121,15 +120,15 @@ static ssize_t switch_audio_write(void *data, const void *s, size_t len)
       swa->current_buffer->data_size = 0;
    }
 
-	if (to_write > switch_audio_buffer_size(NULL) - swa->current_buffer->data_size)
-		to_write = switch_audio_buffer_size(NULL) - swa->current_buffer->data_size;
+	if (_len > switch_audio_buffer_size(NULL) - swa->current_buffer->data_size)
+		_len = switch_audio_buffer_size(NULL) - swa->current_buffer->data_size;
 
 #ifndef HAVE_LIBNX
-   memcpy(((uint8_t*) swa->current_buffer->sample_data) + swa->current_buffer->data_size, s, to_write);
+   memcpy(((uint8_t*) swa->current_buffer->sample_data) + swa->current_buffer->data_size, s, _len);
 #else
-   memcpy(((uint8_t*) swa->current_buffer->buffer) + swa->current_buffer->data_size, s, to_write);
+   memcpy(((uint8_t*) swa->current_buffer->buffer) + swa->current_buffer->data_size, s, _len);
 #endif
-	swa->current_buffer->data_size   += to_write;
+	swa->current_buffer->data_size   += _len;
 	swa->current_buffer->buffer_size  = switch_audio_buffer_size(NULL);
 
 	if (swa->current_buffer->data_size > (48000 * swa->latency) / 1000)
@@ -141,7 +140,7 @@ static ssize_t switch_audio_write(void *data, const void *s, size_t len)
 
 	swa->last_append = svcGetSystemTick();
 
-	return to_write;
+	return _len;
 }
 
 static bool switch_audio_stop(void *data)
@@ -181,13 +180,14 @@ static bool switch_audio_start(void *data, bool is_shutdown)
 static bool switch_audio_alive(void *data)
 {
    switch_audio_t *swa = (switch_audio_t*) data;
-   if (!swa)
-      return false;
-   return !swa->is_paused;
+   return (swa && !swa->is_paused);
 }
 
 static void switch_audio_free(void *data)
 {
+#ifdef HAVE_LIBNX
+   int i;
+#endif
    switch_audio_t *swa = (switch_audio_t*) data;
 
    if (!swa)
@@ -198,8 +198,6 @@ static void switch_audio_free(void *data)
       audoutStopAudioOut();
 
    audoutExit();
-
-   int i;
    for (i = 0; i < BUFFER_COUNT; i++)
       free(swa->buffers[i].buffer);
 #else
@@ -209,10 +207,8 @@ static void switch_audio_free(void *data)
    free(swa);
 }
 
-static bool switch_audio_use_float(void *data)
-{
-   return false; /* force INT16 */
-}
+/* TODO/FIXME - implement float too? */
+static bool switch_audio_use_float(void *data) { return false; /* force INT16 */ }
 
 static size_t switch_audio_write_avail(void *data)
 {

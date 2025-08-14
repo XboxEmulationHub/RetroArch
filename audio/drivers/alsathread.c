@@ -26,8 +26,6 @@
 #include <string/stdstring.h>
 #include <asm-generic/errno.h>
 
-#include <retro_assert.h>
-
 #include "../audio_driver.h"
 #include "../common/alsa.h" /* For some common functions/types */
 #include "../../verbosity.h"
@@ -115,8 +113,6 @@ static void alsa_microphone_worker_thread(void *mic_context)
    alsa_thread_microphone_handle_t *mic = (alsa_thread_microphone_handle_t*)mic_context;
    uint8_t                         *buf = NULL;
    uintptr_t                  thread_id = sthread_get_current_thread_id();
-
-   retro_assert(mic != NULL);
 
    if (!(buf = (uint8_t *)calloc(1, mic->info.stream_info.period_size)))
    {
@@ -218,9 +214,10 @@ end:
 
 static int alsa_thread_microphone_read(void *driver_context, void *mic_context, void *s, size_t len)
 {
+   snd_pcm_state_t state;
+   size_t _len = 0;
    alsa_thread_microphone_t       *alsa = (alsa_thread_microphone_t*)driver_context;
    alsa_thread_microphone_handle_t *mic = (alsa_thread_microphone_handle_t*)mic_context;
-   snd_pcm_state_t state;
 
    if (!alsa || !mic || !s) /* If any of the parameters were invalid... */
       return -1;
@@ -249,28 +246,23 @@ static int alsa_thread_microphone_read(void *driver_context, void *mic_context, 
    if (alsa->nonblock)
    {
       size_t avail;
-      size_t write_amt;
 
       /* "Hey, I'm gonna borrow the queue." */
       slock_lock(mic->info.fifo_lock);
 
       avail           = FIFO_READ_AVAIL(mic->info.buffer);
-      write_amt       = MIN(avail, len);
+      _len            = MIN(avail, len);
 
       /* "It's okay if you don't have any new samples, I'll just check in on you later." */
-      fifo_read(mic->info.buffer, s, write_amt);
+      fifo_read(mic->info.buffer, s, _len);
 
       /* "Here, take this queue back." */
       slock_unlock(mic->info.fifo_lock);
-
-      return (int)write_amt;
    }
    else
    {
-      size_t read = 0;
-
       /* Until we've read all requested samples (or we're told to stop)... */
-      while (read < len && !mic->info.thread_dead)
+      while (_len < len && !mic->info.thread_dead)
       {
          size_t avail;
 
@@ -298,21 +290,20 @@ static int alsa_thread_microphone_read(void *driver_context, void *mic_context, 
          }
          else
          {
-            size_t read_amt = MIN(len - read, avail);
+            size_t read_amt = MIN(len - _len, avail);
 
             /* "I'll just go ahead and consume all these samples..."
              * (As many as will fit in s, or as many as are available.) */
-            fifo_read(mic->info.buffer,s + read, read_amt);
+            fifo_read(mic->info.buffer,s + _len, read_amt);
 
             /* "I'm done, you can take the queue back now." */
             slock_unlock(mic->info.fifo_lock);
-            read += read_amt;
+            _len += read_amt;
          }
-
          /* "I'll be right back..." */
       }
-      return (int)read;
    }
+   return _len;
 }
 
 static bool alsa_thread_microphone_mic_alive(const void *driver_context, const void *mic_context);
@@ -479,8 +470,9 @@ static void alsa_worker_thread(void *data)
 
       frames = snd_pcm_writei(alsa->info.pcm, buf, alsa->info.stream_info.period_frames);
 
-      if (frames == -EPIPE || frames == -EINTR ||
-            frames == -ESTRPIPE)
+      if (     frames == -EPIPE
+            || frames == -EINTR
+            || frames == -ESTRPIPE)
       {
          if (snd_pcm_recover(alsa->info.pcm, frames, false) < 0)
          {
@@ -542,15 +534,14 @@ static void *alsa_thread_init(const char *device,
 
    RARCH_LOG("[ALSA] Using ALSA version %s.\n", snd_asoundlib_version());
 
-   if (alsa_init_pcm(&alsa->info.pcm, device, SND_PCM_STREAM_PLAYBACK, rate, latency, 2, &alsa->info.stream_info, new_rate, 0) < 0)
-   {
+   if (alsa_init_pcm(&alsa->info.pcm, device, SND_PCM_STREAM_PLAYBACK, rate,
+            latency, 2, &alsa->info.stream_info, new_rate, 0) < 0)
       goto error;
-   }
 
    alsa->info.fifo_lock = slock_new();
    alsa->info.cond_lock = slock_new();
-   alsa->info.cond = scond_new();
-   alsa->info.buffer = fifo_new(alsa->info.stream_info.buffer_size);
+   alsa->info.cond      = scond_new();
+   alsa->info.buffer    = fifo_new(alsa->info.stream_info.buffer_size);
    if (!alsa->info.fifo_lock || !alsa->info.cond_lock || !alsa->info.cond || !alsa->info.buffer)
       goto error;
 
@@ -573,7 +564,7 @@ error:
 
 static ssize_t alsa_thread_write(void *data, const void *s, size_t len)
 {
-   ssize_t written = 0;
+   ssize_t _len = 0;
    alsa_thread_t *alsa = (alsa_thread_t*)data;
 
    if (alsa->info.thread_dead)
@@ -584,15 +575,15 @@ static ssize_t alsa_thread_write(void *data, const void *s, size_t len)
       size_t avail;
 
       slock_lock(alsa->info.fifo_lock);
-      avail           = FIFO_WRITE_AVAIL(alsa->info.buffer);
-      written         = MIN(avail, len);
+      avail = FIFO_WRITE_AVAIL(alsa->info.buffer);
+      _len  = MIN(avail, len);
 
-      fifo_write(alsa->info.buffer, s, written);
+      fifo_write(alsa->info.buffer, s, _len);
       slock_unlock(alsa->info.fifo_lock);
    }
    else
    {
-      while (written < (ssize_t)len && !alsa->info.thread_dead)
+      while (_len < (ssize_t)len && !alsa->info.thread_dead)
       {
          size_t avail;
          slock_lock(alsa->info.fifo_lock);
@@ -608,15 +599,15 @@ static ssize_t alsa_thread_write(void *data, const void *s, size_t len)
          }
          else
          {
-            size_t write_amt = MIN(len - written, avail);
+            size_t write_amt = MIN(len - _len, avail);
             fifo_write(alsa->info.buffer,
-                  (const char*)s + written, write_amt);
+                  (const char*)s + _len, write_amt);
             slock_unlock(alsa->info.fifo_lock);
-            written += write_amt;
+            _len += write_amt;
          }
       }
    }
-   return written;
+   return _len;
 }
 
 static bool alsa_thread_alive(void *data)
@@ -630,7 +621,6 @@ static bool alsa_thread_alive(void *data)
 static bool alsa_thread_stop(void *data)
 {
    alsa_thread_t *alsa = (alsa_thread_t*)data;
-
    if (alsa)
       alsa->is_paused = true;
    return true;
@@ -653,15 +643,14 @@ static bool alsa_thread_start(void *data, bool is_shutdown)
 
 static size_t alsa_thread_write_avail(void *data)
 {
+   size_t _len;
    alsa_thread_t *alsa = (alsa_thread_t*)data;
-   size_t val;
-
    if (alsa->info.thread_dead)
       return 0;
    slock_lock(alsa->info.fifo_lock);
-   val = FIFO_WRITE_AVAIL(alsa->info.buffer);
+   _len = FIFO_WRITE_AVAIL(alsa->info.buffer);
    slock_unlock(alsa->info.fifo_lock);
-   return val;
+   return _len;
 }
 
 static size_t alsa_thread_buffer_size(void *data)

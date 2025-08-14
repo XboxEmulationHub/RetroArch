@@ -7804,6 +7804,10 @@ MSG_HASH(
    "Darrera partida:"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_PLAY_COUNT,
+   "Comptador de reproduccions:"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TIME_UNIT_SECONDS_SINGLE,
    "segon"
    )
@@ -13055,6 +13059,14 @@ MSG_HASH(
    "Base de dades - Filtre: valoració de la revista Edge"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_GENRE,
+   "Base de dades - Filtre: Gènere"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_REGION,
+   "Base de dades - Filtre: Regió"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DATABASE_CURSOR_LIST_ENTRY_DATABASE_INFO,
    "Informació de la base de dades"
    )
@@ -13807,15 +13819,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD,
-   "No s’ha pogut carregar"
+   "Error en carregar."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_CONTENT,
-   "No s’ha pogut carregar el contingut"
+   "Error en carregar contingut."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_MOVIE_FILE,
-   "No s’ha pogut carregar el fitxer de pel·lícula"
+   "Error en carregar el fitxer de vídeo."
    )
 MSG_HASH(
    MSG_FAILED_TO_LOAD_OVERLAY,

@@ -59,29 +59,29 @@ static void *ra_init(const char *device, unsigned rate, unsigned latency,
 static ssize_t ra_write(void *data, const void *buf, size_t len)
 {
    int err;
-   size_t written = 0;
-   roar_t   *roar = (roar_t*)data;
+   size_t _len  = 0;
+   roar_t *roar = (roar_t*)data;
 
    if (len == 0)
       return 0;
 
-   while (written < len)
+   while (_len < len)
    {
       ssize_t rc;
-      size_t write_amt = len - written;
+      size_t write_amt = len - _len;
 
       if ((rc = roar_vs_write(roar->vss,
-                  (const char*)buf + written, write_amt, &err)) < (ssize_t)write_amt)
+                  (const char*)buf + _len, write_amt, &err)) < (ssize_t)write_amt)
       {
          if (roar->nonblocking)
             return rc;
          else if (rc < 0)
             return -1;
       }
-      written += rc;
+      _len += rc;
    }
 
-   return len;
+   return _len;
 }
 
 static bool ra_stop(void *data)
@@ -126,16 +126,9 @@ static void ra_free(void *data)
    free(data);
 }
 
-static bool ra_use_float(void *data)
-{
-   return false;
-}
-
-static size_t ra_write_avail(void *data)
-{
-   (void)data;
-   return 0;
-}
+/* TODO/FIXME - implement? */
+static bool ra_use_float(void *data) { return false; }
+static size_t ra_write_avail(void *data) { return 0; }
 
 audio_driver_t audio_roar = {
    ra_init,
