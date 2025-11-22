@@ -1321,6 +1321,10 @@ MSG_HASH(
    "Cando está desactivado, os ficheiros móvense a un cartafol de copia de seguranza antes de sobrescribilos ou eliminalos."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_AUTOMATIC,
+   "Automático"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_DRIVER,
    "Infraestrutura (backend) de sincronización na nube"
    )
@@ -2460,10 +2464,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER_SCALING,
    "Escalado de escala enteira"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_SCALING,
-   "Redondear cara abaixo ou arriba ao próximo enteiro. 'Intelixente' reduce a escala cando a imaxe está recortada en exceso."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER_SCALING_UNDERSCALE,
@@ -5004,10 +5004,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_SUGGEST_ALWAYS,
    "Suxerir sempre núcleos"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_CORE_SUGGEST_ALWAYS,
-   "Suxerir núcleos dispoñibles incluso cando xa hai un núcleo cargado."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_PLAYER,
@@ -14151,14 +14147,6 @@ MSG_HASH(
    "Frontend para libretro"
    )
 MSG_HASH(
-   MSG_LOADED_STATE_FROM_SLOT,
-   "Estado de carga do slot #%d."
-   )
-MSG_HASH(
-   MSG_LOADED_STATE_FROM_SLOT_AUTO,
-   "Estado de carga do slot #-1 (Automático)."
-   )
-MSG_HASH(
    MSG_LOADING,
    "Cargando"
    )
@@ -14353,14 +14341,6 @@ MSG_HASH(
 MSG_HASH(
    MSG_SAVED_NEW_CONFIG_TO,
    "Configuración gardada en"
-   )
-MSG_HASH(
-   MSG_SAVED_STATE_TO_SLOT,
-   "Estado gardado no slot #%d."
-   )
-MSG_HASH(
-   MSG_SAVED_STATE_TO_SLOT_AUTO,
-   "Estado gardado no slot #-1 (Automático)."
    )
 MSG_HASH(
    MSG_SAVED_SUCCESSFULLY_TO,
@@ -14961,6 +14941,10 @@ MSG_HASH(
 MSG_HASH(
    MSG_CHEEVOS_CHANGE_MEDIA_FAILED,
    "Erro ao cambiar o medio en RetroLogros: %s"
+   )
+MSG_HASH(
+   MSG_CHEEVOS_LOGIN_TOKEN_EXPIRED,
+   "A sesión de RetroAchievements expirou. Por favor, introduce de novo o teu contrasinal e recarga o xogo."
    )
 MSG_HASH(
    MSG_RESAMPLER_QUALITY_LOWEST,

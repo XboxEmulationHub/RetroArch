@@ -496,6 +496,7 @@ char *bin_to_hex_alloc(const uint8_t *data, size_t len)
    if (len && !ret)
       return NULL;
 
+   ret[0] = '\0';
    for (i = 0; i < len; i++)
       snprintf(ret+i * 2, 3, "%02X", data[i]);
    return ret;
@@ -717,7 +718,7 @@ static int database_cursor_iterate(libretrodb_cursor_t *cur,
       else if (string_is_equal(str, "analog"))
          db_info->analog_supported        = (int)val->val.uint_;
       else if (string_is_equal(str, "size"))
-         db_info->size                    = (unsigned)val->val.uint_;
+         db_info->size                    = (uint64_t)val->val.uint_;
       else if (string_is_equal(str, "crc"))
       {
          switch (val->val.binary.len)

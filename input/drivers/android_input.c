@@ -915,7 +915,17 @@ static INLINE void android_input_poll_event_type_key(
 {
    uint8_t *buf = android_key_state[port];
    int action   = AKeyEvent_getAction(event);
+   int keysym   = keycode;
 
+   /* Handle 'duplicate' inputs that correspond
+    * to the same RETROK_* key */
+   switch (keycode)
+   {
+      case AKEYCODE_DPAD_CENTER:
+         keysym = AKEYCODE_ENTER;
+      default:
+         break;
+   }
    /* some controllers send both the up and down events at once
     * when the button is released for "special" buttons, like menu buttons
     * work around that by only using down events for meta keys (which get
@@ -924,10 +934,10 @@ static INLINE void android_input_poll_event_type_key(
    switch (action)
    {
       case AKEY_EVENT_ACTION_UP:
-         BIT_CLEAR(buf, keycode);
+         BIT_CLEAR(buf, keysym);
          break;
       case AKEY_EVENT_ACTION_DOWN:
-         BIT_SET(buf, keycode);
+         BIT_SET(buf, keysym);
          break;
    }
 
@@ -1086,10 +1096,6 @@ static void handle_hotplug(android_input_t *android,
       /* only use the hack if the device is one of the built-in devices */
       RARCH_LOG("[Android] Special device detected: %s.\n", device_model);
       {
-#if 0
-         RARCH_LOG("[Android] - Pads Mapped: %d\n- Device Name: %s\n- IDS: %d, %d, %d",
-               android->pads_connected, device_name, id, pad_id1, pad_id2);
-#endif
          /* Remove the remote or virtual controller device if it is mapped */
          if (   strstr(android->pad_states[0].name, "SHIELD Remote")
              || strstr(android->pad_states[0].name, "SHIELD Virtual Controller"))

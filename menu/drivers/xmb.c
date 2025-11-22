@@ -340,6 +340,19 @@ typedef struct xmb_handle
    xmb_node_t netplay_tab_node;
    menu_input_pointer_t pointer;
 
+   /* Touch drag state for direction locking */
+   enum
+   {
+      XMB_DRAG_NONE,
+      XMB_DRAG_DETECTING,
+      XMB_DRAG_HORIZONTAL,
+      XMB_DRAG_VERTICAL
+   } drag_mode;
+   float drag_start_x;
+   float drag_start_y;
+   float categories_drag_start_pos;
+   size_t drag_start_selection;
+
    font_data_t *font;
    font_data_t *font2;
    video_font_raster_block_t raster_block;
@@ -517,6 +530,7 @@ static int xmb_menu_entry_action(void *userdata,
       menu_entry_t *entry, size_t i, enum menu_action action);
 static bool xmb_load_image(void *userdata, void *data,
       enum menu_image_type type);
+static void xmb_navigation_set(void *data, bool scroll);
 
 
 static INLINE float xmb_item_y(const xmb_handle_t *xmb,
@@ -3409,6 +3423,7 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       case MENU_ENUM_LABEL_CHEAT_COPY_BEFORE:
       case MENU_ENUM_LABEL_CHEAT_RELOAD_CHEATS:
       case MENU_ENUM_LABEL_RESTART_RETROARCH:
+      case MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_NOW:
       case MENU_ENUM_LABEL_FRAME_TIME_COUNTER_SETTINGS:
       case MENU_ENUM_LABEL_PLAYLIST_MANAGER_CLEAN_PLAYLIST:
       case MENU_ENUM_LABEL_PLAYLIST_MANAGER_REFRESH_PLAYLIST:
@@ -4650,6 +4665,9 @@ static bool xmb_animation_line_ticker_smooth(gfx_animation_t *p_anim, gfx_animat
          break;
    }
 
+   if (!num_display_lines)
+      goto end;
+
    /* Build output string from required lines */
    xmb_animation_build_line_ticker_string(
          num_display_lines, line_offset, &lines, lines.size,
@@ -4751,7 +4769,7 @@ static int xmb_draw_item(
    bool show_switch_icons              = settings->bools.menu_xmb_switch_icons;
    unsigned show_history_icons         = settings->uints.playlist_show_history_icons;
    unsigned vertical_fade_factor       = settings->uints.menu_xmb_vertical_fade_factor;
-   bool show_icon_thumbnail;
+   bool show_icon_thumbnail            = false;
 
    /* Initial ticker configuration */
    if (use_smooth_ticker)
@@ -5346,17 +5364,20 @@ static int xmb_draw_item(
 
       if (show_icon_thumbnail)
       {
-         float gfx_icon_width_draw, gfx_icon_height_draw;
+         float gfx_icon_width_draw, gfx_icon_height_draw, gfx_icon_aspect;
          float gfx_icon_x_end = icon_x + xmb->icon_size;
+         float zoom_mp        = (xmb->use_ps3_layout) ? 2.0f : 1.0f;
+         bool zoom            = (i == current);
 
          texture = node->thumbnail_icon.icon.texture;
 
          /* More active zoom */
-         if (i == current)
-            gfx_icon_height = (xmb->icon_size * 2.0f);
+         if (zoom)
+            gfx_icon_height = (xmb->icon_size * zoom_mp);
 
          /* More width room for non-squares */
-         gfx_icon_width = (gfx_icon_height * 1.5f);
+         gfx_icon_width  = (gfx_icon_height * 1.5f);
+         gfx_icon_aspect = (gfx_icon_width / gfx_icon_height);
 
          gfx_thumbnail_get_draw_dimensions(
                &node->thumbnail_icon.icon,
@@ -5369,19 +5390,45 @@ static int xmb_draw_item(
          /* Match center with normal icons */
          icon_x -= (gfx_icon_width / 6.0f);
 
-         /* Align current to right instead of center */
-         if (i == current)
-            icon_x -= (gfx_icon_width_draw / 2.0f) + (gfx_icon_width / 24.0f);
+         if (xmb->use_ps3_layout)
+         {
+            /* Align current to right instead of center */
+            if (zoom)
+               icon_x -= (gfx_icon_width_draw / 2.0f) + (gfx_icon_width / 24.0f);
 
-         /* Center alignments */
-         gfx_icon_x = icon_x + (gfx_icon_width - gfx_icon_width_draw) / 2.0f;
+            /* Center alignments */
+            gfx_icon_x = icon_x + (gfx_icon_width - gfx_icon_width_draw) / 2.0f;
 
-         /* Limit current maximum right aligment */
-         if (i == current && gfx_icon_x + gfx_icon_width_draw > gfx_icon_x_end)
-            gfx_icon_x -= (gfx_icon_x_end - gfx_icon_width_draw - gfx_icon_x);
+            /* Limit current maximum right aligment */
+            if (zoom && gfx_icon_x + gfx_icon_width_draw > gfx_icon_x_end)
+               gfx_icon_x -= (gfx_icon_x_end - gfx_icon_width_draw - gfx_icon_x);
+
+         }
+         else
+         {
+            float icon_x_orig = gfx_icon_x;
+
+            /* Align current to right instead of center */
+            if (zoom)
+               icon_x -= (gfx_icon_width_draw / 2.0f) + (gfx_icon_width / 24.0f);
+
+            /* Center alignments */
+            gfx_icon_x = icon_x + (gfx_icon_width - gfx_icon_width_draw) / 2.0f;
+
+            /* Limit current maximum left alignment */
+            if (zoom && gfx_icon_x < icon_x_orig)
+               gfx_icon_x -= gfx_icon_x - icon_x_orig;
+
+            /* Limit current maximum right aligment */
+            if (zoom && gfx_icon_x + gfx_icon_width_draw > gfx_icon_x_end)
+            {
+               gfx_icon_width_draw  = gfx_icon_x_end - gfx_icon_x;
+               gfx_icon_height_draw = gfx_icon_width_draw / gfx_icon_aspect;
+            }
+         }
 
          gfx_icon_y = icon_y - (gfx_icon_height - gfx_icon_height_draw) / 2.0f;
-         if (i == current)
+         if (zoom && xmb->use_ps3_layout)
             gfx_icon_y += (xmb->icon_size / 1.5f);
 
          gfx_icon_width  = gfx_icon_width_draw;
@@ -5428,9 +5475,11 @@ static int xmb_draw_item(
             xmb->icon_size,
             xmb->icon_size,
             texture_switch,
-            node->x + xmb->margins_screen_left
-            + xmb->icon_spacing_horizontal
-            + xmb->icon_size / 2.0 + xmb->margins_setting_left,
+            node->x
+               + xmb->margins_screen_left
+               + xmb->icon_spacing_horizontal
+               + xmb->icon_size / 2.0
+               + xmb->margins_setting_left,
             xmb->margins_screen_top + node->y + xmb->icon_size / 2.0,
             width, height,
             node->alpha,
@@ -6782,6 +6831,123 @@ static void xmb_render(void *data,
    /* Read pointer state */
    menu_input_get_pointer_state(&xmb->pointer);
 
+   /* Direction locking for horizontal category dragging */
+   if (xmb->pointer.type == MENU_POINTER_TOUCHSCREEN)
+   {
+      if (xmb->pointer.flags & MENU_INP_PTR_FLG_PRESSED)
+      {
+         if (xmb->drag_mode == XMB_DRAG_DETECTING)
+         {
+            /* Wait for movement threshold before locking direction */
+            float dx        = fabs((float)xmb->pointer.x - xmb->drag_start_x);
+            float dy        = fabs((float)xmb->pointer.y - xmb->drag_start_y);
+            float threshold = 10.0f;
+
+            if (dx > threshold || dy > threshold)
+            {
+               /* Lock to dominant direction */
+               if (dx > dy)
+                  xmb->drag_mode = XMB_DRAG_HORIZONTAL;
+               else
+                  xmb->drag_mode = XMB_DRAG_VERTICAL;
+            }
+         }
+
+         if (xmb->drag_mode == XMB_DRAG_HORIZONTAL)
+         {
+            /* Only allow horizontal category switching at the top level (depth == 1)
+             * When in submenus (depth > 1), horizontal drag is disabled */
+            if (xmb->depth == 1)
+            {
+               /* Apply horizontal drag to categories */
+               size_t list_size = xmb_list_get_size(xmb, MENU_LIST_HORIZONTAL) + xmb->system_tab_end + 1;
+               float current_dx = (float)xmb->pointer.x - xmb->drag_start_x;
+               float min_x      = -xmb->icon_spacing_horizontal * (float)(list_size > 0 ? list_size - 1 : 0);
+               float max_x      = 0.0f;
+
+               xmb->categories_x_pos = xmb->categories_drag_start_pos + current_dx;
+
+               /* Bounds checking */
+               if (xmb->categories_x_pos > max_x)
+                  xmb->categories_x_pos = max_x;
+               if (xmb->categories_x_pos < min_x)
+                  xmb->categories_x_pos = min_x;
+
+               /* Update selection and switch categories during drag */
+               {
+                  float normalized = -xmb->categories_x_pos / xmb->icon_spacing_horizontal;
+                  size_t nearest   = (size_t)(normalized + 0.5f);
+
+                  /* Clamp to valid range */
+                  if (nearest >= list_size)
+                     nearest = list_size > 0 ? list_size - 1 : 0;
+
+                  /* If category changed, do full switch */
+                  if (nearest != xmb->categories_selection_ptr)
+                  {
+                     struct menu_state *menu_st = menu_state_get_ptr();
+                     menu_list_t *menu_list     = menu_st->entries.list;
+                     file_list_t *selection_buf = MENU_LIST_GET_SELECTION(menu_list, 0);
+
+                     /* Determine direction */
+                     enum menu_action action = (nearest > xmb->categories_selection_ptr)
+                                              ? MENU_ACTION_RIGHT
+                                              : MENU_ACTION_LEFT;
+
+                     /* Call list_cache to update state (increments/decrements by 1) */
+                     if (menu_st->driver_ctx && menu_st->driver_ctx->list_cache)
+                        menu_st->driver_ctx->list_cache(menu_st->userdata, MENU_LIST_HORIZONTAL, action);
+
+                     /* Repopulate vertical list with new category content */
+                     menu_driver_deferred_push_content_list(selection_buf);
+
+                     /* Visual update without animation during drag */
+                     xmb_list_switch_horizontal_list(xmb, false, 0);
+                  }
+               }
+            }
+         }
+         else if (xmb->drag_mode == XMB_DRAG_VERTICAL)
+         {
+            /* Apply vertical drag to list selection */
+            struct menu_state *menu_st = menu_state_get_ptr();
+            menu_list_t *menu_list     = menu_st->entries.list;
+            size_t list_size           = MENU_LIST_GET_SELECTION(menu_list, 0)->size;
+
+            /* Calculate how many items to move based on drag distance */
+            float dy          = (float)xmb->pointer.y - xmb->drag_start_y;
+            float item_height = xmb->icon_spacing_vertical;
+
+            /* Convert drag distance to item steps with threshold */
+            int steps = (int)((dy + (dy > 0 ? item_height * 0.5f : -item_height * 0.5f)) / item_height);
+
+            /* Calculate new selection (negative because dragging down = scroll up) */
+            int new_selection = (int)xmb->drag_start_selection - steps;
+
+            /* Clamp to valid range */
+            if (new_selection < 0)
+               new_selection = 0;
+            if (new_selection >= (int)list_size)
+               new_selection = list_size > 0 ? (int)list_size - 1 : 0;
+
+            /* Update selection if changed */
+            if ((size_t)new_selection != menu_st->selection_ptr)
+            {
+               file_list_t *selection_buf = MENU_LIST_GET_SELECTION(menu_list, 0);
+               uintptr_t tag              = (uintptr_t)selection_buf;
+
+               menu_st->selection_ptr = (size_t)new_selection;
+
+               /* Kill existing animations to prevent stacking during continuous drag */
+               gfx_animation_kill_by_tag(&tag);
+
+               /* Enable animations for smooth scrolling */
+               xmb_navigation_set(xmb, true);
+            }
+         }
+      }
+   }
+
    /* If menu screensaver is active, update
     * screensaver and return */
    if (xmb->show_screensaver)
@@ -6949,7 +7115,12 @@ static void xmb_render(void *data,
       for (i = first; i <= last; i++)
       {
          xmb_node_t *node = (xmb_node_t*)selection_buf->list[i].userdata;
-         xmb_icons_t *thumbnail_icon = &node->thumbnail_icon;
+         xmb_icons_t *thumbnail_icon;
+
+         if (!node)
+            continue;
+
+         thumbnail_icon = &node->thumbnail_icon;
 
          if (cur_per_frame >= max_per_frame)
          {
@@ -7221,8 +7392,14 @@ static void xmb_draw_no_thumbnail_available(
    gfx_display_ctx_driver_t *dispctx = p_disp->dispctx;
    unsigned icon_size                = (unsigned)xmb->icon_size;
 
+   if (icon_size < 64)
+      icon_size = 64;
+
+   if (icon_size > view_width || icon_size > view_height)
+      icon_size = MIN(view_width, view_height);
+
    if (draw_text)
-      y_position += (icon_size / 5.0f);
+      y_position -= (icon_size / 5.0f);
 
    if (dispctx)
    {
@@ -7242,7 +7419,7 @@ static void xmb_draw_no_thumbnail_available(
                icon_size,
                xmb->textures.list[XMB_TEXTURE_IMAGE],
                x_position + ((view_width - icon_size) / 2),
-               video_height - y_position - ((view_height - icon_size) / 2),
+               y_position + ((view_height - icon_size) / 2) + icon_size,
                video_width,
                video_height,
                xmb->alpha,
@@ -7261,7 +7438,7 @@ static void xmb_draw_no_thumbnail_available(
    xmb_draw_text(shadows_enable, xmb, config_get_ptr(),
          msg_hash_to_str(MSG_NO_THUMBNAIL_AVAILABLE),
          x_position + (view_width / 2),
-         video_height - y_position - ((view_height - icon_size * 1.50f) / 2),
+         video_height - y_position - ((view_height - icon_size) / 2),
          1, 1, TEXT_ALIGN_CENTER,
          video_width, video_height,
          xmb->font2);
@@ -7306,9 +7483,7 @@ static void xmb_draw_fullscreen_thumbnails(
       float right_thumbnail_draw_height = 0.0f;
       float left_thumbnail_draw_width   = 0.0f;
       float left_thumbnail_draw_height  = 0.0f;
-      /* XMB doesn't have a proper theme interface, so
-       * hard-code this alpha value for now... */
-      float background_alpha            = 0.75f;
+      float background_alpha            = 0.95f;
       float background_color[16]        = {
             0.0f, 0.0f, 0.0f, 1.0f,
             0.0f, 0.0f, 0.0f, 1.0f,
@@ -7664,39 +7839,19 @@ static void xmb_draw_fullscreen_thumbnails(
       /* Show "No thumbnail available" */
       if (     !show_right_thumbnail
             && !show_left_thumbnail)
-      {
-         unsigned bg_w = video_width  / 3.0f;
-         unsigned bg_h = video_height / 3.0f;
-
-         /* Darken background */
-         gfx_display_draw_quad(
-               p_disp,
-               userdata,
-               video_width,
-               video_height,
-               (video_width - bg_w) / 2.0f,
-               video_height - bg_h - (video_height - bg_h) / 2.0f,
-               bg_w,
-               bg_h,
-               video_width,
-               video_height,
-               background_color,
-               NULL);
-
          xmb_draw_no_thumbnail_available(
                xmb,
                p_disp,
                userdata,
                video_width,
                video_height,
-               (video_width - bg_w) / 2.0f,
-               video_height - bg_h - (video_height - bg_h) / 2.0f,
-               bg_w,
-               bg_h,
+               0,
+               0,
+               video_width,
+               video_height,
                shadows_enable,
                true,
                NULL);
-      }
    }
    return;
 
@@ -7720,7 +7875,6 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
    size_t title_header_max_width       = 0;
    bool render_background              = false;
    file_list_t *selection_buf          = NULL;
-   const float under_thumb_margin      = 0.96f;
    float left_thumbnail_margin_width   = 0.0f;
    float right_thumbnail_margin_width  = 0.0f;
    float thumbnail_margin_height_under = 0.0f;
@@ -7777,17 +7931,17 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
             video_st->data, video_width, video_height, true, false);
 
    pseudo_font_length                      = xmb->icon_spacing_horizontal * 4 - xmb->icon_size / 4.0f;
-   left_thumbnail_margin_width             = xmb->icon_size * 3.4f;
+   left_thumbnail_margin_width             = xmb->icon_size * (xmb->use_ps3_layout ? 3.4f : 2.4f);
    right_thumbnail_margin_width            =
          (float)video_width - (xmb->icon_size / 2.0f) -
          (xmb->margins_screen_left * xmb_scale_mod[5]) -
          xmb->icon_spacing_horizontal - pseudo_font_length;
-   thumbnail_margin_height_under           = ((float)video_height * under_thumb_margin)
-                                           - xmb->margins_screen_top - xmb->icon_size;
+   thumbnail_margin_height_under           = (float)video_height
+                                           - xmb->margins_screen_top - (xmb->icon_size * 1.025f);
    thumbnail_margin_height_full            = (float)video_height - xmb->margins_title_top
                                            - ((xmb->icon_size / 4.0f) * 2.0f);
-   left_thumbnail_margin_x                 = xmb->icon_size / 4.0f;
-   right_thumbnail_margin_x                = (float)video_width - (xmb->icon_size / 8.0f)
+   left_thumbnail_margin_x                 = xmb->icon_size / 8.0f;
+   right_thumbnail_margin_x                = (float)video_width - left_thumbnail_margin_x
                                            - right_thumbnail_margin_width;
    xmb->margins_title                      = (float)settings->ints.menu_xmb_title_margin * 10.0f;
    xmb->margins_title_horizontal_offset    = (float)settings->ints.menu_xmb_title_margin_horizontal_offset * 10.0f;
@@ -7885,12 +8039,14 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
             xmb->icon_size,
             xmb->icon_size,
             xmb->textures.list[XMB_TEXTURE_ARROW],
-              xmb->x + xmb->margins_screen_left
-            + xmb->icon_spacing_horizontal
-            - xmb->icon_size / 2.0 + xmb->icon_size,
-              xmb->margins_screen_top
-            + xmb->icon_size / 2.0 + xmb->icon_spacing_vertical
-            * xmb->active_item_factor,
+            xmb->x
+               + xmb->margins_screen_left
+               + xmb->icon_spacing_horizontal
+               - (xmb->icon_size / 2.0)
+               + xmb->icon_size,
+            xmb->margins_screen_top
+               + (xmb->icon_size / 2.0)
+               + (xmb->icon_spacing_vertical * xmb->active_item_factor),
             video_width,
             video_height,
             xmb->textures_arrow_alpha,
@@ -8056,6 +8212,12 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
          && (!xmb->show_fullscreen_thumbnails)
       )
    {
+      float background_color[16] = {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+      };
       float thumb_width         = right_thumbnail_margin_width;
       float thumb_height        = thumb_width - (thumb_width / 4);
       float scaled_thumb_width  = thumb_width * thumbnail_scale_factor;
@@ -8069,17 +8231,34 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
 
       if (!xmb->use_ps3_layout)
       {
-         thumb_width         = xmb->icon_size * 2.4f;
+         float height_offset = xmb->icon_size * 0.35f;
+
+         thumb_width         = left_thumbnail_margin_width;
          thumb_height        = thumb_width - (thumb_width / 4);
          scaled_thumb_width  = thumb_width * thumbnail_scale_factor;
          scaled_thumb_height = thumb_height * thumbnail_scale_factor;
          thumb_x             = (thumb_width - scaled_thumb_width) / 2.0f;
-         thumb_y             = video_height - thumbnail_margin_height_under - (xmb->icon_size * 0.55f);
+         thumb_y             = video_height - thumbnail_margin_height_under - height_offset;
       }
 
       if (     (xmb->thumbnails.savestate.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
             || (xmb->thumbnails.savestate.status == GFX_THUMBNAIL_STATUS_PENDING))
       {
+         if (settings->bools.menu_thumbnail_background_enable)
+            gfx_display_draw_quad(
+                  p_disp,
+                  userdata,
+                  video_width,
+                  video_height,
+                  thumb_x,
+                  thumb_y,
+                  scaled_thumb_width,
+                  scaled_thumb_height,
+                  video_width,
+                  video_height,
+                  background_color,
+                  NULL);
+
          gfx_thumbnail_draw(
                userdata,
                video_width,
@@ -8094,13 +8273,6 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
       }
       else
       {
-         float background_color[16]        = {
-               0.0f, 0.0f, 0.0f, 1.0f,
-               0.0f, 0.0f, 0.0f, 1.0f,
-               0.0f, 0.0f, 0.0f, 1.0f,
-               0.0f, 0.0f, 0.0f, 1.0f,
-         };
-
          /* Darken background */
          gfx_display_draw_quad(
                p_disp,
@@ -8149,7 +8321,6 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
                   && xmb->thumbnails_right_status_prev != GFX_THUMBNAIL_STATUS_UNKNOWN));
       bool show_left_thumbnail  =
                (gfx_thumbnail_is_enabled(menu_st->thumbnail_path_data, GFX_THUMBNAIL_LEFT))
-            && xmb->show_thumbnails
             && (  (xmb->thumbnails.left.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
                || (  xmb->thumbnails.left.status       < GFX_THUMBNAIL_STATUS_AVAILABLE
                   && xmb->thumbnails_left_status_prev <= GFX_THUMBNAIL_STATUS_AVAILABLE
@@ -8163,6 +8334,9 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
           * stacked thumbnails */
          if (vertical_thumbnails)
          {
+            if (!xmb->show_thumbnails)
+               show_right_thumbnail = show_left_thumbnail = false;
+
             /* Right + left thumbnails, right side */
             if (show_right_thumbnail && show_left_thumbnail)
             {
@@ -8279,13 +8453,14 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
             /* Right thumbnail, right side */
             if (show_right_thumbnail)
             {
+               float y_offset            = xmb->icon_size / 1.5f;
                float thumb_width         = right_thumbnail_margin_width;
                float thumb_height        = thumbnail_margin_height_under;
                float scaled_thumb_width  = thumb_width * thumbnail_scale_factor;
                float scaled_thumb_height = thumb_height * thumbnail_scale_factor;
                float thumb_x             = right_thumbnail_margin_x
                                          + ((thumb_width - scaled_thumb_width) / 2.0f);
-               float thumb_y             = xmb->margins_screen_top + (xmb->icon_size / 1.5f);
+               float thumb_y             = xmb->margins_screen_top + y_offset;
 
                if (thumbnail_background)
                   gfx_display_draw_quad(
@@ -8318,42 +8493,50 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
             /* Left thumbnail, left side */
             if (show_left_thumbnail)
             {
-               float y_offset            = xmb->icon_size * 1.75f;
+               bool icon_thumbnails      = settings->uints.menu_icon_thumbnails;
+               float margins_title_min   = -(xmb->icon_size / 8.0f);
+               float margins_title       = (xmb->margins_title_bottom < margins_title_min)
+                     ? margins_title_min : xmb->margins_title_bottom;
+               float height_offset       = xmb->icon_size * 0.5f;
+               float y_offset            = xmb->icon_size * (icon_thumbnails ? 1.75f : 1.15f);
                float thumb_width         = left_thumbnail_margin_width;
                float thumb_height        = thumbnail_margin_height_under
-                                         - xmb->margins_title_bottom - y_offset;
+                                         - (height_offset / 2.0f) - y_offset - margins_title;
                float scaled_thumb_width  = thumb_width * thumbnail_scale_factor;
                float scaled_thumb_height = thumb_height * thumbnail_scale_factor;
                float thumb_x             = left_thumbnail_margin_x
                                          + ((thumb_width - scaled_thumb_width) / 2.0f);
-               float thumb_y             = xmb->margins_screen_top + xmb->icon_size + y_offset;
+               float thumb_y             = xmb->margins_screen_top + (height_offset * 2.0f) + y_offset;
 
-               if (thumbnail_background)
-                  gfx_display_draw_quad(
-                        p_disp,
+               if (thumb_height > xmb->icon_size)
+               {
+                  if (thumbnail_background)
+                     gfx_display_draw_quad(
+                           p_disp,
+                           userdata,
+                           video_width,
+                           video_height,
+                           thumb_x,
+                           thumb_y,
+                           scaled_thumb_width,
+                           scaled_thumb_height,
+                           video_width,
+                           video_height,
+                           background_color,
+                           NULL);
+
+                  gfx_thumbnail_draw(
                         userdata,
                         video_width,
                         video_height,
+                        &xmb->thumbnails.left,
                         thumb_x,
                         thumb_y,
-                        scaled_thumb_width,
-                        scaled_thumb_height,
-                        video_width,
-                        video_height,
-                        background_color,
-                        NULL);
-
-               gfx_thumbnail_draw(
-                     userdata,
-                     video_width,
-                     video_height,
-                     &xmb->thumbnails.left,
-                     thumb_x,
-                     thumb_y,
-                     (scaled_thumb_width  > 0.0f) ? (unsigned)scaled_thumb_width  : 0,
-                     (scaled_thumb_height > 0.0f) ? (unsigned)scaled_thumb_height : 0,
-                     (thumbnail_background) ? GFX_THUMBNAIL_ALIGN_CENTRE : GFX_THUMBNAIL_ALIGN_TOP,
-                     1.0f, 1.0f, &thumbnail_shadow);
+                        (scaled_thumb_width  > 0.0f) ? (unsigned)scaled_thumb_width  : 0,
+                        (scaled_thumb_height > 0.0f) ? (unsigned)scaled_thumb_height : 0,
+                        (thumbnail_background) ? GFX_THUMBNAIL_ALIGN_CENTRE : GFX_THUMBNAIL_ALIGN_TOP,
+                        1.0f, 1.0f, &thumbnail_shadow);
+               }
             }
          }
       }
@@ -8364,14 +8547,18 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
        *   (if available) */
       else if (show_right_thumbnail || show_left_thumbnail)
       {
-         float thumb_width         = xmb->icon_size * 2.4f;
-         float thumb_height        = thumbnail_margin_height_under
-                                   - xmb->margins_title_bottom;
+         float margins_title_min   = -(xmb->icon_size / 4.0f);
+         float margins_title       = (xmb->margins_title_bottom < margins_title_min)
+               ? margins_title_min : xmb->margins_title_bottom;
+         float height_offset       = xmb->icon_size * 0.5f;
+         float thumb_width         = left_thumbnail_margin_width;
+         float thumb_height        = thumbnail_margin_height_under + (height_offset / 2.0f)
+                                   - margins_title;
          float scaled_thumb_width  = thumb_width * thumbnail_scale_factor;
          float scaled_thumb_height = thumb_height * thumbnail_scale_factor;
          float thumb_x             = (thumb_width - scaled_thumb_width) / 2.0f;
          float thumb_y             = video_height
-                                   - thumbnail_margin_height_under - (xmb->icon_size * 0.55f);
+                                   - thumbnail_margin_height_under - height_offset;
 
          /* Very small thumbnails look ridiculous
           * > Impose a minimum size limit */
@@ -9701,6 +9888,26 @@ error:
    return false;
 }
 
+static int xmb_pointer_down(void *userdata,
+      unsigned x, unsigned y,
+      unsigned ptr, menu_file_list_cbs_t *cbs,
+      menu_entry_t *entry, unsigned action)
+{
+   xmb_handle_t *xmb = (xmb_handle_t*)userdata;
+
+   if (!xmb)
+      return -1;
+
+   /* Initialize drag detection */
+   xmb->drag_mode = XMB_DRAG_DETECTING;
+   xmb->drag_start_x = (float)x;
+   xmb->drag_start_y = (float)y;
+   xmb->categories_drag_start_pos = xmb->categories_x_pos;
+   xmb->drag_start_selection = menu_state_get_ptr()->selection_ptr;
+
+   return 0;
+}
+
 static int xmb_pointer_up(void *userdata,
       unsigned x, unsigned y, unsigned ptr,
       enum menu_input_pointer_gesture gesture,
@@ -9727,6 +9934,38 @@ static int xmb_pointer_up(void *userdata,
    if (xmb->show_fullscreen_thumbnails)
    {
       xmb_hide_fullscreen_thumbnails(xmb, true);
+      return 0;
+   }
+
+   /* Handle snap animation if we were dragging */
+   if (xmb->drag_mode == XMB_DRAG_HORIZONTAL || xmb->drag_mode == XMB_DRAG_VERTICAL)
+   {
+      /* Snap horizontal scrolling to final category position */
+      if (xmb->drag_mode == XMB_DRAG_HORIZONTAL)
+      {
+         settings_t *settings      = config_get_ptr();
+         bool horizontal_animation = settings->bools.menu_horizontal_animation;
+         float target_x            = xmb->icon_spacing_horizontal * -(float)xmb->categories_selection_ptr;
+
+         /* Animate to exact category position */
+         if (horizontal_animation)
+         {
+            gfx_animation_ctx_entry_t anim_entry;
+            anim_entry.duration     = XMB_DELAY;
+            anim_entry.target_value = target_x;
+            anim_entry.subject      = &xmb->categories_x_pos;
+            anim_entry.easing_enum  = EASING_OUT_QUAD;
+            anim_entry.tag          = -1;
+            anim_entry.cb           = NULL;
+
+            if (anim_entry.subject)
+               gfx_animation_push(&anim_entry);
+         }
+         else
+            xmb->categories_x_pos = target_x;
+      }
+
+      xmb->drag_mode = XMB_DRAG_NONE;
       return 0;
    }
 
@@ -9921,7 +10160,7 @@ menu_ctx_driver_t menu_ctx_xmb = {
    gfx_display_osk_ptr_at_pos,
    xmb_update_savestate_thumbnail_path,
    xmb_update_savestate_thumbnail_image,
-   NULL, /* pointer_down */
+   xmb_pointer_down,
    xmb_pointer_up,
    xmb_menu_entry_action
 };

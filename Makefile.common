@@ -302,6 +302,10 @@ OBJ += \
        $(LIBRETRO_COMM_DIR)/streams/network_stream.o \
        $(LIBRETRO_COMM_DIR)/vfs/vfs_implementation.o
 
+ifeq ($(ANDROID), 1)
+   OBJ += $(LIBRETRO_COMM_DIR)/vfs/vfs_implementation_saf.o
+endif
+
 OBJ += \
        $(LIBRETRO_COMM_DIR)/lists/string_list.o \
        $(LIBRETRO_COMM_DIR)/string/stdstring.o \
@@ -2403,6 +2407,12 @@ ifeq ($(HAVE_NETWORKING), 1)
              deps/rcheevos/src/rapi/rc_api_info.o \
              deps/rcheevos/src/rapi/rc_api_runtime.o \
              deps/rcheevos/src/rapi/rc_api_user.o \
+
+      # RVZ/WIA disc image support for RetroAchievements
+      ifeq ($(HAVE_ZSTD), 1)
+         DEFINES += -DHAVE_CHEEVOS_RVZ
+         OBJ += cheevos/cheevos_rvz.o
+      endif
 
       ifeq ($(HAVE_LUA), 1)
          DEFINES += -DHAVE_LUA \

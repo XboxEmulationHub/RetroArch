@@ -50,7 +50,7 @@ static uint32_t mfi_buttons[MAX_USERS];
 static int16_t  mfi_axes[MAX_USERS][MAX_MFI_AXES];
 static uint32_t mfi_controllers[MAX_MFI_CONTROLLERS];
 static MFIRumbleController *mfi_rumblers[MAX_MFI_CONTROLLERS];
-#define MFI_WEAK_RUMBLE 0.3f
+#define MFI_WEAK_RUMBLE 0.5f
 static NSMutableArray *mfiControllers;
 static bool mfi_inited;
 
@@ -181,13 +181,7 @@ static void apple_gamecontroller_joypad_poll_internal(GCController *controller, 
         mfi_axes[slot][3]         = gp.rightThumbstick.yAxis.value * 32767.0f;
         mfi_axes[slot][4]         = gp.leftTrigger.value * 32767.0f;
         mfi_axes[slot][5]         = gp.rightTrigger.value * 32767.0f;
-
     }
-#if 0
-    else if (controller.microGamepad)
-    {
-    }
-#endif
 
     /* GCGamepad is deprecated */
 #pragma clang diagnostic push
@@ -238,6 +232,20 @@ static void apple_gamecontroller_joypad_register(GCController *controller)
         gp.buttonOptions.preferredSystemGestureState = GCSystemGestureStateDisabled;
         gp.buttonMenu.preferredSystemGestureState    = GCSystemGestureStateDisabled;
         gp.buttonHome.preferredSystemGestureState    = GCSystemGestureStateDisabled;
+
+        GCPhysicalInputProfile *profile = controller.physicalInputProfile;
+        GCControllerButtonInput *homeBtn = (GCControllerButtonInput *)profile.buttons[GCInputButtonHome];
+        if (homeBtn) {
+            homeBtn.preferredSystemGestureState = GCSystemGestureStateDisabled;
+        }
+        GCControllerButtonInput *menuBtn = (GCControllerButtonInput *)profile.buttons[GCInputButtonMenu];
+        if (menuBtn) {
+            menuBtn.preferredSystemGestureState = GCSystemGestureStateDisabled;
+        }
+        GCControllerButtonInput *optionsBtn = (GCControllerButtonInput *)profile.buttons[GCInputButtonOptions];
+        if (optionsBtn) {
+            optionsBtn.preferredSystemGestureState = GCSystemGestureStateDisabled;
+        }
     }
 #endif
 
@@ -359,6 +367,15 @@ static void mfi_joypad_autodetect_add(unsigned autoconf_pad, const char *display
     [self.engines addObject:engine];
 
     __weak MFIRumbleController *weakSelf = self;
+    engine.stoppedHandler = ^(CHHapticEngineStoppedReason reason) {
+        MFIRumbleController *strongSelf = weakSelf;
+        if (!strongSelf)
+            return;
+
+        /* Engine stopped (backgrounding/interruption) - clear players but keep engine in set */
+        strongSelf->_strongPlayer = nil;
+        strongSelf->_weakPlayer = nil;
+    };
     engine.resetHandler = ^{
         MFIRumbleController *strongSelf = weakSelf;
         if (!strongSelf)
@@ -372,12 +389,17 @@ static void mfi_joypad_autodetect_add(unsigned autoconf_pad, const char *display
     CHHapticEvent *event;
     CHHapticPattern *pattern;
 
+    CHHapticEventParameter *sharp;
+
     intense = [[CHHapticEventParameter alloc]
                initWithParameterID:CHHapticEventParameterIDHapticIntensity
                value:intensity];
+    sharp   = [[CHHapticEventParameter alloc]
+               initWithParameterID:CHHapticEventParameterIDHapticSharpness
+               value:1.0];
     event   = [[CHHapticEvent alloc]
              initWithEventType:CHHapticEventTypeHapticContinuous
-             parameters:[NSArray arrayWithObjects:intense, nil]
+             parameters:[NSArray arrayWithObjects:intense, sharp, nil]
              relativeTime:0
              duration:GCHapticDurationInfinite];
     pattern = [[CHHapticPattern alloc]
@@ -411,12 +433,18 @@ static void mfi_joypad_autodetect_add(unsigned autoconf_pad, const char *display
 {
     if (@available(iOS 14, tvOS 14, macOS 11, *))
     {
-        for (CHHapticEngine *eng in self.engines)
-            eng.resetHandler = ^{};
-        [self.engines removeAllObjects];
         if (_weakPlayer) [_weakPlayer cancelAndReturnError:nil];
-        _weakPlayer   = nil;
         if (_strongPlayer) [_strongPlayer cancelAndReturnError:nil];
+
+        for (CHHapticEngine *eng in self.engines)
+        {
+            eng.stoppedHandler = ^(CHHapticEngineStoppedReason reason) {};
+            eng.resetHandler = ^{};
+            [eng stopWithCompletionHandler:nil];
+        }
+        [self.engines removeAllObjects];
+
+        _weakPlayer = nil;
         _strongPlayer = nil;
     }
 }
@@ -548,9 +576,9 @@ static void apple_gamecontroller_device_haptics_setup(void) IPHONE_RUMBLE_AVAIL
 
     deviceHapticEngine.stoppedHandler = ^(CHHapticEngineStoppedReason reason)
     {
+        /* Engine stopped (backgrounding/interruption) - clear players but keep engine */
         deviceWeakPlayer = nil;
         deviceStrongPlayer = nil;
-        deviceHapticEngine = nil;
     };
     deviceHapticEngine.resetHandler = ^{
         if (!deviceHapticEngine)
@@ -568,17 +596,35 @@ static id<CHHapticPatternPlayer> apple_gamecontroller_device_haptics_create_play
     if (!deviceHapticEngine)
         return nil;
 
+    /* Ensure engine is started (may have been stopped by backgrounding) */
+    NSError *error;
+    [deviceHapticEngine startAndReturnError:&error];
+    if (error)
+    {
+        /* Engine couldn't start - recreate it */
+        deviceHapticEngine = nil;
+        deviceWeakPlayer = nil;
+        deviceStrongPlayer = nil;
+        apple_gamecontroller_device_haptics_setup();
+        if (!deviceHapticEngine)
+            return nil;
+    }
+
     CHHapticEventParameter *intense;
     CHHapticEvent *event;
     CHHapticPattern *pattern;
-    NSError *error;
+
+    CHHapticEventParameter *sharp;
 
     intense = [[CHHapticEventParameter alloc]
                initWithParameterID:CHHapticEventParameterIDHapticIntensity
                value:intensity];
+    sharp   = [[CHHapticEventParameter alloc]
+               initWithParameterID:CHHapticEventParameterIDHapticSharpness
+               value:1.0];
     event   = [[CHHapticEvent alloc]
                initWithEventType:CHHapticEventTypeHapticContinuous
-               parameters:[NSArray arrayWithObjects:intense, nil]
+               parameters:[NSArray arrayWithObjects:intense, sharp, nil]
                relativeTime:0
                duration:GCHapticDurationInfinite];
     pattern = [[CHHapticPattern alloc]
@@ -606,7 +652,7 @@ static id<CHHapticPatternPlayer> apple_gamecontroller_device_haptics_strong_play
 static id<CHHapticPatternPlayer> apple_gamecontroller_device_haptics_weak_player(void) IPHONE_RUMBLE_AVAIL
 {
     if (!deviceWeakPlayer)
-        deviceWeakPlayer = apple_gamecontroller_device_haptics_create_player(0.5f);
+        deviceWeakPlayer = apple_gamecontroller_device_haptics_create_player(0.7f);
     return deviceWeakPlayer;
 }
 #endif
@@ -644,7 +690,24 @@ void *apple_gamecontroller_joypad_init(void *data)
    return (void*)-1;
 }
 
-static void apple_gamecontroller_joypad_destroy(void) { }
+static void apple_gamecontroller_joypad_destroy(void)
+{
+#if TARGET_OS_IOS
+   if (@available(iOS 14, *))
+   {
+      if (deviceHapticEngine)
+      {
+         deviceHapticEngine.stoppedHandler = ^(CHHapticEngineStoppedReason reason) {};
+         deviceHapticEngine.resetHandler = ^{};
+         [deviceHapticEngine stopWithCompletionHandler:^(NSError *error) {
+            deviceWeakPlayer = nil;
+            deviceStrongPlayer = nil;
+            deviceHapticEngine = nil;
+         }];
+      }
+   }
+#endif
+}
 
 static int32_t apple_gamecontroller_joypad_button(
       unsigned port, uint16_t joykey)
@@ -770,8 +833,6 @@ static bool apple_gamecontroller_joypad_set_rumble(unsigned pad,
                 {
                    CHHapticDynamicParameter *param = NULL;
                    float str = (float)strength / 65535.0f;
-                   if (type == RETRO_RUMBLE_WEAK)
-                      str *= MFI_WEAK_RUMBLE;
                    param = [[CHHapticDynamicParameter alloc]
                       initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
                                     value:str

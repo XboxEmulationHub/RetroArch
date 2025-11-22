@@ -218,6 +218,14 @@ MSG_HASH(
    "Закрыть RetroArch. Сохранение конфигурации при выходе включено."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
+   "Синхронизировать сейчас"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_NOW,
+   "Ручной запуск облачной синхронизации."
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
    "Закрыть RetroArch. Сохранение конфигурации при выходе отключено."
    )
@@ -1327,6 +1335,18 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_DESTRUCTIVE,
    "При отключении опции файлы перед удалением или перезаписью будут помещены в папку резервного копирования."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE,
+   "Режим синхронизации"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_MODE,
+   "Автоматический: синхронизировать при запуске RetroArch и когда нет загруженных ядер. Ручной: синхронизировать только вручную нажатием кнопки 'Синхронизировать сейчас'."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_MANUAL,
+   "Вручную"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_DRIVER,
@@ -2499,7 +2519,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_SCALING,
-   "Округлять вниз или вверх до ближайшего целого значения. 'Умный' режим при избыточном кадрировании изображения переключается на занижение масштаба."
+   "Округлять вниз или вверх до ближайшего целого значения. 'Умный' режим при избыточном кадрировании изображения включает занижение масштаба, а при слишком больших отступах использует нецелочисленное масштабирование."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER_SCALING_UNDERSCALE,
@@ -3762,6 +3782,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HOTKEY_DEVICE_MERGE,
    "Блокирует все горячие клавиши клавиатуры и контроллера, если для каждого типа устройств включен 'Активатор горячих клавиш'."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "Наследовать сочетания Игрока 1"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "Горячие клавиши будут привязаны к порту 1 ядра, даже если порт назначен другому игроку. Примечание: сочетания клавиатуры не будут работать, если порт 1 ядра назначен любому игроку > 1 (ввод с клавиатуры только для игрока 1)."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_ENUM_TOGGLE_GAMEPAD_COMBO,
@@ -5075,7 +5103,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_SUGGEST_ALWAYS,
-   "Предлагать доступные ядра даже если ядро уже загружено."
+   "Предлагать доступные ядра даже при ручной загрузке ядра."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_PLAYER,
@@ -14332,11 +14360,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT,
-   "Загружено сохранение из слота #%d."
+   "Загружено сохранение в слоте %d."
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT_AUTO,
-   "Загружено сохранение из слота #-1 (Авто)."
+   "Загружено сохранение в автослоте."
    )
 MSG_HASH(
    MSG_LOADING,
@@ -14536,11 +14564,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT,
-   "Сохранено в слот #%d."
+   "Создано сохранение в слоте %d."
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT_AUTO,
-   "Состояние сохранено в слот #-1 (Авто)."
+   "Создано сохранение в автослоте."
    )
 MSG_HASH(
    MSG_SAVED_SUCCESSFULLY_TO,
@@ -14561,6 +14589,10 @@ MSG_HASH(
 MSG_HASH(
    MSG_SCANNING_OF_DIRECTORY_FINISHED,
    "Сканирование каталога завершено."
+   )
+MSG_HASH(
+   MSG_SCANNING_NO_DATABASE,
+   "Сканирование не удалось, нет базы данных."
    )
 MSG_HASH(
    MSG_SENDING_COMMAND,

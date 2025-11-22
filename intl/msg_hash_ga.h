@@ -210,6 +210,14 @@ MSG_HASH(
    "Scoir feidhmchlár RetroArch. Tá sábháil chumraíochta ar scor cumasaithe."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
+   "Sioncrónaigh Anois"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_NOW,
+   "Spreag sioncrónú scamall de láimh."
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
    "Scoir feidhmchlár RetroArch. Tá sábháil chumraíochta ar scor díchumasaithe. Scoir feidhmchlár RetroArch. Tá sábháil chumraíochta ar scor díchumasaithe."
    )
@@ -1319,6 +1327,22 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_DESTRUCTIVE,
    "Nuair a bhíonn sé díchumasaithe, bogtar comhaid chuig fillteán cúltaca sula ndéantar iad a athscríobh nó a scriosadh."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE,
+   "Mód Sioncrónaithe"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_MODE,
+   "Uathoibríoch: Sioncrónaigh ar thosú RetroArch agus nuair a dhíluchtaítear croíleacáin. Lámhleabhar: Sioncrónaigh ach amháin nuair a chuirtear an cnaipe 'Sioncrónaigh Anois' i ngníomh de láimh."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_AUTOMATIC,
+   "Uathoibríoch"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_MANUAL,
+   "Lámhleabhar"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_DRIVER,
@@ -2479,7 +2503,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_SCALING,
-   "Babhtaigh síos nó suas go dtí an chéad slánuimhir eile. Titeann 'Cliste' go scála faoi bhun an scála nuair a bhíonn an íomhá bearrtha an iomarca."
+   "Babhtaigh síos nó suas go dtí an chéad slánuimhir eile. Titeann 'Cliste' go dtí scála íseal nuair a bhíonn an íomhá ró-bhearrtha, agus ar deireadh titeann sé ar ais go scálú neamh-shlánuimhreach má tá na corrlaigh íseal-scála ró-mhór."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER_SCALING_UNDERSCALE,
@@ -3742,6 +3766,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HOTKEY_DEVICE_MERGE,
    "Blocáil gach eochair the ó chineálacha gléas méarchláir agus rialtóra araon má tá 'Cumasaigh Eochracha Te' socraithe do cheachtar cineál."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "Eochracha Te Lean Imreoir 1"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "Tá eochracha te ceangailte le croí-phort 1, fiú má athmhapáiltear croí-phort 1 chuig úsáideoir difriúil. Tabhair faoi deara: ní oibreoidh eochracha te méarchláir má athmhapáiltear croí-phort 1 chuig aon úsáideoir > 1 (tá ionchur méarchláir ó úsáideoir 1)."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_ENUM_TOGGLE_GAMEPAD_COMBO,
@@ -5055,7 +5087,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_SUGGEST_ALWAYS,
-   "Mol croíthe atá ar fáil fiú nuair atá croí luchtaithe cheana féin."
+   "Mol croíleacáin atá ar fáil fiú nuair a luchtaítear croí de láimh."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_PLAYER,
@@ -14364,11 +14396,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT,
-   "Luchtaithe staid ó shliotán #%d."
+   "Stádas luchtaithe ón sliotán: %d."
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT_AUTO,
-   "Luchtaithe staid ó shliotán #-1 (Uathoibríoch)."
+   "Stádas luchtaithe ón sliotán: Uathoibríoch."
    )
 MSG_HASH(
    MSG_LOADING,
@@ -14568,11 +14600,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT,
-   "Stádas sábháilte chuig sliotán #%d."
+   "Stádas sábháilte chuig an sliotán: %d."
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT_AUTO,
-   "Stádas sábháilte chuig sliotán #-1 (Uathoibríoch)."
+   "Stádas sábháilte chuig an sliotán: Uathoibríoch."
    )
 MSG_HASH(
    MSG_SAVED_SUCCESSFULLY_TO,
@@ -14593,6 +14625,10 @@ MSG_HASH(
 MSG_HASH(
    MSG_SCANNING_OF_DIRECTORY_FINISHED,
    "Scanadh an eolaire críochnaithe."
+   )
+MSG_HASH(
+   MSG_SCANNING_NO_DATABASE,
+   "Theip ar an scanadh, níor aimsíodh aon bhunachar sonraí."
    )
 MSG_HASH(
    MSG_SENDING_COMMAND,

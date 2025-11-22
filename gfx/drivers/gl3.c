@@ -2818,7 +2818,6 @@ static void *gl3_init(const video_info_t *video,
    gl3_t *gl                            = (gl3_t*)calloc(1, sizeof(gl3_t));
    const gfx_ctx_driver_t *ctx_driver   = gl3_get_context(gl);
    struct retro_hw_render_callback *hwr = video_driver_get_hw_context();
-   unsigned i;
 
    if (!gl || !ctx_driver)
       goto error;
@@ -3409,7 +3408,7 @@ static bool gl3_read_viewport(void *data, uint8_t *buffer, bool is_idle)
        *
        * Keep codepath similar for GLES and desktop GL.
        */
-      gl->readback_buffer_screenshot = malloc(num_pixels * sizeof(uint32_t));
+      gl->readback_buffer_screenshot = (uint32_t*)malloc(num_pixels * sizeof(uint32_t));
 
       if (!gl->readback_buffer_screenshot)
          goto error;
@@ -3923,7 +3922,6 @@ static bool gl3_frame(void *data, const void *frame,
 
    if (gl->chain.active)
    {
-      unsigned i;
       video_shader_ctx_params_t params;
       struct video_tex_info feedback_info;
 

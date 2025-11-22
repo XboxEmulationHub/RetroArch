@@ -1305,6 +1305,14 @@ MSG_HASH(
    "Gdy wyłączone, pliki są przenoszone do folderu kopii zapasowej przed nadpisaniem lub usunięciem."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_AUTOMATIC,
+   "Automatyczne"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_MANUAL,
+   "Ręczny"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_DRIVER,
    "Back-end synchronizacji w chmurze"
    )
@@ -4320,10 +4328,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_SUGGEST_ALWAYS,
    "Zawsze proponuj rdzenie"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_CORE_SUGGEST_ALWAYS,
-   "Zaproponuj dostępne rdzenie nawet wtedy, gdy rdzeń jest już załadowany."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_PLAYER,
@@ -12412,11 +12416,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT,
-   "Załadowany stan z gniazda #%d."
+   "Wczytano stan ze slotu: %d."
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT_AUTO,
-   "Stan załadowany z gniazda #-1 (Auto)."
+   "Załadowany stan ze slotu: Auto."
    )
 MSG_HASH(
    MSG_LOADING,
@@ -12584,11 +12588,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT,
-   "Zapisany stan do gniazda #%d."
+   "Zapisano stan w slocie: %d."
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT_AUTO,
-   "Zapisano stan do gniazda #-1 (Auto)."
+   "Zapisano stan w slocie: Auto."
    )
 MSG_HASH(
    MSG_SAVED_SUCCESSFULLY_TO,

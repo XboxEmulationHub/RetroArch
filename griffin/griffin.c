@@ -202,6 +202,10 @@ ACHIEVEMENTS
 #include "../cheevos/cheevos_client.c"
 #include "../cheevos/cheevos_menu.c"
 
+#if defined(HAVE_CHEEVOS_RVZ)
+#include "../cheevos/cheevos_rvz.c"
+#endif
+
 #include "../deps/rcheevos/src/rc_client.c"
 #include "../deps/rcheevos/src/rc_compat.c"
 #include "../deps/rcheevos/src/rc_libretro.c"
@@ -1076,6 +1080,10 @@ FILE
 #include "../libretro-common/cdrom/cdrom.c"
 #include "../libretro-common/vfs/vfs_implementation_cdrom.c"
 #include "../libretro-common/media/media_detect_cd.c"
+#endif
+
+#ifdef ANDROID
+#include "../libretro-common/vfs/vfs_implementation_saf.c"
 #endif
 
 #include "../libretro-common/string/stdstring.c"

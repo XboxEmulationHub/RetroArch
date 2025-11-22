@@ -1177,6 +1177,10 @@ MSG_HASH(
    "همگام‌سازی ابری تخریبی"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_MANUAL,
+   "دستی"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_DRIVER,
    "شیوه‌نامهٔ شبکهٔ فضای ابری که باید استفاده شود."
    )
@@ -3677,14 +3681,6 @@ MSG_HASH(
 MSG_HASH(
    MSG_FAILED_TO_START_RECORDING,
    "شروع ضبط شکست خورد."
-   )
-MSG_HASH(
-   MSG_SAVED_STATE_TO_SLOT,
-   "وضعیت در شیار #%d ذخیره شد."
-   )
-MSG_HASH(
-   MSG_SAVED_STATE_TO_SLOT_AUTO,
-   "وضعیت در شیار #%d ذخیره شد (خودکار)."
    )
 MSG_HASH(
    MSG_STATE_SLOT,

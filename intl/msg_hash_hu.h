@@ -210,6 +210,14 @@ MSG_HASH(
    "Kilépés a RetroArch alkalmazásból. Konfiguráció mentése kilépéskor: engedélyezve."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
+   "Szinkronizálás most"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_NOW,
+   "A felhőbe szinkronizálás kézi indítása."
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
    "Kilépés a RetroArch alkalmazásból. Konfiguráció mentése kilépéskor: letiltva."
    )
@@ -1303,6 +1311,22 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_DESTRUCTIVE,
    "Kikapcsolt állapotban a fájlok egy tartalék könyvtárba kerülnek felülírás vagy törlés előtt."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE,
+   "Szinkronizálás módja"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_MODE,
+   "Automatikus: szinkronizálás a RetroArch indításakor és magok leállításakor. Kézi: csak a \"Szinkronizálás most\" gomb megnyomásakor."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_AUTOMATIC,
+   "Automatikus"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_MANUAL,
+   "Kézi"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_DRIVER,
@@ -2467,7 +2491,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_SCALING,
-   "Kerekítés felfele vagy lefele a következő egész számra. A \"Smart\" beállítás átvált lefelé méretezésre, ha a kép széléből túl sok lenne levágva."
+   "A legközelebbi egész többszörösre kerekítés felfelé vagy lefelé. Az \"Intelligens\" mód átvált lefelé kerekítésre, ha a kép széléből túl sok lenne levágva, és visszaáll lineáris méretezésre, ha a margó így túl nagy lenne."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER_SCALING_UNDERSCALE,
@@ -3540,11 +3564,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_BINDS,
-   "Gyorsbillentyűk"
+   "Gyorsgombok"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HOTKEY_BINDS,
-   "A gyorsbillentyűk kiosztása és beállításai, például a játék közbeni menü előhívásához."
+   "A gyorsgombok kiosztása és beállításai, például a játék közbeni menü előhívásához."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_RETROPAD_BINDS,
@@ -3709,11 +3733,11 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_ENABLE_HOTKEY,
-   "A gyorsbillentyűk engedélyezése"
+   "Engedélyező gyorsgomb"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_ENABLE_HOTKEY,
-   "Ha be van állítva, akkor ezt a \"Gyorsbillentyű engedélyező\" gombot nyomva kell tartani a többi gyorsbillentyű használatához. Ezzel lehet a kontroller gombjait gyorsfunkciókhoz rendelni a normál bemenet zavarása nélkül. Ha csak kontrolleres módosító van megadva, az nem szükséges a billentyűzet gyorsgombjaihoz, de mindkét módosító működik mindkét eszközzel."
+   "Ha be van állítva, akkor az \"Engedélyező gyorsgomb\" gombot nyomva kell tartani a többi gyorsgomb használatához. Ezzel lehet a kontroller gombjait gyorsfunkciókhoz rendelni a normál bemenet zavarása nélkül. Ha csak kontrolleres módosító van megadva, az nem szükséges a billentyűzet gyorsgombjaihoz, de mindkét módosító működik mindkét eszközzel."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_ENABLE_HOTKEY,
@@ -3721,7 +3745,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_BLOCK_DELAY,
-   "Gyorsgomb visszatartása (képkocka)"
+   "Engedélyező gyorsgomb visszatartása (képkocka)"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HOTKEY_BLOCK_DELAY,
@@ -3729,11 +3753,19 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_DEVICE_MERGE,
-   "Kombinált eszközök a gyorsbillentyűknél"
+   "Kombinált eszközök a gyorsgomboknál"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HOTKEY_DEVICE_MERGE,
    "A gyorsbillentyűk blokkolása mind billentyűzeten, mind kontroller típusú eszközökön, ha bármelyiknél be van állítva a gyorsbillentyűk engedélyezése."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "A gyorsgombok az 1. játékoshoz tartoznak"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "A gyorsgombok a mag 1. csatlakozóján aktívak, akkor is, ha a mag 1. csatlakozója másik felhasználóhoz van rendelve. Figyelem: a billentyűzet gyorsgombjai ez esetben nem működnek."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_ENUM_TOGGLE_GAMEPAD_COMBO,
@@ -14044,11 +14076,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT,
-   "Játékállás betöltve a #%d. rekeszből."
+   "Játékállás betöltve a %d. rekeszből."
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT_AUTO,
-   "Játékállás betöltve a #-1 (automata) rekeszből."
+   "Játékállás betöltve az automata rekeszből."
    )
 MSG_HASH(
    MSG_LOADING,
@@ -14244,15 +14276,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_SAVED_NEW_CONFIG_TO,
-   "Konfiiguráció mentve ide"
+   "Konfiguráció mentve ide"
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT,
-   "Játékállás elmentve a #%d. rekeszbe."
+   "Játékállás elmentve a %d. rekeszbe."
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT_AUTO,
-   "Játékállás elmentve a #-1 (automatikus) rekeszbe."
+   "Játékállás elmentve az automata rekeszbe."
    )
 MSG_HASH(
    MSG_SAVED_SUCCESSFULLY_TO,
@@ -14268,11 +14300,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_SCANNING,
-   "Vizsgálat"
+   "Beolvasás"
    )
 MSG_HASH(
    MSG_SCANNING_OF_DIRECTORY_FINISHED,
    "Mappa beolvasása kész."
+   )
+MSG_HASH(
+   MSG_SCANNING_NO_DATABASE,
+   "Beolvasás sikertelen, adatbázis nem található."
    )
 MSG_HASH(
    MSG_SENDING_COMMAND,
@@ -14857,6 +14893,10 @@ MSG_HASH(
 MSG_HASH(
    MSG_CHEEVOS_CHANGE_MEDIA_FAILED,
    "RetroAchievements lemez váltása sikertelen: %s"
+   )
+MSG_HASH(
+   MSG_CHEEVOS_LOGIN_TOKEN_EXPIRED,
+   "A RetroAchievements bejelentkezés lejárt. Írja be újra a jelszót és töltse újra a játékot."
    )
 MSG_HASH(
    MSG_RESAMPLER_QUALITY_LOWEST,

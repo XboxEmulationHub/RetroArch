@@ -210,6 +210,14 @@ MSG_HASH(
    "RetroArch uygulamasından çıkın. Çıkışta yapılandırma kaydetme etkin."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
+   "Şimdi Eşitle"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_NOW,
+   "Bulut eşitlemesini el ile tetikle."
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
    "RetroArch uygulamasından çıkın. Çıkışta yapılandırma kaydetme etkin değil."
    )
@@ -1315,6 +1323,22 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_DESTRUCTIVE,
    "Devre dışı bırakıldığında, dosyalar üzerine yazılmadan veya silinmeden önce yedek klasörüne taşınır."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE,
+   "Eşitleme Modu"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_MODE,
+   "Otomatik: RetroArch başlangıcında ve çekirdekler boşta olunca eşitle. El ile: Yalnızca 'Şimdi Eşitle' düğmesi el ile tetiklendiğinde eşitle."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_AUTOMATIC,
+   "Otomatik"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_MANUAL,
+   "El İle"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_DRIVER,
@@ -2475,7 +2499,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_SCALING,
-   "Aşağıya veya yukarıya bir sonraki tam sayıya yuvarlayın. Resim çok fazla kırpıldığında 'Akıllı' alt ölçeğe düşer."
+   "Bir sonraki tam sayıya yuvarlar. Görüntü çok fazla kırpıldığında 'Akıllı' ölçeklendirme alt ölçeklendirmeye düşer ve alt ölçeklendirme kenar boşlukları çok büyükse tam sayı olmayan ölçeklendirmeye geri döner."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER_SCALING_UNDERSCALE,
@@ -5055,7 +5079,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_SUGGEST_ALWAYS,
-   "Bir çekirdek zaten yüklü olsa bile kullanılabilir çekirdekleri öner."
+   "Bir çekirdek el ile yüklendiğinde bile kullanılabilir çekirdek öner."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_PLAYER,
@@ -14379,14 +14403,6 @@ MSG_HASH(
    "Libretro için ön uç"
    )
 MSG_HASH(
-   MSG_LOADED_STATE_FROM_SLOT,
-   "Yuva #%d üstünden durum yüklendi."
-   )
-MSG_HASH(
-   MSG_LOADED_STATE_FROM_SLOT_AUTO,
-   "Yuva #-1 üstünden yüklenmiş durum (Otomatik)."
-   )
-MSG_HASH(
    MSG_LOADING,
    "Yükleniyor"
    )
@@ -14581,14 +14597,6 @@ MSG_HASH(
 MSG_HASH(
    MSG_SAVED_NEW_CONFIG_TO,
    "Yapılandırma kaydedildi"
-   )
-MSG_HASH(
-   MSG_SAVED_STATE_TO_SLOT,
-   "Yuvaya kaydedilmiş durum #%d."
-   )
-MSG_HASH(
-   MSG_SAVED_STATE_TO_SLOT_AUTO,
-   "Durum #-1 yuvasına kaydedildi (Otomatik)."
    )
 MSG_HASH(
    MSG_SAVED_SUCCESSFULLY_TO,

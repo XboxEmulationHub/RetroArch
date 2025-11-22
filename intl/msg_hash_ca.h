@@ -218,6 +218,14 @@ MSG_HASH(
    "Tanca el RetroArch. La configuració es desarà en sortir."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
+   "Sincronitza ara"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_NOW,
+   "Activa manual la sincronització al núvol."
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
    "Tanca el RetroArch. La configuració no es desarà en sortir."
    )
@@ -1315,6 +1323,18 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_DESTRUCTIVE,
    "En desactivar-ho, els fitxers es mouen a una carpeta de còpia de seguretat abans de sobreescriure's o eliminar-se."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE,
+   "Mode de sincronització"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_MODE,
+   "Automàtic: Sincronitza RetroArch a l'inici, abans que es carreguin els nuclis. Manual: Només se sincronitza si es clica el botó 'Sincronitza ara'."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_AUTOMATIC,
+   "Automàtic"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_DRIVER,
@@ -2475,7 +2495,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_SCALE_INTEGER_SCALING,
-   "Augmenta o disminueix l'escala del següent valor enter. 'Intel·ligent' disminueix l'escala si la imatge queda retallada."
+   "Arrodoneix al següent nombre enter. 'Smart' redeueix l'escala quan la imatge està massa retallada, i acaba en un escalat no enter si els marges de reescalat son massa grans."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER_SCALING_UNDERSCALE,
@@ -3734,6 +3754,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HOTKEY_DEVICE_MERGE,
    "Bloqueja totes les dreceres de teclat dels teclats i controladors si qualsevol dels dispositius té un botó o tecla per activar les dreceres de teclat."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "Les dreceres de teclat segueixen al jugador 1"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_HOTKEY_FOLLOWS_PLAYER1,
+   "Les dreceres de teclat estan assignades al nucli del port 1, encara que les dreceres de teclat del nucli del port 1 siguin reassignades a un usuari diferent. Nota: Les dreceres de teclat no funcionaran si el nucli del port 1 es reassigna a qualsevol usuari > 1 (L'entrada del teclat és per l'usuari 1)."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_ENUM_TOGGLE_GAMEPAD_COMBO,
@@ -5043,7 +5071,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_SUGGEST_ALWAYS,
-   "Suggereix tots els nuclis disponibles quan es carrega un nucli."
+   "Suggereix tots els nuclis disponibles quen es carrega un nucli manualment."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_PLAYER,
@@ -14196,11 +14224,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT,
-   "Carrega el desat ràpid %d."
+   "Carrega l'estat de la ranura: %d."
    )
 MSG_HASH(
    MSG_LOADED_STATE_FROM_SLOT_AUTO,
-   "Carrega l'estat des de la ranura #-1 (Automàticament)."
+   "Carrega l'estat de la ranura: Automàtic."
    )
 MSG_HASH(
    MSG_LOADING,
@@ -14400,11 +14428,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT,
-   "Estat desat a la ranura #%d."
+   "Desa l'estat a la ranura: %d."
    )
 MSG_HASH(
    MSG_SAVED_STATE_TO_SLOT_AUTO,
-   "Desat l'estat a la ranura #-1 (Automàtic)."
+   "Estat desat a la ranura: Automàtic."
    )
 MSG_HASH(
    MSG_SAVED_SUCCESSFULLY_TO,
@@ -14425,6 +14453,10 @@ MSG_HASH(
 MSG_HASH(
    MSG_SCANNING_OF_DIRECTORY_FINISHED,
    "S'ha acabat l'escaneig del directori."
+   )
+MSG_HASH(
+   MSG_SCANNING_NO_DATABASE,
+   "Error en l'escaneig, no s'ha trobat una base de dades."
    )
 MSG_HASH(
    MSG_SENDING_COMMAND,
@@ -15757,7 +15789,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_TOUCHPAD,
-   "Mode 'Touchpad' pel ratolí virtual"
+   "Mode «Touchpad» del ratolí virtual"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TOUCH_VMOUSE_TOUCHPAD,
@@ -15765,7 +15797,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_TRACKBALL,
-   "Mode 'Trackball' del ratolí virtual"
+   "Mode «Trackball» del ratolí virtual"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TOUCH_VMOUSE_TRACKBALL,
@@ -15773,7 +15805,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_GESTURE,
-   "Empra els gestos pel ratolí virtual"
+   "Gestos del ratolí virtual"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TOUCH_VMOUSE_GESTURE,

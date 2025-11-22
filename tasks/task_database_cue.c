@@ -62,6 +62,7 @@ static struct magic_entry MAGIC_NUMBERS[] = {
    { "Sony - PlayStation 2",        "PLAYSTATION",      0x008008}, /* PS2 DVD */
    { "Sony - PlayStation 2",        "           ",      0x008008}, /* PS2 DVD */
    { "Sony - PlayStation Portable", "PSP GAME",         0x008008},
+   { "Philips - CD-i",              "\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00", 0x000000},
    { NULL,                          NULL,               0}
 };
 
@@ -543,37 +544,37 @@ size_t detect_gc_game(intfstream_t *fd, char *s, size_t len, const char *filenam
    {
       case 'E':
          _len += strlcpy(s + _len, "-USA", len - _len);
-         return _len;
+         break;
       case 'J':
          _len += strlcpy(s + _len, "-JPN", len - _len);
-         return _len;
+         break;
       case 'P': /** NYI: P can also be P-UKV, P-AUS **/
       case 'X': /** NYI: X can also be X-UKV, X-EUU **/
          _len += strlcpy(s + _len, "-EUR", len - _len);
-         return _len;
+         break;
       case 'Y':
          _len += strlcpy(s + _len, "-FAH", len - _len);
-         return _len;
+         break;
       case 'D':
          _len += strlcpy(s + _len, "-NOE", len - _len);
-         return _len;
+         break;
       case 'S':
          _len += strlcpy(s + _len, "-ESP", len - _len);
-         return _len;
+         break;
       case 'F':
          _len += strlcpy(s + _len, "-FRA", len - _len);
-         return _len;
+         break;
       case 'I':
          _len += strlcpy(s + _len, "-ITA", len - _len);
-         return _len;
+         break;
       case 'H':
          _len += strlcpy(s + _len, "-HOL", len - _len);
-         return _len;
+         break;
       default:
-    break;
+         return 0;
    }
 
-   return 0;
+   return _len;
 }
 
 int detect_scd_game(intfstream_t *fd, char *s, size_t len, const char *filename)
@@ -617,6 +618,8 @@ int detect_scd_game(intfstream_t *fd, char *s, size_t len, const char *filename)
 
    /** Dissect this pre serial into parts **/
    __len              = strlen(pre_game_id);
+   /** Force minimum serial length since it is assumed **/
+   __len              = (__len < 2) ? 2 : __len;
    ___len             = __len - 2;
    strncpy(check_suffix_50, &pre_game_id[___len], __len - 2 + 1);
    check_suffix_50[2] = '\0';
@@ -740,12 +743,20 @@ int detect_sat_game(intfstream_t *fd, char *s, size_t len, const char *filename)
    /** redump serials are built differently for each region **/
    switch (region_id)
    {
-      case 'U':
+      case 'B':  /* Brazil/multi-region (BKUT) */
+      case 'T':  /* Taiwan/Asia */
+      case 'K':  /* Korea */
+      case 'A':  /* Americas */
+      case 'U':  /* USA */
          if (     raw_game_id[0] == 'M'
                && raw_game_id[1] == 'K'
                && raw_game_id[2] == '-')
          {
-            strlcpy(s, &raw_game_id[3], len);
+            const char *serial_start = &raw_game_id[3];
+            /* Strip leading zeros from serial number */
+            while (*serial_start == '0' && *(serial_start + 1) != '\0')
+               serial_start++;
+            strlcpy(s, serial_start, len);
          }
          else
             strlcpy(s, raw_game_id, len);
@@ -786,12 +797,12 @@ int detect_sat_game(intfstream_t *fd, char *s, size_t len, const char *filename)
 
 int detect_dc_game(intfstream_t *fd, char *s, size_t len, const char *filename)
 {
+   int index;
    size_t _len, __len, ___len;
    int total_hyphens;
    int total_hyphens_recalc;
    char pre_game_id[50];
    char raw_game_id[50];
-   int index;
    char lgame_id[20];
    char rgame_id[20];
 
@@ -1155,6 +1166,37 @@ int cue_find_track(const char *cue_path, bool first,
          task_database_cue_get_token(fd, tmp_token, sizeof(tmp_token));
          is_data = !string_is_equal_noncase(tmp_token, "AUDIO");
          ++track;
+
+         /* Special case: CD-i stores data in AUDIO-labeled tracks */
+         /* Check if track 1 is AUDIO but contains CD-i magic bytes */
+         if (!is_data && track == 1 && last_file[0] != '\0')
+         {
+            intfstream_t *track_fd = NULL;
+            intfstream_info_t track_info;
+            uint8_t magic_buf[12];
+            const uint8_t cdi_magic[] = {0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00};
+
+            track_info.type = INTFSTREAM_FILE;
+            if ((track_fd = (intfstream_t*)intfstream_init(&track_info)))
+            {
+               if (intfstream_open(track_fd, last_file,
+                     RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE))
+               {
+                  if (intfstream_read(track_fd, magic_buf, sizeof(magic_buf)) == sizeof(magic_buf))
+                  {
+                     if (memcmp(magic_buf, cdi_magic, sizeof(cdi_magic)) == 0)
+                     {
+                        is_data = true;  /* CD-i AUDIO track contains data */
+#ifdef DEBUG
+                        RARCH_LOG("[Scanner] Detected CD-i data in AUDIO track 1\n");
+#endif
+                     }
+                  }
+                  intfstream_close(track_fd);
+               }
+               free(track_fd);
+            }
+         }
       }
       else if (string_is_equal_noncase(tmp_token, "INDEX"))
       {
