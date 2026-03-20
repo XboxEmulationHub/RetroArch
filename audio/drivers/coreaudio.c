@@ -30,6 +30,11 @@
 #include <AudioUnit/AudioUnit.h>
 #include <AudioUnit/AUComponent.h>
 
+/* Nb is defined by AES code included earlier in griffin.c amalgamation.
+ * It conflicts with Sparse BLAS headers in Accelerate, so undefine it. */
+#undef Nb
+#include <Accelerate/Accelerate.h>
+
 #include <boolean.h>
 #include <retro_endianness.h>
 #include <string/stdstring.h>
@@ -67,6 +72,7 @@ typedef struct coreaudio
    /* Temporary buffer for converter output */
    float *conv_buffer;
    size_t conv_buffer_frames;
+   bool converter_needs_reset;
 
    bool dev_alive;
    bool is_paused;
@@ -197,6 +203,7 @@ static bool coreaudio_update_converter(coreaudio_t *dev, double effective_input_
    }
 
    dev->current_ratio = effective_input_rate;
+   dev->converter_needs_reset = false;
 
    /* Set high quality resampling */
    UInt32 quality = kAudioConverterQuality_High;
@@ -577,12 +584,19 @@ static ssize_t coreaudio_write(void *data, const void *buf_, size_t len)
 
       if (samples > 0)
       {
-         /* Buffer full, wait for audio callback to drain some.
-          * Use a timeout as a safety net in case audio stalls. */
-         dispatch_time_t timeout = dispatch_time(
-               DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC);
-         if (dispatch_semaphore_wait(dev->sema, timeout) != 0)
-            break; /* Timeout - audio might be stalled */
+         /* If the audio unit has stopped (e.g. audio session interrupted
+          * by a phone call), bail out - the callback will never drain. */
+         UInt32 running = 0;
+         UInt32 size    = sizeof(running);
+         if (AudioUnitGetProperty(dev->dev,
+                  kAudioOutputUnitProperty_IsRunning,
+                  kAudioUnitScope_Global, 0,
+                  &running, &size) == noErr && !running)
+            break;
+         /* Brief timeout as safety net for the race where the unit
+          * stops during the wait; we'll re-check on the next iteration. */
+         dispatch_semaphore_wait(dev->sema,
+               dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC));
       }
    }
 
@@ -591,7 +605,7 @@ static ssize_t coreaudio_write(void *data, const void *buf_, size_t len)
 
 /* Write raw int16 samples with hardware-accelerated resampling */
 static ssize_t coreaudio_write_raw(void *data, const int16_t *samples,
-      size_t frames, unsigned input_rate, double rate_adjust)
+      size_t frames, unsigned input_rate, double rate_adjust, float volume)
 {
    coreaudio_t *dev = (coreaudio_t*)data;
    double effective_rate;
@@ -636,8 +650,25 @@ static ssize_t coreaudio_write_raw(void *data, const int16_t *samples,
          break;
       }
 
+      /* If converter returned 0 output while we have input, it may be stuck
+       * in "end of stream" state (tvOS 13/14 issue). Reset and retry once. */
       if (output_frames == 0)
+      {
+         if (ctx.frames_left > 0 && !dev->converter_needs_reset)
+         {
+            AudioConverterReset(dev->converter);
+            dev->converter_needs_reset = true;
+            continue;
+         }
          break;
+      }
+
+      dev->converter_needs_reset = false;
+
+      /* Apply volume to converted samples */
+      if (volume != 1.0f)
+         vDSP_vsmul(dev->conv_buffer, 1, &volume,
+               dev->conv_buffer, 1, (vDSP_Length)(output_frames * 2));
 
       /* Write converted samples to ring buffer */
       {
@@ -662,10 +693,15 @@ static ssize_t coreaudio_write_raw(void *data, const int16_t *samples,
 
             if (out_samples > 0)
             {
-               dispatch_time_t timeout = dispatch_time(
-                     DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC);
-               if (dispatch_semaphore_wait(dev->sema, timeout) != 0)
+               UInt32 running = 0;
+               UInt32 sz      = sizeof(running);
+               if (AudioUnitGetProperty(dev->dev,
+                        kAudioOutputUnitProperty_IsRunning,
+                        kAudioUnitScope_Global, 0,
+                        &running, &sz) == noErr && !running)
                   break;
+               dispatch_semaphore_wait(dev->sema,
+                     dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC));
             }
          }
       }

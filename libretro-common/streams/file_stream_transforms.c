@@ -32,31 +32,27 @@ RFILE* rfopen(const char *path, const char *mode)
    unsigned int retro_mode = RETRO_VFS_FILE_ACCESS_READ;
    bool position_to_end    = false;
 
-   if (strstr(mode, "r"))
+   if (strchr(mode, 'r'))
    {
       retro_mode = RETRO_VFS_FILE_ACCESS_READ;
-      if (strstr(mode, "+"))
-      {
-         retro_mode = RETRO_VFS_FILE_ACCESS_READ_WRITE |
-            RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING;
-      }
+      if (strchr(mode, '+'))
+         retro_mode = RETRO_VFS_FILE_ACCESS_READ_WRITE
+                    | RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING;
    }
-   else if (strstr(mode, "w"))
+   else if (strchr(mode, 'w'))
    {
       retro_mode = RETRO_VFS_FILE_ACCESS_WRITE;
-      if (strstr(mode, "+"))
+      if (strchr(mode, '+'))
          retro_mode = RETRO_VFS_FILE_ACCESS_READ_WRITE;
    }
-   else if (strstr(mode, "a"))
+   else if (strchr(mode, 'a'))
    {
-      retro_mode = RETRO_VFS_FILE_ACCESS_WRITE |
-         RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING;
+      retro_mode = RETRO_VFS_FILE_ACCESS_WRITE
+                 | RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING;
       position_to_end = true;
-      if (strstr(mode, "+"))
-      {
-         retro_mode = RETRO_VFS_FILE_ACCESS_READ_WRITE |
-            RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING;
-      }
+      if (strchr(mode, '+'))
+         retro_mode = RETRO_VFS_FILE_ACCESS_READ_WRITE
+                    | RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING;
    }
 
    output = filestream_open(path, retro_mode,
@@ -83,7 +79,7 @@ int64_t rftell(RFILE* stream)
    return filestream_tell(stream);
 }
 
-int rfseek(RFILE* stream, int64_t offset, int origin)
+int64_t rfseek(RFILE* stream, int64_t offset, int origin)
 {
    int seek_position = -1;
 
@@ -103,7 +99,7 @@ int rfseek(RFILE* stream, int64_t offset, int origin)
          break;
    }
 
-   return filestream_seek(stream, offset, seek_position) == -1 ? -1 : 0;
+   return filestream_seek(stream, offset, seek_position);
 }
 
 int64_t rfread(void* buffer,

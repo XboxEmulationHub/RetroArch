@@ -16,6 +16,7 @@
 #import <Foundation/Foundation.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <AVFoundation/AVFoundation.h>
+#import <Accelerate/Accelerate.h>
 
 #include <stdio.h>
 #include <stdatomic.h>
@@ -168,8 +169,6 @@ static void rb_read_data_interleaved(ringbuffer_h r,
 
 #pragma mark - CoreAudio3
 
-static bool coreaudio3_g_interrupted;
-
 @interface CoreAudio3 : NSObject {
    ringbuffer_t _rb;
    dispatch_semaphore_t _sema;
@@ -183,6 +182,7 @@ static bool coreaudio3_g_interrupted;
    double _lastRateAdjust;
    float *_convBuffer;
    size_t _convBufferFrames;
+   BOOL _converterNeedsReset;
 }
 
 @property (nonatomic, readwrite) BOOL nonBlock;
@@ -197,7 +197,8 @@ static bool coreaudio3_g_interrupted;
 - (ssize_t)writeRawInt16:(const int16_t *)samples
                   frames:(size_t)frames
                inputRate:(unsigned)inputRate
-              rateAdjust:(double)rateAdjust;
+              rateAdjust:(double)rateAdjust
+                  volume:(float)volume;
 - (void)start;
 - (void)stop;
 
@@ -219,6 +220,7 @@ static bool coreaudio3_g_interrupted;
       _lastInputRate = 0;
       _lastRateAdjust = 1.0;
       _interleaved = NO;
+      _converterNeedsReset = NO;
 
       desc.componentType          = kAudioUnitType_Output;
 #if TARGET_OS_IPHONE
@@ -346,7 +348,7 @@ static bool coreaudio3_g_interrupted;
 
 - (ssize_t)writeFloat:(const float *)data samples:(size_t)samples {
    size_t _len = 0;
-   while (!coreaudio3_g_interrupted && samples > 0)
+   while (samples > 0)
    {
       size_t write_avail = rb_avail(&_rb);
       if (write_avail > samples)
@@ -361,7 +363,17 @@ static bool coreaudio3_g_interrupted;
          break;
 
       if (write_avail == 0)
-         dispatch_semaphore_wait(_sema, DISPATCH_TIME_FOREVER);
+      {
+         /* If the audio unit has stopped (e.g. audio session interrupted
+          * by a phone call), bail out immediately - the callback that
+          * drains the buffer will never fire. */
+         if (!_au.running)
+            break;
+         /* Brief timeout as a safety net: if the audio unit stops
+          * during the wait, we'll re-check _au.running promptly. */
+         dispatch_semaphore_wait(_sema,
+               dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC));
+      }
    }
 
    return _len;
@@ -408,7 +420,8 @@ static OSStatus coreaudio3_converter_cb(
 - (ssize_t)writeRawInt16:(const int16_t *)samples
                   frames:(size_t)frames
                inputRate:(unsigned)inputRate
-              rateAdjust:(double)rateAdjust {
+              rateAdjust:(double)rateAdjust
+                  volume:(float)volume {
    OSStatus err;
    double effectiveRate;
    size_t framesWritten = 0;
@@ -421,7 +434,7 @@ static OSStatus coreaudio3_converter_cb(
    effectiveRate = inputRate / rateAdjust;
    if (_converter == NULL
          || _lastInputRate != inputRate
-         || fabs(_lastRateAdjust - rateAdjust) > 0.0001)
+         || fabs(_lastRateAdjust - rateAdjust) > 0.005)
    {
       AudioStreamBasicDescription inputDesc, outputDesc;
 
@@ -468,6 +481,7 @@ static OSStatus coreaudio3_converter_cb(
 
       _lastInputRate = inputRate;
       _lastRateAdjust = rateAdjust;
+      _converterNeedsReset = NO;
    }
 
    /* Set up callback context */
@@ -497,11 +511,27 @@ static OSStatus coreaudio3_converter_cb(
          break;
       }
 
+      /* If converter returned 0 output while we have input, it may be stuck
+       * in "end of stream" state (tvOS 13/14 issue). Reset and retry once. */
       if (outputFrames == 0)
+      {
+         if (ctx.frames_left > 0 && !_converterNeedsReset)
+         {
+            AudioConverterReset(_converter);
+            _converterNeedsReset = YES; /* Mark that we've already reset */
+            continue; /* Retry with reset converter */
+         }
          break;
+      }
+
+      _converterNeedsReset = NO; /* Converter is working, clear retry flag */
+
+      /* Apply volume to converted samples */
+      outputSamples = outputFrames * 2;
+      if (volume != 1.0f)
+         vDSP_vsmul(_convBuffer, 1, &volume, _convBuffer, 1, (vDSP_Length)outputSamples);
 
       /* Write resampled float data to ring buffer */
-      outputSamples = outputFrames * 2;
       written = [self writeFloat:_convBuffer samples:outputSamples];
 
       if (written > 0)
@@ -607,7 +637,7 @@ static size_t coreaudio3_buffer_size(void *data)
 }
 
 static ssize_t coreaudio3_write_raw(void *data, const int16_t *samples,
-      size_t frames, unsigned input_rate, double rate_adjust)
+      size_t frames, unsigned input_rate, double rate_adjust, float volume)
 {
    CoreAudio3 *dev = (__bridge CoreAudio3 *)data;
    if (dev == nil)
@@ -616,7 +646,8 @@ static ssize_t coreaudio3_write_raw(void *data, const int16_t *samples,
    return [dev writeRawInt16:samples
                       frames:frames
                    inputRate:input_rate
-                  rateAdjust:rate_adjust];
+                  rateAdjust:rate_adjust
+                      volume:volume];
 }
 
 audio_driver_t audio_coreaudio3 = {

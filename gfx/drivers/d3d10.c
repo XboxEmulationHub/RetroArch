@@ -406,8 +406,8 @@ static void d3d10_init_texture(D3D10Device device, d3d10_texture_t* texture)
       unsigned width, height;
 
       texture->desc.BindFlags |= D3D10_BIND_RENDER_TARGET;
-      width                    = texture->desc.Width;
-      height                   = texture->desc.Height;
+      width                    = texture->desc.Width  >> 5;
+      height                   = texture->desc.Height >> 5;
 
       while ((width > 1) || (height > 1))
       {
@@ -2252,7 +2252,7 @@ static void *d3d10_gfx_init(const video_info_t* video,
          utf16_to_char_string((const uint16_t*)
                desc.Description, str, sizeof(str));
 
-         RARCH_LOG("[D3D10] Found GPU at index %d: \"%s\".\n", i, str);
+         RARCH_LOG("[D3D10] Found GPU #%d: \"%s\".\n", i, str);
 
          string_list_append(d3d10->gpu_list, str, attr);
 
@@ -2266,9 +2266,9 @@ static void *d3d10_gfx_init(const video_info_t* video,
 
       if (0 <= gpu_index && gpu_index <= i && (gpu_index < D3D10_MAX_GPU_COUNT))
       {
+         RARCH_LOG("[D3D10] Using GPU #%d: \"%s\".\n", gpu_index, d3d10->gpu_list->elems[gpu_index].data);
          d3d10->current_adapter = d3d10->adapters[gpu_index];
          d3d10->adapter         = d3d10->current_adapter;
-         RARCH_LOG("[D3D10] Using GPU index %d.\n", gpu_index);
       }
       else
       {
@@ -2378,7 +2378,6 @@ static void d3d10_init_render_targets(d3d10_video_t* d3d10,
          d3d10->pass[i].rt.desc.BindFlags = D3D10_BIND_RENDER_TARGET;
          d3d10->pass[i].rt.desc.Format    = glslang_format_to_dxgi(
                d3d10->pass[i].semantics.format);
-         d3d10->pass[i].rt.desc.MiscFlags = D3D10_RESOURCE_MISC_GENERATE_MIPS;
          d3d10_release_texture(&d3d10->pass[i].rt);
          d3d10_init_texture(d3d10->device, &d3d10->pass[i].rt);
 
@@ -2721,11 +2720,6 @@ static bool d3d10_gfx_frame(
 #endif /* D3D10_ROLLING_SCANLINE_SIMULATION */
 
             context->lpVtbl->Draw(context, 4, 0);
-
-            /* Generate mipmaps for render target if needed */
-            if (d3d10->pass[i].rt.desc.MiscFlags & D3D10_RESOURCE_MISC_GENERATE_MIPS)
-               context->lpVtbl->GenerateMips(context, d3d10->pass[i].rt.view);
-               
             texture = &d3d10->pass[i].rt;
          }
          else
@@ -3276,8 +3270,9 @@ static const video_poke_interface_t d3d10_poke_interface = {
 #endif
    NULL, /* set_hdr_max_nits */
    NULL, /* set_hdr_paper_white_nits */
-   NULL, /* set_hdr_contrast */
-   NULL  /* set_hdr_expand_gamut */
+   NULL, /* set_hdr_expand_gamut */
+   NULL, /* set_hdr_scanlines */
+   NULL  /* set_hdr_subpixel_layout */
 };
 
 static void d3d10_gfx_get_poke_interface(void* data, const video_poke_interface_t** iface)

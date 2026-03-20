@@ -307,6 +307,14 @@ typedef struct
    bool icon_hide;
 } xmb_node_t;
 
+enum xmb_drag_mode
+{
+   XMB_DRAG_NONE = 0,
+   XMB_DRAG_DETECTING,
+   XMB_DRAG_HORIZONTAL,
+   XMB_DRAG_VERTICAL
+};
+
 typedef struct xmb_handle
 {
    /* Keeps track of the last time tabs were switched
@@ -340,13 +348,7 @@ typedef struct xmb_handle
    menu_input_pointer_t pointer;
 
    /* Touch drag state for direction locking */
-   enum
-   {
-      XMB_DRAG_NONE,
-      XMB_DRAG_DETECTING,
-      XMB_DRAG_HORIZONTAL,
-      XMB_DRAG_VERTICAL
-   } drag_mode;
+   enum xmb_drag_mode drag_mode;
    float drag_start_x;
    float drag_start_y;
    float categories_drag_start_pos;
@@ -1200,6 +1202,7 @@ static void xmb_render_messagebox_internal(
    string_list_deinitialize(&list);
 }
 
+#ifdef HAVE_LIBRETRODB
 static bool xmb_is_main_menu_explore(void)
 {
    menu_entry_t entry;
@@ -1207,6 +1210,7 @@ static bool xmb_is_main_menu_explore(void)
    menu_entry_get(&entry, 0, 0, NULL, true);
    return entry.type == FILE_TYPE_RDB;
 }
+#endif
 
 static void xmb_path_dynamic_wallpaper(xmb_handle_t *xmb, char *s, size_t len)
 {
@@ -1716,19 +1720,14 @@ static bool gfx_thumbnail_set_icon_playlist(
       }
       else
       {
+         size_t i;
          char tmp_buf[NAME_MAX_LENGTH];
-         const char* pos      = strchr(db_name, '|');
-
-         /* If db_name comes from core info, and there are multiple
-          * databases mentioned separated by |, use only first one */
-         if (pos && (size_t) (pos - db_name)+1 < sizeof(tmp_buf))
-            strlcpy(tmp_buf, db_name, (size_t) (pos - db_name)+1);
-         else
-            strlcpy(tmp_buf, db_name, sizeof(tmp_buf));
-
+         const size_t __len = sizeof(tmp_buf) - 1;
+         for (i = 0; i < __len && db_name[i] && db_name[i] != '|'; i++)
+            tmp_buf[i] = db_name[i];
+         tmp_buf[i] = '\0';
          fill_pathname(path_data->content_db_name,
-               tmp_buf, "",
-               sizeof(path_data->content_db_name));
+         tmp_buf, "", sizeof(path_data->content_db_name));
       }
    }
 
@@ -1848,6 +1847,7 @@ static void xmb_selection_pointer_changed(
       real_iy          = iy + xmb->margins_screen_top;
 
       if (     xmb->is_playlist
+            && xmb->allow_horizontal_animation
             && gfx_thumbnail_is_enabled(menu_st->thumbnail_path_data, GFX_THUMBNAIL_ICON)
             && !string_is_equal(xmb->title_name, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_IMAGES_TAB))
             && !string_is_equal(xmb->title_name, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MUSIC_TAB))
@@ -2255,7 +2255,7 @@ static enum msg_hash_enums xmb_search_enum(const char *label)
 
    for (i = 0; i < MSG_LAST && enum_idx == MSG_UNKNOWN; i++)
    {
-      if (string_is_equal(label, msg_hash_to_str(i)))
+      if (string_is_equal(label, msg_hash_to_str((enum msg_hash_enums)i)))
          enum_idx = (enum msg_hash_enums)i;
    }
 
@@ -2325,10 +2325,12 @@ static void xmb_set_title(xmb_handle_t *xmb)
       enum msg_hash_enums enum_idx = MSG_UNKNOWN;
       const char *path             = NULL;
       const char *label            = NULL;
+      const char *label_original   = NULL;
       uintptr_t texture            = xmb->textures.list[XMB_TEXTURE_QUICKMENU];
       bool search                  = true;
 
       menu_entries_get_last_stack(&path, &label, &type, &enum_idx, &entry_idx);
+      label_original               = label;
 
       /* Direct exceptions */
       if (string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_DEFERRED_CORE_SYSTEM_FILES_LIST)))
@@ -2368,6 +2370,48 @@ static void xmb_set_title(xmb_handle_t *xmb)
          enum_idx = MENU_ENUM_LABEL_HORIZONTAL_MENU;
       else if (string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_DEFERRED_RPL_ENTRY_ACTIONS)))
          enum_idx = MENU_ENUM_LABEL_DEFERRED_RPL_ENTRY_ACTIONS;
+      else if (string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_DEFERRED_USER_BINDS_LIST))
+            || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_DEFERRED_REMAPPINGS_PORT_LIST))
+            || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_INPUT_DEVICE_TYPE)))
+         enum_idx = MENU_ENUM_LABEL_INPUT_DEVICE_INDEX;
+      else if (string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_INPUT_SELECT_RESERVED_DEVICE)))
+         enum_idx = MENU_ENUM_LABEL_INPUT_DEVICE_RESERVED_DEVICE_NAME;
+      else if (string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_INPUT_DESCRIPTION))
+            || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_INPUT_DESCRIPTION_KBD)))
+      {
+         unsigned input_id;
+         if (type < MENU_SETTINGS_INPUT_DESC_KBD_BEGIN)
+            input_id = MENU_SETTINGS_INPUT_DESC_BEGIN;
+         else
+            input_id = MENU_SETTINGS_INPUT_DESC_KBD_BEGIN;
+
+         while (type > (input_id + (RARCH_ANALOG_BIND_LIST_END - 1)))
+            input_id = (input_id + RARCH_ANALOG_BIND_LIST_END);
+
+         type     = type - input_id;
+         enum_idx = MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_INPUT_DESCRIPTION;
+      }
+      else if (string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_INPUT_RETROPAD_BIND)))
+         enum_idx = (enum msg_hash_enums)atoi(path);
+      else if (string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST)))
+      {
+         enum_idx = (enum msg_hash_enums)atoi(path);
+         if (     enum_idx >= MENU_ENUM_LABEL_INPUT_DEVICE_INDEX
+               && enum_idx <= MENU_ENUM_LABEL_INPUT_DEVICE_INDEX_LAST)
+            enum_idx = MENU_ENUM_LABEL_INPUT_DEVICE_INDEX;
+         else if (enum_idx >= MENU_ENUM_LABEL_INPUT_MOUSE_INDEX
+               && enum_idx <= MENU_ENUM_LABEL_INPUT_MOUSE_INDEX_LAST)
+            enum_idx = MENU_ENUM_LABEL_INPUT_MOUSE_INDEX;
+         else if (enum_idx >= MENU_ENUM_LABEL_INPUT_PLAYER_ANALOG_DPAD_MODE
+               && enum_idx <= MENU_ENUM_LABEL_INPUT_PLAYER_ANALOG_DPAD_MODE_LAST)
+            enum_idx = MENU_ENUM_LABEL_INPUT_PLAYER_ANALOG_DPAD_MODE;
+         else if (enum_idx >= MENU_ENUM_LABEL_INPUT_REMAP_PORT
+               && enum_idx <= MENU_ENUM_LABEL_INPUT_REMAP_PORT_LAST)
+            enum_idx = MENU_ENUM_LABEL_INPUT_REMAP_PORT;
+         else if (enum_idx >= MENU_ENUM_LABEL_INPUT_DEVICE_RESERVATION_TYPE
+               && enum_idx <= MENU_ENUM_LABEL_INPUT_DEVICE_RESERVATION_TYPE_LAST)
+            enum_idx = MENU_ENUM_LABEL_INPUT_DEVICE_RESERVATION_TYPE;
+      }
 
       if (type == MENU_SETTING_ACTION_CORE_OPTIONS)
          path = xmb->title_name;
@@ -2386,7 +2430,7 @@ static void xmb_set_title(xmb_handle_t *xmb)
           * removing prefix and then suffix if warranted. */
          if (string_starts_with(label, "deferred_"))
          {
-            strlcpy(label_temp, label + strlen("deferred_"), sizeof(label_temp));
+            strlcpy(label_temp, label + STRLEN_CONST("deferred_"), sizeof(label_temp));
             label = label_temp;
          }
 
@@ -2397,9 +2441,13 @@ static void xmb_set_title(xmb_handle_t *xmb)
          {
             if (string_ends_with(label, "_list"))
             {
-               label_temp[strlen(label_temp) - strlen("_list")] = '\0';
-               label = label_temp;
-
+               label_temp[strlen(label_temp) - STRLEN_CONST("_list")] = '\0';
+               label    = label_temp;
+               enum_idx = xmb_search_enum(label);
+            }
+            else if (string_starts_with(label, "dropdown_box_list_"))
+            {
+               label    = label_original;
                enum_idx = xmb_search_enum(label);
             }
          }
@@ -2621,6 +2669,7 @@ static void xmb_populate_dynamic_icons(xmb_handle_t *xmb)
       video_driver_get_size(NULL, &height);
       xmb_calculate_visible_range(xmb, height, end, (unsigned)selection, &entry_start, &entry_end);
       if (     xmb->is_playlist
+            && xmb->allow_horizontal_animation
             && !string_is_equal(xmb->title_name, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_IMAGES_TAB))
             && !string_is_equal(xmb->title_name, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MUSIC_TAB))
             && !string_is_equal(xmb->title_name, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_VIDEO_TAB))
@@ -3446,6 +3495,56 @@ static void xmb_populate_entries(void *data,
    }
 }
 
+#define TEXTURE_RETROPAD(id) \
+   switch (id) \
+   { \
+      case RETRO_DEVICE_ID_JOYPAD_UP: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_U]; \
+      case RETRO_DEVICE_ID_JOYPAD_DOWN: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_D]; \
+      case RETRO_DEVICE_ID_JOYPAD_LEFT: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_L]; \
+      case RETRO_DEVICE_ID_JOYPAD_RIGHT: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_R]; \
+      case RETRO_DEVICE_ID_JOYPAD_B: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_D]; \
+      case RETRO_DEVICE_ID_JOYPAD_A: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_R]; \
+      case RETRO_DEVICE_ID_JOYPAD_Y: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_L]; \
+      case RETRO_DEVICE_ID_JOYPAD_X: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_U]; \
+      case RETRO_DEVICE_ID_JOYPAD_SELECT: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_SELECT]; \
+      case RETRO_DEVICE_ID_JOYPAD_START: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_START]; \
+      case RETRO_DEVICE_ID_JOYPAD_L: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_LB]; \
+      case RETRO_DEVICE_ID_JOYPAD_R: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_RB]; \
+      case RETRO_DEVICE_ID_JOYPAD_L2: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_LT]; \
+      case RETRO_DEVICE_ID_JOYPAD_R2: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_RT]; \
+      case RETRO_DEVICE_ID_JOYPAD_L3: \
+      case RETRO_DEVICE_ID_JOYPAD_R3: \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_P]; \
+      case 19: /* Left Analog Up */ \
+      case 23: /* Right Analog Up */ \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_U]; \
+      case 18: /* Left Analog Down */ \
+      case 22: /* Right Analog Down */ \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_D]; \
+      case 17: /* Left Analog Left */ \
+      case 21: /* Right Analog Left */ \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_L]; \
+      case 16: /* Left Analog Right */ \
+      case 20: /* Right Analog Right */ \
+         return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_R]; \
+      default: \
+         break; \
+   } \
+
 static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       xmb_node_t *core_node, xmb_node_t *node,
       enum msg_hash_enums enum_idx, const char *enum_path,
@@ -3486,16 +3585,18 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       case MENU_ENUM_LABEL_CORE_CHEAT_OPTIONS:
          return xmb->textures.list[XMB_TEXTURE_CHEAT_OPTIONS];
       case MENU_ENUM_LABEL_DISK_OPTIONS:
-      case MENU_ENUM_LABEL_DISK_TRAY_EJECT:
-      case MENU_ENUM_LABEL_DISK_TRAY_INSERT:
-      case MENU_ENUM_LABEL_DISK_IMAGE_APPEND:
+      case MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_DISK_INDEX:
       case MENU_ENUM_LABEL_DISK_INDEX:
          return xmb->textures.list[XMB_TEXTURE_DISK_OPTIONS];
+      case MENU_ENUM_LABEL_DISK_TRAY_EJECT:
+      case MENU_ENUM_LABEL_DISK_TRAY_INSERT:
+         return xmb->textures.list[XMB_TEXTURE_RELOAD];
+      case MENU_ENUM_LABEL_DISK_IMAGE_APPEND:
+         return xmb->textures.list[XMB_TEXTURE_MENU_ADD];
       case MENU_ENUM_LABEL_SHADER_OPTIONS:
       case MENU_ENUM_LABEL_QUICK_MENU_SHOW_SHADERS:
          return xmb->textures.list[XMB_TEXTURE_SHADER_OPTIONS];
       case MENU_ENUM_LABEL_ACHIEVEMENT_LIST:
-      case MENU_ENUM_LABEL_ACHIEVEMENT_LIST_HARDCORE:
          return xmb->textures.list[XMB_TEXTURE_ACHIEVEMENT_LIST];
       case MENU_ENUM_LABEL_SAVESTATE_LIST:
       case MENU_ENUM_LABEL_SAVE_STATE:
@@ -3535,7 +3636,6 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       case MENU_ENUM_LABEL_RESTART_CONTENT:
       case MENU_ENUM_LABEL_QUICK_MENU_SHOW_RESTART_CONTENT:
       case MENU_ENUM_LABEL_REBOOT:
-      case MENU_ENUM_LABEL_RESET_TO_DEFAULT_CONFIG:
       case MENU_ENUM_LABEL_CHEAT_COPY_AFTER:
       case MENU_ENUM_LABEL_CHEAT_COPY_BEFORE:
       case MENU_ENUM_LABEL_CHEAT_RELOAD_CHEATS:
@@ -3674,12 +3774,6 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       case MENU_ENUM_LABEL_CURSOR_MANAGER_LIST:
          return xmb->textures.list[XMB_TEXTURE_CURSOR];
       case MENU_ENUM_LABEL_HELP_LIST:
-      case MENU_ENUM_LABEL_HELP_CONTROLS:
-      case MENU_ENUM_LABEL_HELP_LOADING_CONTENT:
-      case MENU_ENUM_LABEL_HELP_SCANNING_CONTENT:
-      case MENU_ENUM_LABEL_HELP_WHAT_IS_A_CORE:
-      case MENU_ENUM_LABEL_HELP_CHANGE_VIRTUAL_GAMEPAD:
-      case MENU_ENUM_LABEL_HELP_AUDIO_VIDEO_TROUBLESHOOTING:
          return xmb->textures.list[XMB_TEXTURE_HELP];
       case MENU_ENUM_LABEL_QUIT_RETROARCH:
          return xmb->textures.list[XMB_TEXTURE_EXIT];
@@ -3704,6 +3798,8 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       case MENU_ENUM_LABEL_SETTINGS_SHOW_INPUT:
       case MENU_ENUM_LABEL_QUICK_MENU_SHOW_CONTROLS:
       case MENU_ENUM_LABEL_UPDATE_AUTOCONFIG_PROFILES:
+      case MENU_ENUM_LABEL_INPUT_LIBRETRO_DEVICE:
+      case MENU_ENUM_LABEL_INPUT_DEVICE_INDEX:
       case MENU_ENUM_LABEL_INPUT_RETROPAD_BINDS:
       case MENU_ENUM_LABEL_INPUT_USER_1_BINDS:
       case MENU_ENUM_LABEL_INPUT_USER_2_BINDS:
@@ -3723,6 +3819,10 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       case MENU_ENUM_LABEL_INPUT_USER_16_BINDS:
       case MENU_ENUM_LABEL_START_NET_RETROPAD:
          return xmb->textures.list[XMB_TEXTURE_INPUT_SETTINGS];
+      case MENU_ENUM_LABEL_INPUT_MOUSE_INDEX:
+         return xmb->textures.list[XMB_TEXTURE_INPUT_MOUSE];
+      case MENU_ENUM_LABEL_INPUT_PLAYER_ANALOG_DPAD_MODE:
+         return xmb->textures.list[XMB_TEXTURE_INPUT_ADC];
       case MENU_ENUM_LABEL_INPUT_TURBO_FIRE_SETTINGS:
          return xmb->textures.list[XMB_TEXTURE_INPUT_TURBO];
       case MENU_ENUM_LABEL_INPUT_TURBO_BIND:
@@ -3734,56 +3834,13 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
          if (enum_idx == MENU_ENUM_LABEL_INPUT_TURBO_BUTTON)
             turbo_bind = settings->uints.input_turbo_button;
 
-         switch (turbo_bind)
-         {
-            case RETRO_DEVICE_ID_JOYPAD_UP:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_U];
-            case RETRO_DEVICE_ID_JOYPAD_DOWN:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_D];
-            case RETRO_DEVICE_ID_JOYPAD_LEFT:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_L];
-            case RETRO_DEVICE_ID_JOYPAD_RIGHT:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_R];
-            case RETRO_DEVICE_ID_JOYPAD_B:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_D];
-            case RETRO_DEVICE_ID_JOYPAD_A:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_R];
-            case RETRO_DEVICE_ID_JOYPAD_Y:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_L];
-            case RETRO_DEVICE_ID_JOYPAD_X:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_U];
-            case RETRO_DEVICE_ID_JOYPAD_SELECT:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_SELECT];
-            case RETRO_DEVICE_ID_JOYPAD_START:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_START];
-            case RETRO_DEVICE_ID_JOYPAD_L:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_LB];
-            case RETRO_DEVICE_ID_JOYPAD_R:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_RB];
-            case RETRO_DEVICE_ID_JOYPAD_L2:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_LT];
-            case RETRO_DEVICE_ID_JOYPAD_R2:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_RT];
-            case RETRO_DEVICE_ID_JOYPAD_L3:
-            case RETRO_DEVICE_ID_JOYPAD_R3:
-               return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_P];
-            case 19: /* Left Analog Up */
-            case 23: /* Right Analog Up */
-               return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_U];
-            case 18: /* Left Analog Down */
-            case 22: /* Right Analog Down */
-               return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_D];
-            case 17: /* Left Analog Left */
-            case 21: /* Right Analog Left */
-               return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_L];
-            case 16: /* Left Analog Right */
-            case 20: /* Right Analog Right */
-               return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_R];
-            default:
-               break;
-         }
+         TEXTURE_RETROPAD(turbo_bind)
          break;
       }
+      case MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_INPUT_DESCRIPTION:
+      case MENU_ENUM_LABEL_DEFERRED_DROPDOWN_BOX_LIST_INPUT_RETROPAD_BIND:
+         TEXTURE_RETROPAD(type)
+         break;
       case MENU_ENUM_LABEL_LATENCY_SETTINGS:
       case MENU_ENUM_LABEL_CONTENT_SHOW_LATENCY:
       case MENU_ENUM_LABEL_SETTINGS_SHOW_LATENCY:
@@ -3830,6 +3887,7 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       case MENU_ENUM_LABEL_QUICK_MENU_STOP_RECORDING:
       case MENU_ENUM_LABEL_CHEAT_DELETE:
       case MENU_ENUM_LABEL_CHEAT_DELETE_ALL:
+      case MENU_ENUM_LABEL_CHEAT_DELETE_MATCH:
       case MENU_ENUM_LABEL_CORE_DELETE:
       case MENU_ENUM_LABEL_DELETE_PLAYLIST:
       case MENU_ENUM_LABEL_CORE_DELETE_BACKUP_LIST:
@@ -3848,6 +3906,7 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       case MENU_ENUM_LABEL_REMOVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR:
       case MENU_ENUM_LABEL_REMOVE_CURRENT_CONFIG_OVERRIDE_GAME:
          return xmb->textures.list[XMB_TEXTURE_CLOSE];
+      case MENU_ENUM_LABEL_RESET_TO_DEFAULT_CONFIG:
       case MENU_ENUM_LABEL_CORE_OPTIONS_RESET:
       case MENU_ENUM_LABEL_REMAP_FILE_RESET:
       case MENU_ENUM_LABEL_OVERRIDE_UNLOAD:
@@ -3889,6 +3948,9 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       case MENU_ENUM_LABEL_REWIND_SETTINGS:
       case MENU_ENUM_LABEL_CONTENT_SHOW_REWIND:
          return xmb->textures.list[XMB_TEXTURE_REWIND];
+      case MENU_ENUM_LABEL_INPUT_REMAP_PORT:
+      case MENU_ENUM_LABEL_INPUT_DEVICE_RESERVATION_TYPE:
+      case MENU_ENUM_LABEL_INPUT_DEVICE_RESERVED_DEVICE_NAME:
       case MENU_ENUM_LABEL_QUICK_MENU_OVERRIDE_OPTIONS:
       case MENU_ENUM_LABEL_QUICK_MENU_SHOW_SAVE_CORE_OVERRIDES:
       case MENU_ENUM_LABEL_QUICK_MENU_SHOW_SAVE_CONTENT_DIR_OVERRIDES:
@@ -3930,6 +3992,8 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       case MENU_ENUM_LABEL_CHEAT_APPLY_CHANGES:
       case MENU_ENUM_LABEL_SHADER_APPLY_CHANGES:
          return xmb->textures.list[XMB_TEXTURE_CHECKMARK];
+      case MENU_ENUM_LABEL_CHEAT_COPY_MATCH:
+      case MENU_ENUM_LABEL_CHEAT_ADD_MATCHES:
       case MENU_ENUM_LABEL_CHEAT_ADD_NEW_AFTER:
       case MENU_ENUM_LABEL_CHEAT_ADD_NEW_BEFORE:
       case MENU_ENUM_LABEL_CHEAT_ADD_NEW_TOP:
@@ -4133,10 +4197,11 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
          return xmb->textures.list[XMB_TEXTURE_ROOM_RELAY];
 #endif
       case MENU_SETTINGS_INPUT_LIBRETRO_DEVICE:
-      case MENU_SETTINGS_INPUT_INPUT_REMAP_PORT:
-         return xmb->textures.list[XMB_TEXTURE_SETTING];
+         return xmb->textures.list[XMB_TEXTURE_INPUT_SETTINGS];
       case MENU_SETTINGS_INPUT_ANALOG_DPAD_MODE:
          return xmb->textures.list[XMB_TEXTURE_INPUT_ADC];
+      case MENU_SETTINGS_INPUT_INPUT_REMAP_PORT:
+         return xmb->textures.list[XMB_TEXTURE_OVERRIDE];
    }
 
 #ifdef HAVE_CHEEVOS
@@ -4161,108 +4226,73 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
    if (     type >= MENU_SETTINGS_INPUT_BEGIN
          && type <= MENU_SETTINGS_INPUT_DESC_KBD_END)
    {
+      size_t enum_label_len = strlen(enum_label);
+
       /* This part is only utilized by Input User # Binds */
-      unsigned input_id;
       if (type < MENU_SETTINGS_INPUT_DESC_BEGIN)
       {
-         input_id = MENU_SETTINGS_INPUT_BEGIN;
-         if (type == input_id)
-            return xmb->textures.list[XMB_TEXTURE_INPUT_ADC];
-#ifdef HAVE_LIBNX
-         /* Account for the additional split JoyCon option in Input Port # Binds */
-         input_id++;
-#endif
-         if (type >= input_id + 1 && type <= input_id + 3)
+         if (     string_ends_with_size(enum_label, "_joypad_index", enum_label_len, STRLEN_CONST("_joypad_index")))
             return xmb->textures.list[XMB_TEXTURE_INPUT_SETTINGS];
-         if (type == input_id + 4)
+         else if (string_ends_with_size(enum_label, "_mouse_index", enum_label_len, STRLEN_CONST("_mouse_index")))
             return xmb->textures.list[XMB_TEXTURE_INPUT_MOUSE];
-         if (type == input_id + 5)
+         else if (string_ends_with_size(enum_label, "_analog_dpad_mode", enum_label_len, STRLEN_CONST("_analog_dpad_mode")))
+            return xmb->textures.list[XMB_TEXTURE_INPUT_ADC];
+         else if (string_ends_with_size(enum_label, "_bind_all", enum_label_len, STRLEN_CONST("_bind_all")))
             return xmb->textures.list[XMB_TEXTURE_INPUT_BIND_ALL];
-         if (type == input_id + 6)
+         else if (string_ends_with_size(enum_label, "_bind_defaults", enum_label_len, STRLEN_CONST("_bind_defaults")))
             return xmb->textures.list[XMB_TEXTURE_RELOAD];
-         if (type == input_id + 7)
+         else if (string_ends_with_size(enum_label, "_save_autoconfig", enum_label_len, STRLEN_CONST("_save_autoconfig")))
             return xmb->textures.list[XMB_TEXTURE_SAVING];
-         if (type >= input_id + 32 && type <= input_id + 42)
-            return xmb->textures.list[XMB_TEXTURE_INPUT_LGUN];
-         if (type == input_id + 43)
+         else if (string_ends_with_size(enum_label, "_turbo", enum_label_len, STRLEN_CONST("_turbo"))
+               || string_ends_with_size(enum_label, "_hold", enum_label_len, STRLEN_CONST("_hold")))
             return xmb->textures.list[XMB_TEXTURE_INPUT_TURBO];
-         /* Align to use the same code of Quickmenu controls */
-         input_id = input_id + 8;
-      }
-      else
-      {
-         /* Quickmenu controls repeats the same icons for all users */
-         if (type < MENU_SETTINGS_INPUT_DESC_KBD_BEGIN)
-            input_id = MENU_SETTINGS_INPUT_DESC_BEGIN;
-         else
-            input_id = MENU_SETTINGS_INPUT_DESC_KBD_BEGIN;
-         while (type > (input_id + 23))
-            input_id = (input_id + 24);
-
-         /* Human readable bind order */
-         if (type < (input_id + RARCH_ANALOG_BIND_LIST_END))
-         {
-            unsigned index = 0;
-            int input_num  = type - input_id;
-            for (index = 0; index < ARRAY_SIZE(input_config_bind_order); index++)
-            {
-               if (input_num == (int)input_config_bind_order[index])
-               {
-                  type = input_id + index;
-                  break;
-               }
-            }
-         }
+         else if (strstr(enum_label, "_gun_"))
+            return xmb->textures.list[XMB_TEXTURE_INPUT_LGUN];
+         else if (string_starts_with_size(enum_label, "input_device_reserv", STRLEN_CONST("input_device_reserv")))
+            return xmb->textures.list[XMB_TEXTURE_OVERRIDE];
       }
 
       /* This is used for both Input Port Binds and Quickmenu controls */
-      if (type == input_id)
+      if (     string_ends_with_size(enum_label, "_up", enum_label_len, STRLEN_CONST("_up")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_U];
-      if (type == (input_id + 1))
+      else if (string_ends_with_size(enum_label, "_down", enum_label_len, STRLEN_CONST("_down")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_D];
-      if (type == (input_id + 2))
+      else if (string_ends_with_size(enum_label, "_left", enum_label_len, STRLEN_CONST("_left")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_L];
-      if (type == (input_id + 3))
+      else if (string_ends_with_size(enum_label, "_right", enum_label_len, STRLEN_CONST("_right")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_DPAD_R];
-      if (type == (input_id + 4))
+      else if (string_ends_with_size(enum_label, "_b", enum_label_len, STRLEN_CONST("_b")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_D];
-      if (type == (input_id + 5))
+      else if (string_ends_with_size(enum_label, "_a", enum_label_len, STRLEN_CONST("_a")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_R];
-      if (type == (input_id + 6))
+      else if (string_ends_with_size(enum_label, "_y", enum_label_len, STRLEN_CONST("_y")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_L];
-      if (type == (input_id + 7))
+      else if (string_ends_with_size(enum_label, "_x", enum_label_len, STRLEN_CONST("_x")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_BTN_U];
-      if (type == (input_id + 8))
+      else if (string_ends_with_size(enum_label, "_select", enum_label_len, STRLEN_CONST("_select")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_SELECT];
-      if (type == (input_id + 9))
+      else if (string_ends_with_size(enum_label, "_start", enum_label_len, STRLEN_CONST("_start")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_START];
-      if (type == (input_id + 10))
+      else if (string_ends_with_size(enum_label, "_l", enum_label_len, STRLEN_CONST("_l")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_LB];
-      if (type == (input_id + 11))
+      else if (string_ends_with_size(enum_label, "_r", enum_label_len, STRLEN_CONST("_r")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_RB];
-      if (type == (input_id + 12))
+      else if (string_ends_with_size(enum_label, "_l2", enum_label_len, STRLEN_CONST("_l2")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_LT];
-      if (type == (input_id + 13))
+      else if (string_ends_with_size(enum_label, "_r2", enum_label_len, STRLEN_CONST("_r2")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_RT];
-      if (type == (input_id + 14))
+      else if (string_ends_with_size(enum_label, "_l3", enum_label_len, STRLEN_CONST("_l3")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_P];
-      if (type == (input_id + 15))
+      else if (string_ends_with_size(enum_label, "_r3", enum_label_len, STRLEN_CONST("_r3")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_P];
-      if (type == (input_id + 16))
+
+      else if (string_ends_with_size(enum_label, "_y_minus", enum_label_len, STRLEN_CONST("_y_minus")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_U];
-      if (type == (input_id + 17))
+      else if (string_ends_with_size(enum_label, "_y_plus", enum_label_len, STRLEN_CONST("_y_plus")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_D];
-      if (type == (input_id + 18))
+      else if (string_ends_with_size(enum_label, "_x_minus", enum_label_len, STRLEN_CONST("_x_minus")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_L];
-      if (type == (input_id + 19))
-         return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_R];
-      if (type == (input_id + 20))
-         return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_U];
-      if (type == (input_id + 21))
-         return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_D];
-      if (type == (input_id + 22))
-         return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_L];
-      if (type == (input_id + 23))
+      else if (string_ends_with_size(enum_label, "_x_plus", enum_label_len, STRLEN_CONST("_x_plus")))
          return xmb->textures.list[XMB_TEXTURE_INPUT_STCK_R];
    }
    if (     type >= MENU_SETTINGS_REMAPPING_PORT_BEGIN
@@ -4928,10 +4958,9 @@ static int xmb_draw_item(
 
    MENU_ENTRY_INITIALIZE(entry);
    entry.flags |= MENU_ENTRY_FLAG_PATH_ENABLED
+                | MENU_ENTRY_FLAG_LABEL_ENABLED
                 | MENU_ENTRY_FLAG_RICH_LABEL_ENABLED
                 | MENU_ENTRY_FLAG_VALUE_ENABLED;
-   if (xmb->is_contentless_cores)
-      entry.flags |= MENU_ENTRY_FLAG_LABEL_ENABLED;
    if (i == current)
       entry.flags |= MENU_ENTRY_FLAG_SUBLABEL_ENABLED;
    menu_entry_get(&entry, 0, i, list, true);
@@ -5951,7 +5980,7 @@ static enum menu_action xmb_parse_menu_entry_action(
                && xmb_get_system_tab(xmb, (unsigned)xmb->categories_selection_ptr) == XMB_SYSTEM_TAB_MAIN)
          {
             /* Allow launch if already using "imageviewer" core */
-            if (string_is_equal(runloop_state_get_ptr()->system.info.library_name, "image display"))
+            if (string_is_equal(runloop_state_get_ptr()->system.info.library_name, "Image Viewer"))
                break;
 
             if (xmb->show_fullscreen_thumbnails)
@@ -6164,8 +6193,6 @@ static void xmb_layout_common(xmb_handle_t *xmb, float scale_factor, unsigned ne
 static void xmb_layout_ps3(xmb_handle_t *xmb, int width)
 {
    float scale_factor            = xmb->last_scale_factor;
-   float margins_title           = xmb->margins_title;
-   float margins_title_h_offset  = xmb->margins_title_horizontal_offset;
    unsigned new_font_size        = 32 * scale_factor;
 
    xmb->above_subitem_offset     =  1.5f;
@@ -6195,8 +6222,6 @@ static void xmb_layout_ps3(xmb_handle_t *xmb, int width)
 static void xmb_layout_psp(xmb_handle_t *xmb, int width)
 {
    float scale_factor            = xmb->last_scale_factor;
-   float margins_title           = xmb->margins_title;
-   float margins_title_h_offset  = xmb->margins_title_horizontal_offset;
    unsigned new_font_size        = 26 * scale_factor;
 
    xmb->above_subitem_offset     =  1.5f;
@@ -6782,6 +6807,9 @@ static void xmb_context_reset_internal(xmb_handle_t *xmb,
             || xmb->is_file_list
             || xmb->is_quick_menu)
          xmb_update_thumbnail_image(xmb);
+
+      if (xmb->is_playlist)
+         xmb_populate_dynamic_icons(xmb);
    }
 
    /* Have to reset this, otherwise savestate
@@ -7150,7 +7178,8 @@ static void xmb_render(void *data,
             continue;
          }
 
-         if (thumbnail_icon->icon.status == GFX_THUMBNAIL_STATUS_UNKNOWN)
+         if (     thumbnail_icon->icon.status == GFX_THUMBNAIL_STATUS_UNKNOWN
+               && !string_is_empty(thumbnail_icon->thumbnail_path_data.icon_path))
          {
             node->icon_hide = false;
             if (!xmb_load_dynamic_icon(
@@ -9612,7 +9641,6 @@ static int xmb_list_bind_init(menu_file_list_cbs_t *cbs,
 static int xmb_list_push(void *data, void *userdata,
       menu_displaylist_info_t *info, unsigned type)
 {
-#if 1
    switch (type)
    {
       case DISPLAYLIST_MENU_SETTINGS_LIST:
@@ -9625,300 +9653,6 @@ static int xmb_list_push(void *data, void *userdata,
 
    /* Use common lists for all drivers */
    return -1;
-#else
-   int ret                         = -1;
-   core_info_list_t *list          = NULL;
-   settings_t *settings            = config_get_ptr();
-   bool menu_show_load_core        = settings->bools.menu_show_load_core;
-   bool menu_show_load_content     = settings->bools.menu_show_load_content;
-   bool menu_content_show_pl       = settings->bools.menu_content_show_playlists;
-   bool menu_show_configurations   = settings->bools.menu_show_configurations;
-   bool menu_show_load_disc        = settings->bools.menu_show_load_disc;
-   bool menu_show_dump_disc        = settings->bools.menu_show_dump_disc;
-#ifdef HAVE_LAKKA
-   bool menu_show_eject_disc       = settings->bools.menu_show_eject_disc;
-#endif
-   bool menu_show_shutdown         = settings->bools.menu_show_shutdown;
-   bool menu_show_reboot           = settings->bools.menu_show_reboot;
-#if !defined(IOS)
-   bool menu_show_quit_retroarch   = settings->bools.menu_show_quit_retroarch;
-   bool menu_show_restart_ra       = settings->bools.menu_show_restart_retroarch;
-#endif
-   bool menu_show_information      = settings->bools.menu_show_information;
-   bool kiosk_mode_enable          = settings->bools.kiosk_mode_enable;
-#ifdef HAVE_QT
-   bool desktop_menu_enable        = settings->bools.desktop_menu_enable;
-#endif
-#if defined(HAVE_NETWORKING) && defined(HAVE_ONLINE_UPDATER)
-   bool menu_show_online_updater   = settings->bools.menu_show_online_updater;
-#endif
-#if defined(HAVE_MIST)
-   bool menu_show_core_manager_steam
-                                   = settings->bools.menu_show_core_manager_steam;
-#endif
-   bool menu_content_show_settings = settings->bools.menu_content_show_settings;
-   const char *menu_content_show_settings_password
-                                   = settings->paths.menu_content_show_settings_password;
-   const char *kiosk_mode_password = settings->paths.kiosk_mode_password;
-
-   switch (type)
-   {
-      case DISPLAYLIST_LOAD_CONTENT_LIST:
-         menu_entries_clear(info->list);
-
-         menu_entries_append(info->list,
-               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_FAVORITES),
-               msg_hash_to_str(MENU_ENUM_LABEL_FAVORITES),
-               MENU_ENUM_LABEL_FAVORITES,
-               MENU_SETTING_ACTION_FAVORITES_DIR, 0, 0, NULL);
-
-         if (menu_content_show_pl)
-            menu_entries_append(info->list,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_PLAYLISTS_TAB),
-                  msg_hash_to_str(MENU_ENUM_LABEL_PLAYLISTS_TAB),
-                  MENU_ENUM_LABEL_PLAYLISTS_TAB,
-                  MENU_SETTING_ACTION, 0, 0, NULL);
-
-         core_info_get_list(&list);
-         if (list->info_count > 0)
-            menu_entries_append(info->list,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_DOWNLOADED_FILE_DETECT_CORE_LIST),
-                  msg_hash_to_str(MENU_ENUM_LABEL_DOWNLOADED_FILE_DETECT_CORE_LIST),
-                  MENU_ENUM_LABEL_DOWNLOADED_FILE_DETECT_CORE_LIST,
-                  MENU_SETTING_ACTION, 0, 0, NULL);
-
-         if (frontend_driver_parse_drive_list(info->list, true) != 0)
-            menu_entries_append(info->list, "/",
-                  msg_hash_to_str(MENU_ENUM_LABEL_FILE_DETECT_CORE_LIST_PUSH_DIR),
-                  MENU_ENUM_LABEL_FILE_DETECT_CORE_LIST_PUSH_DIR,
-                  MENU_SETTING_ACTION, 0, 0, NULL);
-
-         if (!kiosk_mode_enable)
-            menu_entries_append(info->list,
-                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_SETTINGS),
-                  msg_hash_to_str(MENU_ENUM_LABEL_MENU_FILE_BROWSER_SETTINGS),
-                  MENU_ENUM_LABEL_MENU_FILE_BROWSER_SETTINGS,
-                  MENU_SETTING_ACTION, 0, 0, NULL);
-
-         info->flags |= MD_FLAG_NEED_PUSH | MD_FLAG_NEED_REFRESH;
-         ret          = 0;
-         break;
-      case DISPLAYLIST_MAIN_MENU:
-         {
-            uint32_t flags = runloop_get_flags();
-
-            menu_entries_clear(info->list);
-
-            if (flags & RUNLOOP_FLAG_CORE_RUNNING)
-            {
-               if (!retroarch_ctl(RARCH_CTL_IS_DUMMY_CORE, NULL))
-               {
-                  MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                           info->list,
-                           MENU_ENUM_LABEL_CONTENT_SETTINGS,
-                           PARSE_ACTION,
-                           false);
-               }
-            }
-            else
-            {
-               rarch_system_info_t *sys_info = &runloop_state_get_ptr()->system;
-               if (sys_info && sys_info->load_no_content)
-               {
-                  MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                        info->list,
-                        MENU_ENUM_LABEL_START_CORE,
-                        PARSE_ACTION,
-                        false);
-               }
-
-#ifndef HAVE_DYNAMIC
-               if (frontend_driver_has_fork())
-#endif
-               {
-                  if (menu_show_load_core)
-                  {
-                     MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                           info->list,
-                           MENU_ENUM_LABEL_CORE_LIST,
-                           PARSE_ACTION,
-                           false);
-                  }
-               }
-            }
-
-            if (menu_show_load_content)
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_LOAD_CONTENT_LIST,
-                     PARSE_ACTION,
-                     false);
-
-               if (menu_displaylist_has_subsystems())
-               {
-                  MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                        info->list,
-                        MENU_ENUM_LABEL_SUBSYSTEM_SETTINGS,
-                        PARSE_ACTION,
-                        false);
-               }
-            }
-
-            if (menu_show_load_disc)
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_LOAD_DISC,
-                     PARSE_ACTION,
-                     false);
-            }
-
-            if (menu_show_dump_disc)
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_DUMP_DISC,
-                     PARSE_ACTION,
-                     false);
-            }
-
-#ifdef HAVE_LAKKA
-            if (menu_show_eject_disc)
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_EJECT_DISC,
-                     PARSE_ACTION,
-                     false);
-            }
-#endif
-
-            MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                  info->list,
-                  MENU_ENUM_LABEL_ADD_CONTENT_LIST,
-                  PARSE_ACTION,
-                  false);
-#ifdef HAVE_QT
-            if (desktop_menu_enable)
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_SHOW_WIMP,
-                     PARSE_ACTION,
-                     false);
-            }
-#endif
-#if defined(HAVE_NETWORKING)
-#if defined(HAVE_ONLINE_UPDATER)
-            if (menu_show_online_updater && !kiosk_mode_enable)
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_ONLINE_UPDATER,
-                     PARSE_ACTION,
-                     false);
-            }
-#endif
-#endif
-#ifdef HAVE_MIST
-            if (menu_show_core_manager_steam && !kiosk_mode_enable)
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                  info->list,
-                  MENU_ENUM_LABEL_CORE_MANAGER_STEAM_LIST,
-                  PARSE_ACTION,
-                  false);
-            }
-#endif
-            if (     !menu_content_show_settings
-                  && !string_is_empty(menu_content_show_settings_password))
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_XMB_MAIN_MENU_ENABLE_SETTINGS,
-                     PARSE_ACTION,
-                     false);
-            }
-
-            if (kiosk_mode_enable && !string_is_empty(kiosk_mode_password))
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_MENU_DISABLE_KIOSK_MODE,
-                     PARSE_ACTION,
-                     false);
-            }
-
-            if (menu_show_information)
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_INFORMATION_LIST,
-                     PARSE_ACTION,
-                     false);
-            }
-
-#if defined(HAVE_LIBNX)
-            MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                  info->list,
-                  MENU_ENUM_LABEL_SWITCH_CPU_PROFILE,
-                  PARSE_ACTION,
-                  false);
-#endif
-            if (menu_show_configurations && !kiosk_mode_enable)
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_CONFIGURATIONS_LIST,
-                     PARSE_ACTION,
-                     false);
-            }
-
-#if !defined(IOS)
-            if (menu_show_restart_ra)
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_RESTART_RETROARCH,
-                     PARSE_ACTION,
-                     false);
-            }
-
-            if (menu_show_quit_retroarch)
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_QUIT_RETROARCH,
-                     PARSE_ACTION,
-                     false);
-            }
-#endif
-            if (menu_show_reboot)
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_REBOOT,
-                     PARSE_ACTION,
-                     false);
-            }
-
-            if (menu_show_shutdown)
-            {
-               MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
-                     info->list,
-                     MENU_ENUM_LABEL_SHUTDOWN,
-                     PARSE_ACTION,
-                     false);
-            }
-
-            info->flags |= MD_FLAG_NEED_PUSH;
-            ret          = 0;
-         }
-         break;
-   }
-   return ret;
-#endif
 }
 
 static bool xmb_menu_init_list(void *data)

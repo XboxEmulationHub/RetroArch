@@ -277,12 +277,13 @@ bool audio_driver_is_ai_service_speech_running(void)
 static bool audio_driver_free_devices_list(void)
 {
    audio_driver_state_t *audio_st = &audio_driver_st;
+   const audio_driver_t *audio    = audio_st->current_audio;
    if (
-            !audio_st->current_audio
-         || !audio_st->current_audio->device_list_free
+            !audio
+         || !audio->device_list_free
          || !audio_st->context_audio_data)
       return false;
-   audio_st->current_audio->device_list_free(
+   audio->device_list_free(
          audio_st->context_audio_data,
          audio_st->devices_list);
    audio_st->devices_list = NULL;
@@ -327,11 +328,11 @@ static void audio_driver_deinit_resampler(void)
 static bool audio_driver_deinit_internal(bool audio_enable)
 {
    audio_driver_state_t *audio_st = &audio_driver_st;
-   if (     audio_st->current_audio
-         && audio_st->current_audio->free)
+   const audio_driver_t *audio    = audio_st->current_audio;
+   if (audio && audio->free)
    {
       if (audio_st->context_audio_data)
-         audio_st->current_audio->free(audio_st->context_audio_data);
+         audio->free(audio_st->context_audio_data);
       audio_st->context_audio_data = NULL;
    }
 
@@ -452,14 +453,26 @@ static void audio_driver_flush(audio_driver_state_t *audio_st,
       bool is_slowmotion, bool is_fastforward)
 {
    struct resampler_data src_data;
-   float audio_volume_gain           =
+   const audio_driver_t *audio    = audio_st->current_audio;
+   float audio_volume_gain        =
          (audio_st->mute_enable || audio_st->flags & AUDIO_FLAG_MUTED)
                ? 0.0f
                : audio_st->volume_gain;
 
+   if (audio_st->reinit_request)
+   {
+      audio_st->reinit_request = false;
+      RARCH_LOG("[Audio] Driver reinit requested...\n");
+      command_event(CMD_EVENT_AUDIO_REINIT, NULL);
+#ifdef HAVE_MICROPHONE
+      command_event(CMD_EVENT_MICROPHONE_REINIT, NULL);
+#endif
+      return;
+   }
+
    /* Fast path: if driver handles resampling and no DSP/mixer is active,
     * bypass software resampling entirely. */
-   if (audio_st->current_audio->write_raw
+   if (audio->write_raw
 #ifdef HAVE_DSP_FILTER
          && !audio_st->dsp
 #endif
@@ -477,7 +490,7 @@ static void audio_driver_flush(audio_driver_state_t *audio_st,
       {
          unsigned write_idx          =
                audio_st->free_samples_count++ & (AUDIO_BUFFER_FREE_SAMPLES_COUNT - 1);
-         int avail                   = (int)audio_st->current_audio->write_avail(
+         int avail                   = (int)audio->write_avail(
                audio_st->context_audio_data);
          int half_size               = (int)(audio_st->buffer_size / 2);
          int delta_mid               = avail - half_size;
@@ -491,8 +504,8 @@ static void audio_driver_flush(audio_driver_state_t *audio_st,
          rate_adjust                *= slowmotion_ratio;
 
       /* Note: mute/volume is not applied here - driver must handle or ignore */
-      audio_st->current_audio->write_raw(audio_st->context_audio_data,
-            data, frames, input_rate, rate_adjust);
+      audio->write_raw(audio_st->context_audio_data,
+            data, frames, input_rate, rate_adjust, audio_volume_gain);
       return;
    }
 
@@ -552,7 +565,7 @@ static void audio_driver_flush(audio_driver_state_t *audio_st,
       /* Readjust the audio input rate. */
       if (audio_st->flags & AUDIO_FLAG_CONTROL)
       {
-         int avail                   = (int)audio_st->current_audio->write_avail(
+         int avail                   = (int)audio->write_avail(
                audio_st->context_audio_data);
          int half_size               = (int)(audio_st->buffer_size / 2);
          int delta_mid               = avail - half_size;
@@ -657,7 +670,7 @@ static void audio_driver_flush(audio_driver_state_t *audio_st,
          output_frames       *= sizeof(int16_t);  /* Unit: bytes */
       }
 
-      audio_st->current_audio->write(audio_st->context_audio_data,
+      audio->write(audio_st->context_audio_data,
             output_data, output_frames * 2);
    }
 }
@@ -1752,28 +1765,26 @@ bool audio_driver_has_callback(void)
 static INLINE bool audio_driver_alive(void)
 {
    audio_driver_state_t *audio_st = &audio_driver_st;
-   if (     audio_st->current_audio
-         && audio_st->current_audio->alive
-         && audio_st->context_audio_data)
-      return audio_st->current_audio->alive(audio_st->context_audio_data);
+   const audio_driver_t *audio    = audio_st->current_audio;
+   if (audio && audio->alive && audio_st->context_audio_data)
+      return audio->alive(audio_st->context_audio_data);
    return false;
 }
 
 bool audio_driver_start(bool is_shutdown)
 {
    audio_driver_state_t *audio_st = &audio_driver_st;
+   const audio_driver_t *audio    = audio_st->current_audio;
    if (
-            !audio_st->current_audio
-         || !audio_st->current_audio->start
+            !audio
+         || !audio->start
          || !audio_st->context_audio_data)
       goto error;
-   if (!audio_st->current_audio->start(
-            audio_st->context_audio_data, is_shutdown))
+   if (!audio->start(audio_st->context_audio_data, is_shutdown))
       goto error;
 
    RARCH_DBG("[Audio] Started audio driver \"%s\" (is_shutdown=%s)\n",
-         audio_st->current_audio->ident,
-         is_shutdown ? "true" : "false");
+         audio->ident, is_shutdown ? "true" : "false");
 
    return true;
 
@@ -1786,26 +1797,28 @@ error:
 
 const char *audio_driver_get_ident(void)
 {
-   audio_driver_state_t *audio_st  = &audio_driver_st;
-   if (!audio_st->current_audio)
+   audio_driver_state_t *audio_st = &audio_driver_st;
+   const audio_driver_t *audio    = audio_st->current_audio;
+   if (!audio)
       return NULL;
-   return audio_st->current_audio->ident;
+   return audio->ident;
 }
 
 bool audio_driver_stop(void)
 {
    bool stopped;
-   if (     !audio_driver_st.current_audio
-         || !audio_driver_st.current_audio->stop
+   audio_driver_state_t *audio_st = &audio_driver_st;
+   const audio_driver_t *audio    = audio_st->current_audio;
+   if (     !audio
+         || !audio->stop
          || !audio_driver_st.context_audio_data
          || !audio_driver_alive()
       )
       return false;
-   stopped = audio_driver_st.current_audio->stop(
-         audio_driver_st.context_audio_data);
+   stopped = audio->stop(audio_driver_st.context_audio_data);
 
    if (stopped)
-      RARCH_DBG("[Audio] Stopped audio driver \"%s\".\n", audio_driver_st.current_audio->ident);
+      RARCH_DBG("[Audio] Stopped audio driver \"%s\".\n", audio->ident);
 
    return stopped;
 }
@@ -2163,9 +2176,6 @@ static void mic_driver_microphone_handle_init(retro_microphone_t *microphone,
       unsigned microphone_sample_rate   = settings->uints.microphone_sample_rate;
       microphone->microphone_context    = NULL;
       microphone->flags                 = MICROPHONE_FLAG_ACTIVE;
-      microphone->sample_buffer         = NULL;
-      microphone->sample_buffer_length  = 0;
-
       microphone->requested_params.rate = params ? params->rate : microphone_sample_rate;
       microphone->actual_params.rate    = 0;
       /* We don't set the actual parameters until we actually open the mic.
@@ -2193,13 +2203,6 @@ static void mic_driver_microphone_handle_free(retro_microphone_t *microphone, bo
    {
       mic_driver->close_mic(driver_context, microphone->microphone_context);
       microphone->microphone_context = NULL;
-   }
-
-   if (microphone->sample_buffer)
-   {
-      memalign_free(microphone->sample_buffer);
-      microphone->sample_buffer = NULL;
-      microphone->sample_buffer_length = 0;
    }
 
    if (microphone->outgoing_samples)
@@ -2236,6 +2239,9 @@ bool microphone_driver_init_internal(void *settings_data)
    if (!settings->bools.microphone_enable)
    {
       mic_st->flags &= ~MICROPHONE_DRIVER_FLAG_ACTIVE;
+      /* Ensure microphone struct is clean to prevent crashes on deinit
+       * if there was stale data from a previous session */
+      memset(&mic_st->microphone, 0, sizeof(mic_st->microphone));
       return false;
    }
 
@@ -2328,13 +2334,6 @@ static bool mic_driver_open_mic_internal(retro_microphone_t* microphone)
 
    if (!microphone || !mic_driver || !(mic_st->flags & MICROPHONE_DRIVER_FLAG_ACTIVE))
       return false;
-
-   microphone->sample_buffer_length = max_samples * sizeof(int16_t);
-   microphone->sample_buffer        =
-         (int16_t*)memalign_alloc(64, microphone->sample_buffer_length);
-
-   if (!microphone->sample_buffer)
-      goto error;
 
    microphone->outgoing_samples = fifo_new(max_samples * sizeof(int16_t));
    if (!microphone->outgoing_samples)
@@ -2523,7 +2522,7 @@ static size_t microphone_driver_flush(
    { /* If the mic's native rate is practically the same as the requested one... */
 
       /* ...then skip the resampler, since it'll produce (more or less) identical results. */
-      frames_to_enqueue = MIN(FIFO_WRITE_AVAIL(microphone->outgoing_samples), resampler_data.input_frames);
+      frames_to_enqueue = MIN(FIFO_WRITE_AVAIL(microphone->outgoing_samples) / sizeof(int16_t), resampler_data.input_frames);
 
       /* If this mic provides floating-point samples... */
       if (microphone->flags & MICROPHONE_FLAG_USE_FLOAT)
@@ -2534,7 +2533,7 @@ static size_t microphone_driver_flush(
       else
          fifo_write(microphone->outgoing_samples, mic_st->input_frames, frames_to_enqueue * sizeof(int16_t));
 
-      return resampler_data.input_frames;
+      return frames_to_enqueue;
    }
    /* Couldn't take the fast path, so let's resample the mic input */
 
@@ -2562,9 +2561,9 @@ static size_t microphone_driver_flush(
    /* Finally, we convert the audio back to 16-bit ints, as the mic interface requires. */
    convert_float_to_s16(mic_st->final_frames, mic_st->resampled_mono_frames, resampler_data.output_frames);
 
-   frames_to_enqueue = MIN(FIFO_WRITE_AVAIL(microphone->outgoing_samples), resampler_data.output_frames);
+   frames_to_enqueue = MIN(FIFO_WRITE_AVAIL(microphone->outgoing_samples) / sizeof(int16_t), resampler_data.output_frames);
    fifo_write(microphone->outgoing_samples, mic_st->final_frames, frames_to_enqueue * sizeof(int16_t));
-   return resampler_data.output_frames;
+   return frames_to_enqueue;
 }
 
 int microphone_driver_read(retro_microphone_t *microphone, int16_t* frames, size_t num_frames)
@@ -2601,9 +2600,10 @@ int microphone_driver_read(retro_microphone_t *microphone, int16_t* frames, size
       || is_fastforward
       || is_slowmo
       || is_rewind
+      || core_paused
       )
    { /* If the microphone is pending, suspended, or disabled...
-        ...or if the core is in fast-forward, slow-mo, or rewind...*/
+        ...or if the core is paused, in fast-forward, slow-mo, or rewind...*/
       memset(frames, 0, num_frames * sizeof(*frames));
       return (int)num_frames;
       /* ...then copy silence to the provided buffer. Not an error if the mic is pending,
@@ -2626,25 +2626,32 @@ int microphone_driver_read(retro_microphone_t *microphone, int16_t* frames, size
       return -1;
    }
 
-   /* If the core asked for more frames than we can fit... */
-   if (num_frames > microphone->outgoing_samples->size)
+   /* If the core asked for more frames than the FIFO can hold... */
+   if (num_frames * sizeof(int16_t) > microphone->outgoing_samples->size - 1)
       return -1;
 
    retro_assert(mic_st->input_frames != NULL);
 
-   while (FIFO_READ_AVAIL(microphone->outgoing_samples) < num_frames * sizeof(int16_t))
-   { /* Until we can give the core the frames it asked for... */
-      size_t frames_to_read = MIN(AUDIO_CHUNK_SIZE_NONBLOCKING, frames_remaining);
-      size_t frames_read    = 0;
-
-      /* If the game is running and the mic driver is active... */
-      if (!core_paused)
-         frames_read = microphone_driver_flush(mic_st, microphone, frames_to_read);
-
-      /* Otherwise, advance the counters. We're not gonna get new data,
-       * but we still need to finish this loop */
-      frames_remaining -= frames_read;
-   } /* If the queue already has enough samples to give, the loop will be skipped */
+   {
+      unsigned stall_count = 0;
+      while (FIFO_READ_AVAIL(microphone->outgoing_samples) < num_frames * sizeof(int16_t))
+      { /* Until we can give the core the frames it asked for... */
+         size_t frames_to_read = MIN(AUDIO_CHUNK_SIZE_NONBLOCKING, frames_remaining);
+         size_t frames_read    = microphone_driver_flush(
+               mic_st, microphone, frames_to_read);
+         if (frames_read == 0)
+         {
+            if (++stall_count > 512)
+            { /* Driver isn't providing data; return silence */
+               memset(frames, 0, num_frames * sizeof(int16_t));
+               return (int)num_frames;
+            }
+         }
+         else
+            stall_count = 0;
+         frames_remaining -= frames_read;
+      } /* If the queue already has enough samples to give, the loop will be skipped */
+   }
 
    fifo_read(microphone->outgoing_samples, frames, num_frames * sizeof(int16_t));
    return (int)num_frames;
@@ -2746,14 +2753,15 @@ error:
 static bool microphone_driver_free_devices_list(void)
 {
    microphone_driver_state_t *mic_st = &mic_driver_st;
+   const microphone_driver_t *mic    = mic_st->driver;
    if (
-            !mic_st->driver
-         || !mic_st->driver->device_list_free
+            !mic
+         || !mic->device_list_free
          || !mic_st->driver_context
          || !mic_st->devices_list)
       return false;
 
-   mic_st->driver->device_list_free(mic_st->driver_context, mic_st->devices_list);
+   mic->device_list_free(mic_st->driver_context, mic_st->devices_list);
    mic_st->devices_list = NULL;
    return true;
 }
@@ -2761,15 +2769,15 @@ static bool microphone_driver_free_devices_list(void)
 bool microphone_driver_deinit(bool is_reset)
 {
    microphone_driver_state_t *mic_st = &mic_driver_st;
-   const microphone_driver_t *driver = mic_st->driver;
+   const microphone_driver_t *mic    = mic_st->driver;
 
    microphone_driver_free_devices_list();
    microphone_driver_close_mic_internal(&mic_st->microphone, is_reset);
 
-   if (driver && driver->free)
+   if (mic && mic->free)
    {
       if (mic_st->driver_context)
-         driver->free(mic_st->driver_context);
+         mic->free(mic_st->driver_context);
 
       mic_st->driver_context = NULL;
    }

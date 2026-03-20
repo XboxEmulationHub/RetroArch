@@ -134,6 +134,9 @@ typedef struct __GLsync *GLsync;
 #endif
 #endif
 
+/* Forward declaration for lazy init in read_viewport */
+static bool gl2_init_pbo_readback(gl2_t *gl);
+
 #if defined(HAVE_PSGL)
 #define gl2_fb_texture_2d(a, b, c, d, e) glFramebufferTexture2DOES(a, b, c, d, e)
 #define gl2_check_fb_status(target) glCheckFramebufferStatusOES(target)
@@ -1029,7 +1032,7 @@ static void gl2_raster_font_render_msg(
       font->block->fullscreen  = full_screen;
    else
       gl2_raster_font_setup_viewport(gl, font, width, height, full_screen,
-            config_get_ptr()->bools.video_scale_integer);
+            video_scale_integer);
 
    if (    !string_is_empty(msg)
          && font->font_data
@@ -1170,6 +1173,48 @@ static void gl2_size_format(GLint* internalFormat)
 #endif
 }
 
+static bool gl2_tex_storage_allowed(void)
+{
+#if defined(HAVE_OPENGLES) && defined(ANDROID)
+   static int allowed = -1;
+
+   if (allowed < 0)
+   {
+      const char *vendor       = (const char*)glGetString(GL_VENDOR);
+      const char *renderer     = (const char*)glGetString(GL_RENDERER);
+      const char *model        = NULL;
+      unsigned long model_id   = 0;
+
+      allowed = 1;
+
+      if (vendor && renderer
+            && strstr(vendor, "Qualcomm")
+            && strstr(renderer, "Adreno"))
+      {
+         /* Handle both "Adreno (TM) 830" and "Adreno X1-xx" styles. */
+         model = strstr(renderer, "Adreno");
+
+         while (model && *model && (*model < '0' || *model > '9'))
+            model++;
+
+         if (model && *model)
+            model_id = strtoul(model, NULL, 10);
+
+         if (model_id >= 800 || strstr(renderer, "X1"))
+         {
+            allowed = 0;
+            RARCH_WARN("[GL] Disabling glTexStorage on %s to avoid black-screen regressions on Qualcomm Adreno 8xx/X1 Android drivers.\n",
+                  renderer);
+         }
+      }
+   }
+
+   return allowed == 1;
+#else
+   return true;
+#endif
+}
+
 /* This function should only be used without mipmaps
    and when data == NULL */
 static void gl2_load_texture_image(GLenum target,
@@ -1189,7 +1234,9 @@ static void gl2_load_texture_image(GLenum target,
    enum gl_capability_enum cap = GL_CAPS_TEX_STORAGE;
 #endif
 
-   if (gl_check_capability(cap) && internalFormat != GL_BGRA_EXT)
+   if (gl2_tex_storage_allowed()
+         && gl_check_capability(cap)
+         && internalFormat != GL_BGRA_EXT)
    {
       gl2_size_format(&internalFormat);
 #ifdef HAVE_OPENGLES2
@@ -2098,6 +2145,29 @@ static bool gl2_renderchain_read_viewport(
 
    if (gl->flags & GL2_FLAG_SHARED_CONTEXT_USE)
       gl->ctx_driver->bind_hw_render(gl->ctx_data, false);
+
+#ifdef HAVE_GL_ASYNC_READBACK
+   /* Lazy init / reinit: (re)initialize PBO readback when recording
+    * starts after driver init, or when viewport dimensions change. */
+   if (  !(gl->flags & GL2_FLAG_PBO_READBACK_ENABLE)
+       || (unsigned)gl->pbo_readback_scaler.in_width  != gl->vp.width
+       || (unsigned)gl->pbo_readback_scaler.in_height != gl->vp.height)
+   {
+      recording_state_t *rec_st = recording_state_get_ptr();
+      if (rec_st && rec_st->enable)
+      {
+         /* Tear down old PBO resources before reinitializing */
+         if (gl->flags & GL2_FLAG_PBO_READBACK_ENABLE)
+         {
+            glDeleteBuffers(4, gl->pbo_readback);
+            scaler_ctx_gen_reset(&gl->pbo_readback_scaler);
+         }
+         gl->flags |= GL2_FLAG_PBO_READBACK_ENABLE;
+         if (gl2_init_pbo_readback(gl))
+            RARCH_LOG("[GL] (Re)initialized async PBO readback for recording.\n");
+      }
+   }
+#endif
 
    num_pixels             = gl->vp.width * gl->vp.height;
 
@@ -3624,13 +3694,24 @@ static bool gl2_frame(void *data, const void *frame,
             4, GL_RGBA, GL_UNSIGNED_BYTE,
             gl->readback_buffer_screenshot);
 
-   /* Don't readback if we're in menu mode. */
    else if (gl->flags & GL2_FLAG_PBO_READBACK_ENABLE)
+   {
+      /* If recording has stopped, tear down PBO readback */
+      if (!recording_state_get_ptr()->enable)
+      {
+         glDeleteBuffers(4, gl->pbo_readback);
+         scaler_ctx_gen_reset(&gl->pbo_readback_scaler);
+         gl->flags &= ~GL2_FLAG_PBO_READBACK_ENABLE;
+      }
+      else
+      {
 #ifdef HAVE_MENU
          /* Don't readback if we're in menu mode. */
          if (!(gl->flags & GL2_FLAG_MENU_TEXTURE_ENABLE))
 #endif
             gl2_pbo_async_readback(gl);
+      }
+   }
 
     if (gl->ctx_driver->swap_buffers)
         gl->ctx_driver->swap_buffers(gl->ctx_data);
@@ -5240,8 +5321,9 @@ static const video_poke_interface_t gl2_poke_interface = {
    NULL, /* get_hw_render_interface */
    NULL, /* set_hdr_max_nits */
    NULL, /* set_hdr_paper_white_nits */
-   NULL, /* set_hdr_contrast */
-   NULL  /* set_hdr_expand_gamut */
+   NULL, /* set_hdr_expand_gamut */
+   NULL, /* set_hdr_scanlines */
+   NULL  /* set_hdr_subpixel_layout */
 };
 
 static void gl2_get_poke_interface(void *data,
