@@ -46,6 +46,44 @@
 #define MSG_QUEUE_FONT_SIZE 20.0f
 
 static dispgfx_widget_t dispwidget_st = {0}; /* uint64_t alignment */
+static uint64_t widget_icon_load_gen  = 0;
+
+/* Recompute the layout variables that depend on whether widget icons
+ * are loaded.  Called from gfx_widgets_layout() during context_reset,
+ * and again from the async icon load callback when icons arrive. */
+static void gfx_widgets_update_icon_layout(dispgfx_widget_t *p_dispwidget)
+{
+   bool has_icons = !!(p_dispwidget->flags & DISPGFX_WIDGET_FLAG_MSG_QUEUE_HAS_ICONS);
+
+   if (has_icons)
+      p_dispwidget->msg_queue_regular_padding_x   = p_dispwidget->simple_widget_padding / 2;
+   else
+      p_dispwidget->msg_queue_regular_padding_x   = p_dispwidget->simple_widget_padding;
+
+   if (has_icons)
+   {
+      p_dispwidget->msg_queue_icon_size_y         = p_dispwidget->msg_queue_height;
+      p_dispwidget->msg_queue_icon_size_x         = p_dispwidget->msg_queue_icon_size_y;
+   }
+   else
+   {
+      p_dispwidget->msg_queue_icon_size_x         = p_dispwidget->msg_queue_height / 4.0f;
+      p_dispwidget->msg_queue_icon_size_y         = p_dispwidget->msg_queue_icon_size_x;
+   }
+
+   p_dispwidget->msg_queue_internal_icon_size     = p_dispwidget->msg_queue_icon_size_y;
+   p_dispwidget->msg_queue_icon_offset_y          = (p_dispwidget->msg_queue_icon_size_y - p_dispwidget->msg_queue_height) / 2;
+   p_dispwidget->msg_queue_scissor_start_x        = p_dispwidget->msg_queue_spacing + p_dispwidget->msg_queue_icon_size_x - (p_dispwidget->msg_queue_icon_size_x * 0.28928571428f);
+
+   p_dispwidget->msg_queue_regular_text_start     = p_dispwidget->msg_queue_rect_start_x + p_dispwidget->msg_queue_icon_size_x + (p_dispwidget->simple_widget_padding / 2.5f);
+   p_dispwidget->msg_queue_task_text_start_x      = p_dispwidget->msg_queue_rect_start_x + (p_dispwidget->msg_queue_height / 2.0f) + (p_dispwidget->simple_widget_padding / 2.0f);
+
+   if (!p_dispwidget->gfx_widgets_icons_textures[MENU_WIDGETS_ICON_HOURGLASS])
+      p_dispwidget->msg_queue_task_text_start_x  -= p_dispwidget->gfx_widget_fonts.msg_queue.glyph_width * 2.0f;
+
+   p_dispwidget->msg_queue_default_rect_width     = p_dispwidget->last_video_width
+         - p_dispwidget->msg_queue_regular_text_start - (2 * p_dispwidget->simple_widget_padding);
+}
 
 /* Widgets list */
 static const gfx_widget_t* const widgets[] = {
@@ -228,7 +266,7 @@ void gfx_widgets_msg_queue_push(
             msg_widget->msg_new                 = strdup(msg_title);
             msg_widget->msg_len                 = len;
 
-            if (!string_is_empty(task->error))
+            if (task->error && *task->error)
                msg_widget->flags               |= DISPWIDG_FLAG_TASK_ERROR;
             if ((task->flags & RETRO_TASK_FLG_CANCELLED) != 0)
                msg_widget->flags               |= DISPWIDG_FLAG_TASK_CANCELLED;
@@ -269,7 +307,7 @@ void gfx_widgets_msg_queue_push(
             msg_widget->text_height             = p_dispwidget->gfx_widget_fonts.msg_queue.line_height;
             /* +1 for potential '\n' insertion, +1 for NUL */
             msg_len                             = len + 1 + 1;
-            if (!(msg_new = (char *)malloc(msg_len)))
+            if (!(msg_new = (char*)malloc(msg_len)))
             {
                free(msg_widget);
                return;
@@ -287,7 +325,7 @@ void gfx_widgets_msg_queue_push(
                if ((text_width - (text_width >> 2)) < rect_width)
                   rect_width = text_width - (text_width >> 2);
 
-               word_wrap(msg_new, msg_len, msg_title, len,
+               msg_widget->msg_len      = word_wrap(msg_new, msg_len, msg_title, len,
                      (int)((len * rect_width) / text_width),
                      100, 2);
 
@@ -308,7 +346,6 @@ void gfx_widgets_msg_queue_push(
                }
 
                msg_widget->text_height *= 2;
-               msg_widget->msg_len      = strlen(msg_new);
             }
             else
             {
@@ -390,7 +427,7 @@ void gfx_widgets_msg_queue_push(
             msg_widget->width = new_width;
          }
 
-         if (!string_is_empty(task->error))
+         if (task->error && *task->error)
             msg_widget->flags               |= DISPWIDG_FLAG_TASK_ERROR;
          if ((task->flags & RETRO_TASK_FLG_CANCELLED) != 0)
             msg_widget->flags               |= DISPWIDG_FLAG_TASK_CANCELLED;
@@ -638,7 +675,7 @@ void gfx_widgets_draw_text(
       enum text_alignment text_align,
       bool draw_outside)
 {
-   if (!font_data || string_is_empty(text))
+   if (!font_data || !text || !*text)
       return;
 
    gfx_display_draw_text(
@@ -785,7 +822,7 @@ static void gfx_widgets_layout(
    size_t i;
 
    /* Initialise fonts */
-   if (string_is_empty(font_path))
+   if (!font_path || !*font_path)
    {
       char font_file[PATH_MAX_LENGTH];
       /* Create regular font */
@@ -842,34 +879,7 @@ static void gfx_widgets_layout(
    p_dispwidget->msg_queue_spacing                = p_dispwidget->msg_queue_height / 4.0f;
    p_dispwidget->msg_queue_rect_start_x           = ceil(p_dispwidget->msg_queue_padding - (p_dispwidget->simple_widget_padding * 0.10f));
 
-   if (p_dispwidget->flags & DISPGFX_WIDGET_FLAG_MSG_QUEUE_HAS_ICONS)
-      p_dispwidget->msg_queue_regular_padding_x   = p_dispwidget->simple_widget_padding / 2;
-   else
-      p_dispwidget->msg_queue_regular_padding_x   = p_dispwidget->simple_widget_padding;
-
-   if (p_dispwidget->flags & DISPGFX_WIDGET_FLAG_MSG_QUEUE_HAS_ICONS)
-   {
-      p_dispwidget->msg_queue_icon_size_y         = p_dispwidget->msg_queue_height;
-      p_dispwidget->msg_queue_icon_size_x         = p_dispwidget->msg_queue_icon_size_y;
-   }
-   else
-   {
-      p_dispwidget->msg_queue_icon_size_x         = p_dispwidget->msg_queue_height / 4.0f;
-      p_dispwidget->msg_queue_icon_size_y         = p_dispwidget->msg_queue_icon_size_x;
-   }
-
-   p_dispwidget->msg_queue_internal_icon_size     = p_dispwidget->msg_queue_icon_size_y;
-   p_dispwidget->msg_queue_icon_offset_y          = (p_dispwidget->msg_queue_icon_size_y - p_dispwidget->msg_queue_height) / 2;
-   p_dispwidget->msg_queue_scissor_start_x        = p_dispwidget->msg_queue_spacing + p_dispwidget->msg_queue_icon_size_x - (p_dispwidget->msg_queue_icon_size_x * 0.28928571428f);
-
-   p_dispwidget->msg_queue_regular_text_start     = p_dispwidget->msg_queue_rect_start_x + p_dispwidget->msg_queue_icon_size_x + (p_dispwidget->simple_widget_padding / 2.5f);
-   p_dispwidget->msg_queue_task_text_start_x      = p_dispwidget->msg_queue_rect_start_x + (p_dispwidget->msg_queue_height / 2.0f) + (p_dispwidget->simple_widget_padding / 2.0f);
-
-   if (!p_dispwidget->gfx_widgets_icons_textures[MENU_WIDGETS_ICON_HOURGLASS])
-      p_dispwidget->msg_queue_task_text_start_x  -= p_dispwidget->gfx_widget_fonts.msg_queue.glyph_width * 2.0f;
-
-   p_dispwidget->msg_queue_default_rect_width     = p_dispwidget->last_video_width
-         - p_dispwidget->msg_queue_regular_text_start - (2 * p_dispwidget->simple_widget_padding);
+   gfx_widgets_update_icon_layout(p_dispwidget);
 
    p_dispwidget->divider_width_1px                = 1;
    if (p_dispwidget->last_scale_factor > 1.0f)
@@ -1565,6 +1575,30 @@ void gfx_widgets_frame(void *data)
 
    p_dispwidget->gfx_widgets_frame_count++;
 
+   /* Second-pass icon layout: when async widget icons finish loading,
+    * detect the transition and recompute icon-dependent layout.
+    * Wait until ALL icons are loaded before flipping the flag —
+    * the layout function checks individual textures (e.g. hourglass)
+    * so partial loads produce wrong text offsets. */
+   if (!(p_dispwidget->flags & DISPGFX_WIDGET_FLAG_MSG_QUEUE_HAS_ICONS))
+   {
+      size_t _i;
+      bool all_loaded = true;
+      for (_i = 0; _i < MENU_WIDGETS_ICON_LAST; _i++)
+      {
+         if (!p_dispwidget->gfx_widgets_icons_textures[_i])
+         {
+            all_loaded = false;
+            break;
+         }
+      }
+      if (all_loaded)
+      {
+         p_dispwidget->flags |= DISPGFX_WIDGET_FLAG_MSG_QUEUE_HAS_ICONS;
+         gfx_widgets_update_icon_layout(p_dispwidget);
+      }
+   }
+
 #ifdef HAVE_MENU
    /* If menu screensaver is active, draw nothing */
    if (menu_screensaver_active)
@@ -1979,22 +2013,29 @@ static void gfx_widgets_context_reset(
          "menu_achievements.png"
       };
    size_t i;
+   bool supports_rgba = video_driver_supports_rgba();
 
-   /* Load textures */
-   /* Icons */
+   /* Invalidate any in-flight async icon loads */
+   widget_icon_load_gen++;
+
+   /* Start with no-icons layout — text positions are correct for
+    * text-only rendering.  When loads complete (immediately on sync
+    * platforms, via callback on async), the frame-loop detects
+    * non-zero textures and recomputes icon-dependent layout. */
+   p_dispwidget->flags &= ~DISPGFX_WIDGET_FLAG_MSG_QUEUE_HAS_ICONS;
+
+   /* Load icons */
    for (i = 0; i < MENU_WIDGETS_ICON_LAST; i++)
-      gfx_display_reset_textures_list(
-            gfx_widgets_icons_names[i],
+   {
+      char texpath[PATH_MAX_LENGTH];
+      fill_pathname_join_special(texpath,
             p_dispwidget->monochrome_png_path,
+            gfx_widgets_icons_names[i],
+            sizeof(texpath));
+      gfx_display_load_icon(texpath, supports_rgba,
             &p_dispwidget->gfx_widgets_icons_textures[i],
-            TEXTURE_FILTER_MIPMAP_LINEAR,
-            NULL,
-            NULL);
-
-   if (p_dispwidget->gfx_widgets_icons_textures[MENU_WIDGETS_ICON_INFO])
-      p_dispwidget->flags |=  DISPGFX_WIDGET_FLAG_MSG_QUEUE_HAS_ICONS;
-   else
-      p_dispwidget->flags &= ~DISPGFX_WIDGET_FLAG_MSG_QUEUE_HAS_ICONS;
+            widget_icon_load_gen, &widget_icon_load_gen);
+   }
 
    for (i = 0; i < ARRAY_SIZE(widgets); i++)
    {
@@ -2164,6 +2205,9 @@ static void gfx_widgets_context_destroy(dispgfx_widget_t *p_dispwidget)
 
    /* TODO: Dismiss onscreen notifications that have been freed */
 
+   /* Invalidate in-flight async widget icon loads */
+   widget_icon_load_gen++;
+
    /* Textures */
    for (i = 0; i < MENU_WIDGETS_ICON_LAST; i++)
       video_driver_texture_unload(&p_dispwidget->gfx_widgets_icons_textures[i]);
@@ -2194,7 +2238,7 @@ bool gfx_widgets_ai_service_overlay_load(
    {
       if (!gfx_display_reset_textures_list_buffer(
                &p_dispwidget->ai_service_overlay_texture,
-               TEXTURE_FILTER_MIPMAP_LINEAR,
+               TEXTURE_FILTER_LINEAR,
                (void *) buffer, buffer_len, image_type,
                &p_dispwidget->ai_service_overlay_width,
                &p_dispwidget->ai_service_overlay_height))

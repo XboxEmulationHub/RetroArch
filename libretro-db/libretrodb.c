@@ -44,6 +44,17 @@
 
 #define MAGIC_NUMBER "RARCHDB"
 
+/* MsgPack type bytes — needed by the fast cursor read path */
+#define _MPF_FIXMAP   0x80
+#define _MPF_FIXARRAY 0x90
+#define _MPF_FIXSTR   0xa0
+#define _MPF_NIL      0xc0
+#define _MPF_STR8     0xd9
+#define _MPF_STR16    0xda
+#define _MPF_STR32    0xdb
+#define _MPF_MAP16    0xde
+#define _MPF_MAP32    0xdf
+
 struct node_iter_ctx
 {
    libretrodb_t *db;
@@ -175,7 +186,7 @@ void libretrodb_close(libretrodb_t *db)
 {
    if (db->fd)
       intfstream_close(db->fd);
-   if (!string_is_empty(db->path))
+   if (db->path && *db->path)
       free(db->path);
    db->path = NULL;
    db->fd   = NULL;
@@ -191,7 +202,7 @@ int libretrodb_open(const char *path, libretrodb_t *db, bool write)
    if (!fd)
      return -1;
 
-   if (!string_is_empty(db->path))
+   if (db->path && *db->path)
       free(db->path);
 
    db->path  = strdup(path);
@@ -334,6 +345,100 @@ int libretrodb_cursor_reset(libretrodb_cursor_t *cursor)
          RETRO_VFS_SEEK_POSITION_START);
 }
 
+/**
+ * rmsgpack_read_map_header:
+ *
+ * Read a MsgPack map header from the stream and return the number
+ * of key-value pairs. Returns -1 on error or if the value is not
+ * a map. If the value is nil, returns -2 to signal end-of-records.
+ */
+static int32_t rmsgpack_read_map_header(intfstream_t *fd)
+{
+   uint8_t  type = 0;
+   uint64_t len  = 0;
+
+   if (intfstream_read(fd, &type, 1) == -1)
+      return -1;
+
+   if (type == _MPF_NIL)
+      return -2;
+
+   if (type >= _MPF_FIXMAP && type < _MPF_FIXARRAY)
+      return (int32_t)(type - _MPF_FIXMAP);
+
+   if (type == _MPF_MAP16)
+   {
+      if (rmsgpack_read_uint(fd, &len, 2) == -1)
+         return -1;
+      return (int32_t)len;
+   }
+   if (type == _MPF_MAP32)
+   {
+      if (rmsgpack_read_uint(fd, &len, 4) == -1)
+         return -1;
+      return (int32_t)len;
+   }
+
+   return -1;
+}
+
+/**
+ * rmsgpack_read_key_string:
+ *
+ * Read a MsgPack string value into a caller-supplied buffer without
+ * allocating. Returns the string length, or -1 on error / not a string.
+ * The output is NOT null-terminated if the buffer is exactly filled.
+ */
+static int32_t rmsgpack_read_key_string(intfstream_t *fd,
+      char *buf, size_t buf_size)
+{
+   uint8_t  type = 0;
+   uint64_t len  = 0;
+
+   if (intfstream_read(fd, &type, 1) == -1)
+      return -1;
+
+   /* fixstr: length embedded in type byte */
+   if (type >= _MPF_FIXSTR && type < _MPF_NIL)
+   {
+      len = type - _MPF_FIXSTR;
+   }
+   else if (type == _MPF_STR8)
+   {
+      if (rmsgpack_read_uint(fd, &len, 1) == -1)
+         return -1;
+   }
+   else if (type == _MPF_STR16)
+   {
+      if (rmsgpack_read_uint(fd, &len, 2) == -1)
+         return -1;
+   }
+   else if (type == _MPF_STR32)
+   {
+      if (rmsgpack_read_uint(fd, &len, 4) == -1)
+         return -1;
+   }
+   else
+      return -1;
+
+   if (len >= buf_size)
+   {
+      /* Key too long for buffer — skip it */
+      intfstream_seek(fd, (int64_t)len, RETRO_VFS_SEEK_POSITION_CURRENT);
+      return -1;
+   }
+
+   if (intfstream_read(fd, buf, (size_t)len) == -1)
+      return -1;
+
+   buf[len] = '\0';
+   return (int32_t)len;
+}
+
+/* Maximum number of map fields in a single record for the
+ * fast path. Typical .rdb records have 10-15 fields. */
+#define CURSOR_MAX_MAP_FIELDS    24
+
 int libretrodb_cursor_read_item(libretrodb_cursor_t *cursor,
       struct rmsgpack_dom_value *out)
 {
@@ -342,26 +447,193 @@ int libretrodb_cursor_read_item(libretrodb_cursor_t *cursor,
    if (cursor->eof)
       return EOF;
 
-retry:
-   if ((rv = rmsgpack_dom_read(cursor->fd, out)) < 0)
-      return rv;
-
-   if (out->type == RDT_NULL)
+   /* If no query is active, use the original full-DOM path */
+   if (!cursor->query)
    {
-      cursor->eof = 1;
-      return EOF;
+      if ((rv = rmsgpack_dom_read(cursor->fd, out)) < 0)
+         return rv;
+      if (out->type == RDT_NULL)
+      {
+         cursor->eof = 1;
+         return EOF;
+      }
+      return 0;
    }
 
-   if (cursor->query)
+   /* --- Fast path: folded field-level scan + inline evaluation --- */
    {
-      if (!libretrodb_query_filter(cursor->query, out))
+      int num_qfields;
+
+      num_qfields = libretrodb_query_get_filter_fields(
+            cursor->query, NULL, NULL, 0);
+
+      /* If we can't extract field names (non-table query),
+       * fall back to the full DOM path */
+      if (num_qfields <= 0)
+         goto slow_path;
+
+      for (;;)
       {
-         rmsgpack_dom_value_free(out);
-         goto retry;
+         int32_t  map_len;
+         int32_t  i;
+         int64_t  record_start;
+         int      conditions_met   = 0;
+         int      rejected         = 0;
+         int      skip_rest        = 0;
+         int      error            = 0;
+
+         /* Remember where this record starts so we can rewind
+          * if the query matches */
+         record_start = intfstream_tell(cursor->fd);
+         if (record_start < 0)
+            return -1;
+
+         /* Read the map header */
+         map_len = rmsgpack_read_map_header(cursor->fd);
+
+         if (map_len == -2)
+         {
+            /* nil sentinel — end of records */
+            cursor->eof = 1;
+            return EOF;
+         }
+
+         if (map_len < 0 || map_len > CURSOR_MAX_MAP_FIELDS)
+         {
+            /* Not a map, or too many fields for fast path.
+             * Rewind and fall through to slow path for this
+             * one record, then continue with fast path. */
+            intfstream_seek(cursor->fd, record_start,
+                  RETRO_VFS_SEEK_POSITION_START);
+            goto slow_path_single;
+         }
+
+         /* Scan fields: for each key-value pair, read the key into
+          * a stack buffer, check if the query cares, and either skip
+          * the value or parse + evaluate it immediately inline. */
+         for (i = 0; i < map_len; i++)
+         {
+            char     key_buf[64];
+            int32_t  key_len;
+
+            if (skip_rest)
+            {
+               /* Already decided — skip both key and value */
+               if (  rmsgpack_skip_value(cursor->fd) < 0
+                  || rmsgpack_skip_value(cursor->fd) < 0)
+               { error = 1; break; }
+               continue;
+            }
+
+            /* Read the key string into stack buffer */
+            key_len = rmsgpack_read_key_string(
+                  cursor->fd, key_buf, sizeof(key_buf));
+
+            if (key_len < 0)
+            {
+               /* Key read failed — skip value and continue */
+               if (rmsgpack_skip_value(cursor->fd) < 0)
+               { error = 1; break; }
+               continue;
+            }
+
+            /* Evaluate this field against the query inline.
+             * eval_field returns:
+             *   -1 = field not in query (skip it)
+             *    0 = condition failed (reject record)
+             *    1 = condition passed */
+            {
+               struct rmsgpack_dom_value field_val;
+               int eval_result;
+
+               /* Peek: is this field in the query at all?
+                * Check before parsing the value to avoid
+                * unnecessary DOM allocation */
+               eval_result = libretrodb_query_eval_field(
+                     cursor->query, key_buf, (uint32_t)key_len,
+                     NULL);
+
+               if (eval_result == -1)
+               {
+                  /* Field not in query — skip value entirely */
+                  if (rmsgpack_skip_value(cursor->fd) < 0)
+                  { error = 1; break; }
+                  continue;
+               }
+
+               /* Field IS in query — parse value and evaluate */
+               if (rmsgpack_dom_read(cursor->fd, &field_val) < 0)
+               { error = 1; break; }
+
+               eval_result = libretrodb_query_eval_field(
+                     cursor->query, key_buf, (uint32_t)key_len,
+                     &field_val);
+
+               rmsgpack_dom_value_free(&field_val);
+
+               if (eval_result == 0)
+               {
+                  /* Condition failed — reject this record.
+                   * Skip remaining fields to advance to next record. */
+                  rejected  = 1;
+                  skip_rest = 1;
+               }
+               else if (eval_result == 1)
+               {
+                  conditions_met++;
+                  /* If all conditions satisfied, we can also skip
+                   * remaining fields (they're not query-relevant) */
+                  if (conditions_met >= num_qfields)
+                     skip_rest = 1;
+               }
+            }
+         }
+
+         if (error)
+            return -1;
+
+         /* Reject: all conditions not met, or explicit mismatch */
+         if (rejected || conditions_met < num_qfields)
+            continue;
+
+         /* Match! Rewind and do a full DOM parse so the caller
+          * gets the complete record */
+         intfstream_seek(cursor->fd, record_start,
+               RETRO_VFS_SEEK_POSITION_START);
+
+         if ((rv = rmsgpack_dom_read(cursor->fd, out)) < 0)
+            return rv;
+
+         return 0;
       }
    }
 
-   return 0;
+slow_path:
+   /* Original full-DOM path — used when no query, or when the query
+    * structure isn't a simple table filter */
+   for (;;)
+   {
+slow_path_single:
+      if ((rv = rmsgpack_dom_read(cursor->fd, out)) < 0)
+         return rv;
+
+      if (out->type == RDT_NULL)
+      {
+         cursor->eof = 1;
+         return EOF;
+      }
+
+      if (cursor->query)
+      {
+         if (!libretrodb_query_filter(cursor->query, out))
+         {
+            rmsgpack_dom_value_free(out);
+            continue;
+         }
+      }
+
+      return 0;
+   }
 }
 
 /**
@@ -403,7 +675,7 @@ int libretrodb_cursor_open(libretrodb_t *db,
       libretrodb_query_t *q)
 {
    intfstream_t *fd = NULL;
-   if (!db || string_is_empty(db->path))
+   if (!db || !db->path || !*db->path)
       return -1;
 
    if (!(fd = intfstream_open_file(db->path,

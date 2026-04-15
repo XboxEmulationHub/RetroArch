@@ -46,7 +46,6 @@
 #include <formats/image.h>
 #include <formats/rpng.h>
 #include <streams/trans_stream.h>
-#include <string/stdstring.h>
 
 #include "rpng_internal.h"
 
@@ -91,6 +90,7 @@ struct idat_buffer
 {
    uint8_t *data;
    size_t size;
+   size_t capacity;
 };
 
 enum rpng_process_flags
@@ -125,6 +125,7 @@ struct rpng_process
    unsigned pass_height;
    unsigned pass_pos;
    uint8_t flags;
+   bool supports_rgba;
 };
 
 enum rpng_flags
@@ -145,6 +146,7 @@ struct rpng
    struct png_ihdr ihdr; /* uint32 alignment */
    uint32_t palette[256];
    uint8_t flags;
+   bool supports_rgba;
 };
 
 static const struct adam7_pass rpng_passes[] = {
@@ -217,142 +219,203 @@ static void rpng_filter_up(uint8_t *out,
  * SIMD pixel format conversion helpers
  * -------------------------------------------------------------------------*/
 
-/* Pack 8-bit RGB triples into ARGB32 words (alpha = 0xFF).
+/* Pack 8-bit RGB triples into ARGB32/ABGR32 words (alpha = 0xFF).
  * SSE2 version processes 4 pixels (12 input bytes) per iteration. */
 #if defined(RPNG_SIMD_SSE2)
 static void rpng_copy_line_rgb_sse2(uint32_t *data,
-      const uint8_t *src, unsigned width)
+      const uint8_t *src, unsigned width, bool supports_rgba)
 {
    unsigned i = 0;
-   /* Process 4 pixels (12 bytes) at a time.
-    * RGB packing has no SIMD-friendly lane width in pure SSE2; we unroll 4x
-    * to help the compiler pipeline the scalar stores, and the loop structure
-    * also lets GCC/Clang auto-vectorise on capable targets. */
-   for (; (int)(width - i) >= 4; i += 4)
+   if (supports_rgba)
    {
-      data[i + 0] = 0xFF000000u
-                  | ((unsigned)src[i*3+0] << 16)
-                  | ((unsigned)src[i*3+1] <<  8)
-                  | ((unsigned)src[i*3+2]      );
-      data[i + 1] = 0xFF000000u
-                  | ((unsigned)src[i*3+3] << 16)
-                  | ((unsigned)src[i*3+4] <<  8)
-                  | ((unsigned)src[i*3+5]      );
-      data[i + 2] = 0xFF000000u
-                  | ((unsigned)src[i*3+6] << 16)
-                  | ((unsigned)src[i*3+7] <<  8)
-                  | ((unsigned)src[i*3+8]      );
-      data[i + 3] = 0xFF000000u
-                  | ((unsigned)src[i*3+9]  << 16)
-                  | ((unsigned)src[i*3+10] <<  8)
-                  | ((unsigned)src[i*3+11]      );
+      for (; (int)(width - i) >= 4; i += 4)
+      {
+         data[i + 0] = 0xFF000000u
+                     | ((unsigned)src[i*3+2] << 16)
+                     | ((unsigned)src[i*3+1] <<  8)
+                     | ((unsigned)src[i*3+0]      );
+         data[i + 1] = 0xFF000000u
+                     | ((unsigned)src[i*3+5] << 16)
+                     | ((unsigned)src[i*3+4] <<  8)
+                     | ((unsigned)src[i*3+3]      );
+         data[i + 2] = 0xFF000000u
+                     | ((unsigned)src[i*3+8] << 16)
+                     | ((unsigned)src[i*3+7] <<  8)
+                     | ((unsigned)src[i*3+6]      );
+         data[i + 3] = 0xFF000000u
+                     | ((unsigned)src[i*3+11] << 16)
+                     | ((unsigned)src[i*3+10] <<  8)
+                     | ((unsigned)src[i*3+9]       );
+      }
+      for (; i < width; i++)
+         data[i] = 0xFF000000u
+                 | ((unsigned)src[i*3+2] << 16)
+                 | ((unsigned)src[i*3+1] <<  8)
+                 | ((unsigned)src[i*3+0]      );
    }
-   for (; i < width; i++)
-      data[i] = 0xFF000000u
-              | ((unsigned)src[i*3+0] << 16)
-              | ((unsigned)src[i*3+1] <<  8)
-              | ((unsigned)src[i*3+2]      );
+   else
+   {
+      for (; (int)(width - i) >= 4; i += 4)
+      {
+         data[i + 0] = 0xFF000000u
+                     | ((unsigned)src[i*3+0] << 16)
+                     | ((unsigned)src[i*3+1] <<  8)
+                     | ((unsigned)src[i*3+2]      );
+         data[i + 1] = 0xFF000000u
+                     | ((unsigned)src[i*3+3] << 16)
+                     | ((unsigned)src[i*3+4] <<  8)
+                     | ((unsigned)src[i*3+5]      );
+         data[i + 2] = 0xFF000000u
+                     | ((unsigned)src[i*3+6] << 16)
+                     | ((unsigned)src[i*3+7] <<  8)
+                     | ((unsigned)src[i*3+8]      );
+         data[i + 3] = 0xFF000000u
+                     | ((unsigned)src[i*3+9]  << 16)
+                     | ((unsigned)src[i*3+10] <<  8)
+                     | ((unsigned)src[i*3+11]      );
+      }
+      for (; i < width; i++)
+         data[i] = 0xFF000000u
+                 | ((unsigned)src[i*3+0] << 16)
+                 | ((unsigned)src[i*3+1] <<  8)
+                 | ((unsigned)src[i*3+2]      );
+   }
 }
 #endif /* RPNG_SIMD_SSE2 */
 
-/* Pack 8-bit RGBA bytes into ARGB32 words.
- * Each input pixel is 4 bytes: R G B A → output: (A<<24)|(R<<16)|(G<<8)|B
- * SSE2: process 4 pixels (16 bytes) per iteration. */
+/* Pack 8-bit RGBA bytes into ARGB32 or ABGR32 words.
+ * Each input pixel is 4 bytes: R G B A
+ * ARGB output: (A<<24)|(R<<16)|(G<<8)|B
+ * ABGR output: (A<<24)|(B<<16)|(G<<8)|R  (when supports_rgba) */
 #if defined(RPNG_SIMD_SSE2)
 static void rpng_copy_line_rgba_sse2(uint32_t *data,
-      const uint8_t *src, unsigned width)
+      const uint8_t *src, unsigned width, bool supports_rgba)
 {
    unsigned i = 0;
-   /* Process 4 pixels (16 bytes) at a time.
-    * Byte order per pixel: R G B A  →  output word: (A<<24)|(R<<16)|(G<<8)|B
-    * Full shuffle requires SSSE3 _mm_shuffle_epi8; we keep the loop structure
-    * for the compiler to auto-vectorise while providing the scalar fallback. */
-   for (; (int)(width - i) >= 4; i += 4)
+   if (supports_rgba)
    {
-      data[i+0] = ((unsigned)src[i*4+3] << 24) | ((unsigned)src[i*4+0] << 16)
-                | ((unsigned)src[i*4+1] <<  8) | ((unsigned)src[i*4+2]);
-      data[i+1] = ((unsigned)src[i*4+7] << 24) | ((unsigned)src[i*4+4] << 16)
-                | ((unsigned)src[i*4+5] <<  8) | ((unsigned)src[i*4+6]);
-      data[i+2] = ((unsigned)src[i*4+11] << 24) | ((unsigned)src[i*4+8]  << 16)
-                | ((unsigned)src[i*4+9]  <<  8) | ((unsigned)src[i*4+10]);
-      data[i+3] = ((unsigned)src[i*4+15] << 24) | ((unsigned)src[i*4+12] << 16)
-                | ((unsigned)src[i*4+13] <<  8) | ((unsigned)src[i*4+14]);
+      for (; (int)(width - i) >= 4; i += 4)
+      {
+         data[i+0] = ((unsigned)src[i*4+3] << 24) | ((unsigned)src[i*4+2] << 16)
+                   | ((unsigned)src[i*4+1] <<  8) | ((unsigned)src[i*4+0]);
+         data[i+1] = ((unsigned)src[i*4+7] << 24) | ((unsigned)src[i*4+6] << 16)
+                   | ((unsigned)src[i*4+5] <<  8) | ((unsigned)src[i*4+4]);
+         data[i+2] = ((unsigned)src[i*4+11] << 24) | ((unsigned)src[i*4+10] << 16)
+                   | ((unsigned)src[i*4+9]  <<  8) | ((unsigned)src[i*4+8]);
+         data[i+3] = ((unsigned)src[i*4+15] << 24) | ((unsigned)src[i*4+14] << 16)
+                   | ((unsigned)src[i*4+13] <<  8) | ((unsigned)src[i*4+12]);
+      }
+      for (; i < width; i++)
+         data[i] = ((unsigned)src[i*4+3] << 24) | ((unsigned)src[i*4+2] << 16)
+                 | ((unsigned)src[i*4+1] <<  8) | ((unsigned)src[i*4+0]);
    }
-   for (; i < width; i++)
-      data[i] = ((unsigned)src[i*4+3] << 24) | ((unsigned)src[i*4+0] << 16)
-              | ((unsigned)src[i*4+1] <<  8) | ((unsigned)src[i*4+2]);
+   else
+   {
+      for (; (int)(width - i) >= 4; i += 4)
+      {
+         data[i+0] = ((unsigned)src[i*4+3] << 24) | ((unsigned)src[i*4+0] << 16)
+                   | ((unsigned)src[i*4+1] <<  8) | ((unsigned)src[i*4+2]);
+         data[i+1] = ((unsigned)src[i*4+7] << 24) | ((unsigned)src[i*4+4] << 16)
+                   | ((unsigned)src[i*4+5] <<  8) | ((unsigned)src[i*4+6]);
+         data[i+2] = ((unsigned)src[i*4+11] << 24) | ((unsigned)src[i*4+8]  << 16)
+                   | ((unsigned)src[i*4+9]  <<  8) | ((unsigned)src[i*4+10]);
+         data[i+3] = ((unsigned)src[i*4+15] << 24) | ((unsigned)src[i*4+12] << 16)
+                   | ((unsigned)src[i*4+13] <<  8) | ((unsigned)src[i*4+14]);
+      }
+      for (; i < width; i++)
+         data[i] = ((unsigned)src[i*4+3] << 24) | ((unsigned)src[i*4+0] << 16)
+                 | ((unsigned)src[i*4+1] <<  8) | ((unsigned)src[i*4+2]);
+   }
 }
 #endif /* RPNG_SIMD_SSE2 */
 
-/* NEON RGBA → ARGB32 conversion: vld4q_u8 de-interleaves all 4 channels. */
+/* NEON RGBA → ARGB32/ABGR32 conversion: vld4_u8 de-interleaves all 4 channels. */
 #if defined(RPNG_SIMD_NEON)
 static void rpng_copy_line_rgba_neon(uint32_t *data,
-      const uint8_t *src, unsigned width)
+      const uint8_t *src, unsigned width, bool supports_rgba)
 {
    unsigned i = 0;
    for (; (int)(width - i) >= 8; i += 8)
    {
       uint8x8x4_t px  = vld4_u8(src + i * 4); /* de-interleave R,G,B,A */
-      uint8x8_t   r   = px.val[0];
+      /* When supports_rgba, swap r and b to produce ABGR instead of ARGB */
+      uint8x8_t   hi  = supports_rgba ? px.val[2] : px.val[0]; /* R or B → byte 2 */
       uint8x8_t   g   = px.val[1];
-      uint8x8_t   b   = px.val[2];
+      uint8x8_t   lo  = supports_rgba ? px.val[0] : px.val[2]; /* B or R → byte 0 */
       uint8x8_t   a   = px.val[3];
-      /* Build ARGB: widen to 16-bit, shift, combine */
-      uint16x8_t  ag  = vshll_n_u8(a, 8);          /* a << 8 */
-      ag              = vorrq_u16(ag, vmovl_u8(r)); /* | r → high word = A|R (need to shift) */
-      /* Build full 32-bit using vshl + orr on 32-bit lanes */
-      uint32x4_t lo_a = vshll_n_u16(vget_low_u16(vmovl_u8(a)),  24);
-      uint32x4_t lo_r = vshll_n_u16(vget_low_u16(vmovl_u8(r)),  16);
-      uint32x4_t lo_g = vshll_n_u16(vget_low_u16(vmovl_u8(g)),   8);
-      uint32x4_t lo_b = vmovl_u16(vget_low_u16(vmovl_u8(b)));
-      uint32x4_t lo   = vorrq_u32(vorrq_u32(lo_a, lo_r), vorrq_u32(lo_g, lo_b));
-      uint32x4_t hi_a = vshll_n_u16(vget_high_u16(vmovl_u8(a)), 24);
-      uint32x4_t hi_r = vshll_n_u16(vget_high_u16(vmovl_u8(r)), 16);
-      uint32x4_t hi_g = vshll_n_u16(vget_high_u16(vmovl_u8(g)),  8);
-      uint32x4_t hi_b = vmovl_u16(vget_high_u16(vmovl_u8(b)));
-      uint32x4_t hi   = vorrq_u32(vorrq_u32(hi_a, hi_r), vorrq_u32(hi_g, hi_b));
-      vst1q_u32(data + i,     lo);
-      vst1q_u32(data + i + 4, hi);
-      (void)ag; /* used implicitly above */
+      uint32x4_t lo_a  = vshlq_n_u32(vmovl_u16(vget_low_u16(vmovl_u8(a))),  24);
+      uint32x4_t lo_hi = vshll_n_u16(vget_low_u16(vmovl_u8(hi)), 16);
+      uint32x4_t lo_g  = vshll_n_u16(vget_low_u16(vmovl_u8(g)),   8);
+      uint32x4_t lo_lo = vmovl_u16(vget_low_u16(vmovl_u8(lo)));
+      uint32x4_t lo_px = vorrq_u32(vorrq_u32(lo_a, lo_hi), vorrq_u32(lo_g, lo_lo));
+      uint32x4_t hi_a  = vshlq_n_u32(vmovl_u16(vget_high_u16(vmovl_u8(a))), 24);
+      uint32x4_t hi_hi = vshll_n_u16(vget_high_u16(vmovl_u8(hi)), 16);
+      uint32x4_t hi_g  = vshll_n_u16(vget_high_u16(vmovl_u8(g)),  8);
+      uint32x4_t hi_lo = vmovl_u16(vget_high_u16(vmovl_u8(lo)));
+      uint32x4_t hi_px = vorrq_u32(vorrq_u32(hi_a, hi_hi), vorrq_u32(hi_g, hi_lo));
+      vst1q_u32(data + i,     lo_px);
+      vst1q_u32(data + i + 4, hi_px);
    }
-   for (; i < width; i++)
-      data[i] = ((unsigned)src[i*4+3] << 24) | ((unsigned)src[i*4+0] << 16)
-              | ((unsigned)src[i*4+1] <<  8) | ((unsigned)src[i*4+2]);
+   if (supports_rgba)
+   {
+      for (; i < width; i++)
+         data[i] = ((unsigned)src[i*4+3] << 24) | ((unsigned)src[i*4+2] << 16)
+                 | ((unsigned)src[i*4+1] <<  8) | ((unsigned)src[i*4+0]);
+   }
+   else
+   {
+      for (; i < width; i++)
+         data[i] = ((unsigned)src[i*4+3] << 24) | ((unsigned)src[i*4+0] << 16)
+                 | ((unsigned)src[i*4+1] <<  8) | ((unsigned)src[i*4+2]);
+   }
 }
 
-/* NEON RGB → ARGB32 conversion using vld3 de-interleave */
+/* NEON RGB → ARGB32/ABGR32 conversion using vld3 de-interleave */
 static void rpng_copy_line_rgb_neon(uint32_t *data,
-      const uint8_t *src, unsigned width)
+      const uint8_t *src, unsigned width, bool supports_rgba)
 {
    unsigned i = 0;
    for (; (int)(width - i) >= 8; i += 8)
    {
       uint8x8x3_t px  = vld3_u8(src + i * 3);
-      uint8x8_t   r   = px.val[0];
+      uint8x8_t   hi  = supports_rgba ? px.val[2] : px.val[0];
       uint8x8_t   g   = px.val[1];
-      uint8x8_t   b   = px.val[2];
-      uint32x4_t lo_r = vshll_n_u16(vget_low_u16(vmovl_u8(r)),  16);
-      uint32x4_t lo_g = vshll_n_u16(vget_low_u16(vmovl_u8(g)),   8);
-      uint32x4_t lo_b = vmovl_u16(vget_low_u16(vmovl_u8(b)));
-      uint32x4_t lo_a = vdupq_n_u32(0xFF000000u);
-      uint32x4_t lo   = vorrq_u32(vorrq_u32(lo_a, lo_r), vorrq_u32(lo_g, lo_b));
-      uint32x4_t hi_r = vshll_n_u16(vget_high_u16(vmovl_u8(r)), 16);
-      uint32x4_t hi_g = vshll_n_u16(vget_high_u16(vmovl_u8(g)),  8);
-      uint32x4_t hi_b = vmovl_u16(vget_high_u16(vmovl_u8(b)));
-      uint32x4_t hi_a = vdupq_n_u32(0xFF000000u);
-      uint32x4_t hi   = vorrq_u32(vorrq_u32(hi_a, hi_r), vorrq_u32(hi_g, hi_b));
-      vst1q_u32(data + i,     lo);
-      vst1q_u32(data + i + 4, hi);
+      uint8x8_t   lo  = supports_rgba ? px.val[0] : px.val[2];
+      uint32x4_t lo_hi_v = vshll_n_u16(vget_low_u16(vmovl_u8(hi)),  16);
+      uint32x4_t lo_g    = vshll_n_u16(vget_low_u16(vmovl_u8(g)),    8);
+      uint32x4_t lo_lo_v = vmovl_u16(vget_low_u16(vmovl_u8(lo)));
+      uint32x4_t lo_a    = vdupq_n_u32(0xFF000000u);
+      uint32x4_t lo_px   = vorrq_u32(vorrq_u32(lo_a, lo_hi_v), vorrq_u32(lo_g, lo_lo_v));
+      uint32x4_t hi_hi_v = vshll_n_u16(vget_high_u16(vmovl_u8(hi)), 16);
+      uint32x4_t hi_g    = vshll_n_u16(vget_high_u16(vmovl_u8(g)),   8);
+      uint32x4_t hi_lo_v = vmovl_u16(vget_high_u16(vmovl_u8(lo)));
+      uint32x4_t hi_a    = vdupq_n_u32(0xFF000000u);
+      uint32x4_t hi_px   = vorrq_u32(vorrq_u32(hi_a, hi_hi_v), vorrq_u32(hi_g, hi_lo_v));
+      vst1q_u32(data + i,     lo_px);
+      vst1q_u32(data + i + 4, hi_px);
    }
-   for (; i < width; i++)
-      data[i] = 0xFF000000u
-              | ((unsigned)src[i*3+0] << 16)
-              | ((unsigned)src[i*3+1] <<  8)
-              | ((unsigned)src[i*3+2]      );
+   if (supports_rgba)
+   {
+      for (; i < width; i++)
+         data[i] = 0xFF000000u
+                 | ((unsigned)src[i*3+2] << 16)
+                 | ((unsigned)src[i*3+1] <<  8)
+                 | ((unsigned)src[i*3+0]      );
+   }
+   else
+   {
+      for (; i < width; i++)
+         data[i] = 0xFF000000u
+                 | ((unsigned)src[i*3+0] << 16)
+                 | ((unsigned)src[i*3+1] <<  8)
+                 | ((unsigned)src[i*3+2]      );
+   }
 }
 #endif /* RPNG_SIMD_NEON */
 
 #if defined(DEBUG) || defined(RPNG_TEST)
+#include <stdio.h>
+
 static bool rpng_process_ihdr(struct png_ihdr *ihdr)
 {
    uint8_t ihdr_depth = ihdr->depth;
@@ -432,7 +495,8 @@ static bool rpng_process_ihdr(struct png_ihdr *ihdr)
 #endif
 
 static void rpng_reverse_filter_copy_line_rgb(uint32_t *data,
-      const uint8_t *decoded, unsigned width, unsigned bpp)
+      const uint8_t *decoded, unsigned width, unsigned bpp,
+      bool supports_rgba)
 {
    int i;
 
@@ -441,32 +505,49 @@ static void rpng_reverse_filter_copy_line_rgb(uint32_t *data,
    if (bpp == 24)
    {
 #if defined(RPNG_SIMD_NEON)
-      rpng_copy_line_rgb_neon(data, decoded, width);
+      rpng_copy_line_rgb_neon(data, decoded, width, supports_rgba);
       return;
 #elif defined(RPNG_SIMD_SSE2)
-      rpng_copy_line_rgb_sse2(data, decoded, width);
+      rpng_copy_line_rgb_sse2(data, decoded, width, supports_rgba);
       return;
 #endif
    }
 
    bpp /= 8;
 
-   for (i = 0; i < (int)width; i++)
+   if (supports_rgba)
    {
-      uint32_t r, g, b;
-
-      r        = *decoded;
-      decoded += bpp;
-      g        = *decoded;
-      decoded += bpp;
-      b        = *decoded;
-      decoded += bpp;
-      data[i]  = (0xffu << 24) | (r << 16) | (g << 8) | (b << 0);
+      for (i = 0; i < (int)width; i++)
+      {
+         uint32_t r, g, b;
+         r        = *decoded;
+         decoded += bpp;
+         g        = *decoded;
+         decoded += bpp;
+         b        = *decoded;
+         decoded += bpp;
+         data[i]  = (0xffu << 24) | (b << 16) | (g << 8) | (r << 0);
+      }
+   }
+   else
+   {
+      for (i = 0; i < (int)width; i++)
+      {
+         uint32_t r, g, b;
+         r        = *decoded;
+         decoded += bpp;
+         g        = *decoded;
+         decoded += bpp;
+         b        = *decoded;
+         decoded += bpp;
+         data[i]  = (0xffu << 24) | (r << 16) | (g << 8) | (b << 0);
+      }
    }
 }
 
 static void rpng_reverse_filter_copy_line_rgba(uint32_t *data,
-      const uint8_t *decoded, unsigned width, unsigned bpp)
+      const uint8_t *decoded, unsigned width, unsigned bpp,
+      bool supports_rgba)
 {
    int i;
 
@@ -475,28 +556,47 @@ static void rpng_reverse_filter_copy_line_rgba(uint32_t *data,
    if (bpp == 32)
    {
 #if defined(RPNG_SIMD_NEON)
-      rpng_copy_line_rgba_neon(data, decoded, width);
+      rpng_copy_line_rgba_neon(data, decoded, width, supports_rgba);
       return;
 #elif defined(RPNG_SIMD_SSE2)
-      rpng_copy_line_rgba_sse2(data, decoded, width);
+      rpng_copy_line_rgba_sse2(data, decoded, width, supports_rgba);
       return;
 #endif
    }
 
    bpp /= 8;
 
-   for (i = 0; i < (int)width; i++)
+   if (supports_rgba)
    {
-      uint32_t r, g, b, a;
-      r        = *decoded;
-      decoded += bpp;
-      g        = *decoded;
-      decoded += bpp;
-      b        = *decoded;
-      decoded += bpp;
-      a        = *decoded;
-      decoded += bpp;
-      data[i]  = (a << 24) | (r << 16) | (g << 8) | (b << 0);
+      for (i = 0; i < (int)width; i++)
+      {
+         uint32_t r, g, b, a;
+         r        = *decoded;
+         decoded += bpp;
+         g        = *decoded;
+         decoded += bpp;
+         b        = *decoded;
+         decoded += bpp;
+         a        = *decoded;
+         decoded += bpp;
+         data[i]  = (a << 24) | (b << 16) | (g << 8) | (r << 0);
+      }
+   }
+   else
+   {
+      for (i = 0; i < (int)width; i++)
+      {
+         uint32_t r, g, b, a;
+         r        = *decoded;
+         decoded += bpp;
+         g        = *decoded;
+         decoded += bpp;
+         b        = *decoded;
+         decoded += bpp;
+         a        = *decoded;
+         decoded += bpp;
+         data[i]  = (a << 24) | (r << 16) | (g << 8) | (b << 0);
+      }
    }
 }
 
@@ -845,7 +945,8 @@ static int rpng_reverse_filter_copy_line(uint32_t *data,
          rpng_reverse_filter_copy_line_bw(data, pngp->decoded_scanline, ihdr->width, ihdr->depth);
          break;
       case PNG_IHDR_COLOR_RGB:
-         rpng_reverse_filter_copy_line_rgb(data, pngp->decoded_scanline, ihdr->width, ihdr->depth);
+         rpng_reverse_filter_copy_line_rgb(data, pngp->decoded_scanline, ihdr->width, ihdr->depth,
+               pngp->supports_rgba);
          break;
       case PNG_IHDR_COLOR_PLT:
          rpng_reverse_filter_copy_line_plt(
@@ -859,11 +960,20 @@ static int rpng_reverse_filter_copy_line(uint32_t *data,
          break;
       case PNG_IHDR_COLOR_RGBA:
          rpng_reverse_filter_copy_line_rgba(
-               data, pngp->decoded_scanline, ihdr->width, ihdr->depth);
+               data, pngp->decoded_scanline, ihdr->width, ihdr->depth,
+               pngp->supports_rgba);
          break;
    }
 
-   memcpy(pngp->prev_scanline, pngp->decoded_scanline, pngp->pitch);
+   /* Swap scanline pointers instead of copying — the current decoded
+    * scanline becomes the previous scanline for the next row.
+    * Both buffers are the same size (pitch bytes), allocated in
+    * rpng_reverse_filter_init, so swapping is always safe. */
+   {
+      uint8_t *tmp           = pngp->prev_scanline;
+      pngp->prev_scanline    = pngp->decoded_scanline;
+      pngp->decoded_scanline = tmp;
+   }
 
    return IMAGE_PROCESS_NEXT;
 }
@@ -1043,53 +1153,37 @@ false_end:
 
 static bool rpng_realloc_idat(struct idat_buffer *buf, uint32_t chunk_size)
 {
-   uint8_t *new_buffer = (uint8_t*)realloc(buf->data, buf->size + chunk_size);
+   size_t required = buf->size + chunk_size;
 
-   if (!new_buffer)
-      return false;
+   if (required > buf->capacity)
+   {
+      uint8_t *new_buffer = NULL;
+      size_t new_cap      = buf->capacity ? buf->capacity : 4096;
 
-   buf->data  = new_buffer;
+      while (new_cap < required)
+         new_cap *= 2;
+
+      new_buffer = (uint8_t*)realloc(buf->data, new_cap);
+
+      if (!new_buffer)
+         return false;
+
+      buf->data     = new_buffer;
+      buf->capacity = new_cap;
+   }
+
    return true;
 }
 
 static struct rpng_process *rpng_process_init(rpng_t *rpng)
 {
    uint8_t *inflate_buf            = NULL;
-   struct rpng_process *process    = (struct rpng_process*)malloc(sizeof(*process));
+   /* calloc zeroes all fields (pointers, integers, flags) in one call */
+   struct rpng_process *process    = (struct rpng_process*)calloc(1, sizeof(*process));
 
    if (!process)
       return NULL;
 
-   process->flags                  = 0;
-   process->prev_scanline          = NULL;
-   process->decoded_scanline       = NULL;
-   process->inflate_buf            = NULL;
-
-   process->ihdr.width             = 0;
-   process->ihdr.height            = 0;
-   process->ihdr.depth             = 0;
-   process->ihdr.color_type        = 0;
-   process->ihdr.compression       = 0;
-   process->ihdr.filter            = 0;
-   process->ihdr.interlace         = 0;
-
-   process->restore_buf_size       = 0;
-   process->adam7_restore_buf_size = 0;
-   process->data_restore_buf_size  = 0;
-   process->inflate_buf_size       = 0;
-   process->avail_in               = 0;
-   process->avail_out              = 0;
-   process->total_out              = 0;
-   process->pass_size              = 0;
-   process->bpp                    = 0;
-   process->pitch                  = 0;
-   process->h                      = 0;
-   process->pass_width             = 0;
-   process->pass_height            = 0;
-   process->pass_pos               = 0;
-   process->data                   = 0;
-   process->palette                = 0;
-   process->stream                 = NULL;
    process->stream_backend         = trans_stream_get_zlib_inflate_backend();
 
    rpng_pass_geom(&rpng->ihdr, rpng->ihdr.width,
@@ -1146,65 +1240,34 @@ static enum png_chunk_type rpng_read_chunk_header(
       uint8_t *buf, uint32_t chunk_size)
 {
    int i;
-   char type[4];
+   /* Read chunk type as a big-endian 32-bit word for fast comparison */
+   uint32_t tag = rpng_dword_be(buf + 4);
 
+   /* Validate: all four bytes must be ASCII letters (65-90 or 97-122) */
    for (i = 0; i < 4; i++)
    {
-      uint8_t byte = buf[i + 4];
-
-      /* All four bytes of the chunk type must be
-       * ASCII letters (codes 65-90 and 97-122) */
+      uint8_t byte = (uint8_t)(tag >> (24 - i * 8));
       if ((byte < 65) || ((byte > 90) && (byte < 97)) || (byte > 122))
          return PNG_CHUNK_ERROR;
-      type[i]      = byte;
    }
 
-   if (
-            type[0] == 'I'
-         && type[1] == 'H'
-         && type[2] == 'D'
-         && type[3] == 'R'
-      )
+   /* IDAT is the most common chunk type — check it first */
+   if (tag == 0x49444154) /* "IDAT" */
+      return PNG_CHUNK_IDAT;
+   if (tag == 0x49484452) /* "IHDR" */
       return PNG_CHUNK_IHDR;
-   else if
-      (
-          type[0] == 'I'
-       && type[1] == 'D'
-       && type[2] == 'A'
-       && type[3] == 'T'
-      )
-         return PNG_CHUNK_IDAT;
-   else if
-      (
-          type[0] == 'I'
-       && type[1] == 'E'
-       && type[2] == 'N'
-       && type[3] == 'D'
-      )
-         return PNG_CHUNK_IEND;
-   else if
-      (
-          type[0] == 'P'
-       && type[1] == 'L'
-       && type[2] == 'T'
-       && type[3] == 'E'
-      )
-         return PNG_CHUNK_PLTE;
-   else if
-      (
-          type[0] == 't'
-       && type[1] == 'R'
-       && type[2] == 'N'
-       && type[3] == 'S'
-      )
-         return PNG_CHUNK_tRNS;
+   if (tag == 0x49454E44) /* "IEND" */
+      return PNG_CHUNK_IEND;
+   if (tag == 0x504C5445) /* "PLTE" */
+      return PNG_CHUNK_PLTE;
+   if (tag == 0x74524E53) /* "tRNS" */
+      return PNG_CHUNK_tRNS;
 
    return PNG_CHUNK_NOOP;
 }
 
 bool rpng_iterate_image(rpng_t *rpng)
 {
-   unsigned i;
    uint8_t *buf             = (uint8_t*)rpng->buff_data;
    uint32_t chunk_size      = 0;
 
@@ -1339,8 +1402,7 @@ bool rpng_iterate_image(rpng_t *rpng)
 
          buf += 8;
 
-         for (i = 0; i < chunk_size; i++)
-            rpng->idat_buf.data[i + rpng->idat_buf.size] = buf[i];
+         memcpy(rpng->idat_buf.data + rpng->idat_buf.size, buf, chunk_size);
 
          rpng->idat_buf.size += chunk_size;
 
@@ -1365,18 +1427,41 @@ bool rpng_iterate_image(rpng_t *rpng)
 }
 
 int rpng_process_image(rpng_t *rpng,
-      void **_data, size_t len, unsigned *width, unsigned *height)
+      void **_data, size_t len, unsigned *width, unsigned *height,
+      bool supports_rgba)
 {
    uint32_t **data = (uint32_t**)_data;
 
+   rpng->supports_rgba = supports_rgba;
+
    if (!rpng->process)
    {
-      struct rpng_process *process = rpng_process_init(rpng);
+      struct rpng_process *process;
+
+      /* Pre-swizzle palette entries for ABGR output.
+       * The palette was assembled as ARGB during PLTE chunk parsing;
+       * for supports_rgba we need ABGR. Swap R↔B once here (max 256
+       * entries) instead of per-pixel in the copy_line_plt path.
+       * Done inside the !process guard so it runs exactly once. */
+      if (supports_rgba && (rpng->flags & RPNG_FLAG_HAS_PLTE))
+      {
+         int pi;
+         for (pi = 0; pi < 256; pi++)
+         {
+            uint32_t c  = rpng->palette[pi];
+            rpng->palette[pi] = (c & 0xFF00FF00u)
+                               | ((c & 0x00FF0000u) >> 16)
+                               | ((c & 0x000000FFu) << 16);
+         }
+      }
+
+      process = rpng_process_init(rpng);
 
       if (!process)
          goto error;
 
       rpng->process = process;
+      rpng->process->supports_rgba = supports_rgba;
       return IMAGE_PROCESS_NEXT;
    }
 
@@ -1464,8 +1549,10 @@ bool rpng_start(rpng_t *rpng)
  **/
 bool rpng_is_valid(rpng_t *rpng)
 {
-   return (rpng && ((rpng->flags & (RPNG_FLAG_HAS_IHDR | RPNG_FLAG_HAS_IDAT |
-RPNG_FLAG_HAS_IEND)) > 0));
+   const uint8_t valid_mask = RPNG_FLAG_HAS_IHDR
+                            | RPNG_FLAG_HAS_IDAT
+                            | RPNG_FLAG_HAS_IEND;
+   return (rpng && ((rpng->flags & valid_mask) == valid_mask));
 }
 
 bool rpng_set_buf_ptr(rpng_t *rpng, void *data, size_t len)

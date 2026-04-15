@@ -43,7 +43,6 @@
 #include "../../paths.h"
 #include "../../retroarch.h"
 #include "../../verbosity.h"
-#include "../../ui/drivers/ui_win32.h"
 
 #include "../../uwp/uwp_func.h"
 
@@ -67,12 +66,6 @@ static size_t frontend_uwp_get_os(char *s, size_t len, int *major, int *minor)
    {
       case PROCESSOR_ARCHITECTURE_AMD64:
          arch = "x64";
-         break;
-      case PROCESSOR_ARCHITECTURE_INTEL:
-         arch = "x86";
-         break;
-      case PROCESSOR_ARCHITECTURE_ARM:
-         arch = "ARM";
          break;
       case PROCESSOR_ARCHITECTURE_ARM64:
          arch = "ARM64";
@@ -98,8 +91,10 @@ static size_t frontend_uwp_get_os(char *s, size_t len, int *major, int *minor)
                _len = strlcpy(s, "Windows Server 2016", len);
             else if ((vi.dwBuildNumber >= 17763) && (vi.dwBuildNumber < 20348))
                _len = strlcpy(s, "Windows Server 2019", len);
-            else if (vi.dwBuildNumber >= 20348)
+            else if ((vi.dwBuildNumber >= 20348) && (vi.dwBuildNumber < 26100))
                _len = strlcpy(s, "Windows Server 2022", len);
+		    else if (vi.dwBuildNumber >= 26100)
+				_len = strlcpy(s, "Windows Server 2025", len);
          }
          else
          {
@@ -114,7 +109,7 @@ static size_t frontend_uwp_get_os(char *s, size_t len, int *major, int *minor)
          break;
    }
 
-   if (!string_is_empty(arch))
+   if (arch && *arch)
    {
       _len += strlcpy(s + _len, " ",  len - _len);
       _len += strlcpy(s + _len, arch, len - _len);
@@ -123,13 +118,13 @@ static size_t frontend_uwp_get_os(char *s, size_t len, int *major, int *minor)
    _len += strlcpy(s + _len, " Build ", len - _len);
    _len += strlcpy(s + _len, build_str, len - _len);
 
-   if (!string_is_empty(vi.szCSDVersion))
+   if (vi.szCSDVersion && *vi.szCSDVersion)
    {
       _len += strlcpy(s + _len, " ", len - _len);
       _len += strlcpy(s + _len, vi.szCSDVersion, len - _len);
    }
 
-   if (!string_is_empty(uwp_device_family))
+   if (uwp_device_family && *uwp_device_family)
    {
       _len += strlcpy(s + _len, " ", len - _len);
       strlcpy(s + _len, uwp_device_family, len - _len);
@@ -181,10 +176,6 @@ enum frontend_architecture frontend_uwp_get_arch(void)
    {
       case PROCESSOR_ARCHITECTURE_AMD64:
          return FRONTEND_ARCH_X86_64;
-      case PROCESSOR_ARCHITECTURE_INTEL:
-         return FRONTEND_ARCH_X86;
-      case PROCESSOR_ARCHITECTURE_ARM:
-         return FRONTEND_ARCH_ARM;
       case PROCESSOR_ARCHITECTURE_ARM64:
          return FRONTEND_ARCH_ARMV8;
       default:

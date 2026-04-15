@@ -134,6 +134,10 @@ ARCHIVE FILE
 #include "../libretro-common/file/archive_file_7z.c"
 #endif
 
+#ifdef HAVE_ZSTD
+#include "../libretro-common/file/archive_file_zstd.c"
+#endif
+
 /*============================================================
 COMPRESSION
 ============================================================ */
@@ -280,12 +284,6 @@ VIDEO CONTEXT
 
 #if !defined(__WINRT__)
 #include "../gfx/display_servers/dispserv_win32.c"
-#endif
-
-#if defined(HAVE_FFMPEG)
-#if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES3)
-#include "../cores/libretro-ffmpeg/ffmpeg_fft.c"
-#endif
 #endif
 
 #endif
@@ -586,10 +584,6 @@ FONTS
 
 #include "../gfx/font_driver.c"
 
-#if defined(HAVE_D3D9) && defined(HAVE_D3DX)
-#include "../gfx/drivers_font/d3d9x_w32_font.c"
-#endif
-
 #if defined(HAVE_STB_FONT)
 #include "../gfx/drivers_font_renderer/stb_unicode.c"
 #include "../gfx/drivers_font_renderer/stb.c"
@@ -637,6 +631,7 @@ INPUT
 #ifdef HAVE_WINRAWINPUT
 /* winraw only available since XP */
 #include "../input/drivers/winraw_input.c"
+#include "../input/drivers_joypad/winraw_joypad.c"
 #endif
 #endif
 
@@ -967,7 +962,6 @@ DRIVERS
 #endif
 #include "../gfx/gfx_animation.c"
 #include "../gfx/gfx_display.c"
-#include "../gfx/gfx_thumbnail_path.c"
 #include "../gfx/gfx_thumbnail.c"
 #ifdef HAVE_AUDIOMIXER
 #include "../libretro-common/audio/audio_mixer.c"
@@ -1691,8 +1685,6 @@ ANDROID PLAY FEATURE DELIVERY
 FFMPEG
 ============================================================ */
 #ifdef HAVE_FFMPEG
-#include "../cores/libretro-ffmpeg/packet_buffer.c"
-#include "../cores/libretro-ffmpeg/video_buffer.c"
 #include "../libretro-common/rthreads/tpool.c"
 #endif
 
@@ -1720,6 +1712,9 @@ CLOUD SYNC
 #endif
 #ifdef HAVE_SMBCLIENT
 #include "../network/cloud_sync/smb.c"
+#endif
+#ifdef HAVE_S3
+#include "../network/cloud_sync/s3.c"
 #endif
 #endif
 

@@ -554,6 +554,10 @@ MSG_HASH(
    "インストール済みコアをロック"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_CORE_LOCK,
+   ""
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_SET_STANDALONE_EXEMPT,
    "[コンテンツレスコア] メニューから除外"
    )
@@ -2250,14 +2254,6 @@ MSG_HASH(
 
 /* Settings > Video > HDR */
 
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MAX_NITS,
-   "最大輝度"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_VIDEO_HDR_PAPER_WHITE_NITS,
-   "ペーパーホワイト輝度"
-   )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_ACCURATE,
    "正確"
@@ -7100,10 +7096,6 @@ MSG_HASH(
    "プレイリストをリフレッシュ"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_PLAYLIST_MANAGER_REFRESH_PLAYLIST,
-   "プレイリストの作成または編集で最後に使用した [手動スキャン] 操作を繰り返すことで、新しいコンテンツを追加したり無効なエントリーを削除したりします。"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DELETE_PLAYLIST,
    "プレイリストを削除"
    )
@@ -7673,14 +7665,6 @@ MSG_HASH(
    "データベースと一致するコンテンツがあるかファイルをスキャンします。"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_LIST,
-   "手動スキャン"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_LIST,
-   "コンテンツのファイル名に基づいて設定可能なスキャンです。コンテンツがデータベースと一致する必要はありません。"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SCAN_ENTRY,
    "スキャン"
    )
@@ -7696,32 +7680,8 @@ MSG_HASH(
    "ミキサーに追加して再生"
    )
 
-/* Import Content > Manual Scan */
+/* Import Content > Content Scan */
 
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_DIR,
-   "コンテンツディレクトリ"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_DIR,
-   "コンテンツをスキャンするディレクトリを選択します。"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME,
-   "システム名"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_SYSTEM_NAME,
-   "スキャンしたコンテンツに関連付ける [システム名] を指定します。生成されたプレイリストファイルの名前およびプレイリストサムネイルの識別に使用されます。"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_SYSTEM_NAME_CUSTOM,
-   "カスタムシステム名"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_MANUAL_CONTENT_SCAN_SYSTEM_NAME_CUSTOM,
-   "スキャンしたコンテンツの [システム名] を手動で指定します。[システム名] が [カスタム] に設定されている場合にのみ使用されます。"
-   )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MANUAL_CONTENT_SCAN_CORE_NAME,
    "デフォルトのコア"

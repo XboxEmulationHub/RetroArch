@@ -201,16 +201,18 @@ static void task_overlay_redefine_eightway_direction(
       char *str, input_bits_t *data)
 {
    unsigned bit;
-   char *tok, *save = NULL;
-
+   char *cur = str;
+   char *next;
    BIT256_CLEAR_ALL(*data);
-
-   for (tok = strtok_r(str, "|", &save); tok;
-         tok = strtok_r(NULL, "|", &save))
+   while (cur && *cur)
    {
-      bit = input_config_translate_str_to_bind_id(tok);
+      next = strchr(cur, '|');
+      if (next)
+         *next++ = '\0';
+      bit = input_config_translate_str_to_bind_id(cur);
       if (bit < RARCH_CUSTOM_BIND_LIST_END)
          BIT256_SET(*data, bit);
+      cur = next;
    }
 }
 
@@ -330,7 +332,6 @@ static bool task_overlay_load_desc(
    char overlay[256];
    unsigned list_size          = 0;
    char *elems[6]              = {NULL, NULL, NULL, NULL, NULL, NULL};
-   char *tok, *save            = NULL;
    float tmp_float             = 0.0f;
    bool tmp_bool               = false;
    bool by_pixel               = false;
@@ -366,10 +367,23 @@ static bool task_overlay_load_desc(
 
    /* Tokenize in-place — overlay[] is a local buffer,
     * no heap allocation needed */
-   for (tok = strtok_r(overlay, ", ", &save);
-        tok && list_size < 6;
-        tok = strtok_r(NULL, ", ", &save))
-      elems[list_size++] = tok;
+   {
+      char *p = overlay;
+      while (*p && list_size < 6)
+      {
+         /* skip delimiters */
+         while (*p == ',' || *p == ' ')
+            p++;
+         if (!*p)
+            break;
+         elems[list_size++] = p;
+         /* advance to next delimiter or end */
+         while (*p && *p != ',' && *p != ' ')
+            p++;
+         if (*p)
+            *p++ = '\0';
+      }
+   }
 
    if (list_size < 6)
    {
@@ -378,7 +392,7 @@ static bool task_overlay_load_desc(
    }
 
    /* elems[0] (key) will be mutated by the button-parsing
-    * strtok_r below, so read x/y/box from their own pointers
+    * below, so read x/y/box from their own pointers
     * before that happens. They are separate tokens in the
     * buffer and won't be touched. */
    box                 = elems[3];
@@ -386,13 +400,13 @@ static bool task_overlay_load_desc(
    desc->retro_key_idx = 0;
    BIT256_CLEAR_ALL(desc->button_mask);
 
-   if (string_is_equal(elems[0], "analog_left"))
+   if (memcmp(elems[0], "analog_left", 11) == 0)
       desc->type          = OVERLAY_TYPE_ANALOG_LEFT;
-   else if (string_is_equal(elems[0], "analog_right"))
+   else if (memcmp(elems[0], "analog_right", 12) == 0)
       desc->type          = OVERLAY_TYPE_ANALOG_RIGHT;
-   else if (string_is_equal(elems[0], "dpad_area"))
+   else if (memcmp(elems[0], "dpad_area", 9) == 0)
       desc->type          = OVERLAY_TYPE_DPAD_AREA;
-   else if (string_is_equal(elems[0], "abxy_area"))
+   else if (memcmp(elems[0], "abxy_area", 9) == 0)
       desc->type          = OVERLAY_TYPE_ABXY_AREA;
    else if (strstr(elems[0], "retrok_") == elems[0])
    {
@@ -402,20 +416,26 @@ static bool task_overlay_load_desc(
    }
    else
    {
-      char      *save2 = NULL;
-      const char *tmp   = strtok_r(elems[0], "|", &save2);
+      const char *tmp;
+      char *p = elems[0];
 
       desc->type = OVERLAY_TYPE_BUTTONS;
 
-      for (; tmp; tmp = strtok_r(NULL, "|", &save2))
+      while (p)
       {
-         if (!string_is_equal(tmp, "nul"))
+         char *delim = strchr(p, '|');
+         if (delim)
+            *delim = '\0';
+         tmp = p;
+         p   = delim ? delim + 1 : NULL;
+
+         if (memcmp(tmp, "nul", 4) != 0)
          {
             unsigned bind_id = input_config_translate_str_to_bind_id(tmp);
             if (bind_id == RARCH_BIND_LIST_END)
             {
                size_t __len = strlen(tmp);
-               if (__len > 7 && string_is_equal(tmp + __len - 7, "_enable"))
+               if (__len > 7 && memcmp(tmp + __len - 7, "_enable", 7) == 0)
                {
                   char stripped[64];
                   strlcpy(stripped, tmp, __len - 7 + 1 < sizeof(stripped)
@@ -454,9 +474,9 @@ static bool task_overlay_load_desc(
    desc->x_shift = desc->x;
    desc->y_shift = desc->y;
 
-   if (string_is_equal(box, "radial"))
+   if (memcmp(box, "radial", 6) == 0)
       desc->hitbox = OVERLAY_HITBOX_RADIAL;
-   else if (string_is_equal(box, "rect"))
+   else if (memcmp(box, "rect", 4) == 0)
       desc->hitbox = OVERLAY_HITBOX_RECT;
    else
    {
@@ -600,7 +620,7 @@ static bool task_overlay_resolve_targets(struct overlay *ol,
       const char *next          = desc->next_index_name;
       ssize_t         next_idx  = (idx + 1) % len;
 
-      if (!string_is_empty(next))
+      if (next && *next)
       {
          next_idx = task_overlay_find_index(ol, next, len);
 
@@ -837,7 +857,7 @@ static void task_overlay_deferred_load(retro_task_t *task)
          strlcpy(overlay->config.paths.path,
                tmp_str, sizeof(overlay->config.paths.path));
 
-      if (!string_is_empty(overlay->config.paths.path))
+      if (*overlay->config.paths.path)
       {
          char overlay_resolved_path[PATH_MAX_LENGTH];
 
@@ -890,15 +910,27 @@ static void task_overlay_deferred_load(retro_task_t *task)
          char cfg_rect_buf[256];
          char *elems[4]                = {NULL, NULL, NULL, NULL};
          unsigned list_size            = 0;
-         char *tok, *save              = NULL;
+         char *p                       = NULL;
 
          strlcpy(cfg_rect_buf, overlay->config.rect.array,
                sizeof(cfg_rect_buf));
 
-         for (tok = strtok_r(cfg_rect_buf, ", ", &save);
-              tok && list_size < 4;
-              tok = strtok_r(NULL, ", ", &save))
-            elems[list_size++] = tok;
+         p = cfg_rect_buf;
+
+         while (*p && list_size < 4)
+         {
+            /* Skip leading delimiters */
+            while (*p == ',' || *p == ' ')
+               p++;
+            if (*p == '\0')
+               break;
+            elems[list_size++] = p;
+            /* Advance to next delimiter or end */
+            while (*p && *p != ',' && *p != ' ')
+               p++;
+            if (*p)
+               *p++ = '\0';
+         }
 
          if (list_size < 4)
          {
@@ -927,15 +959,25 @@ static void task_overlay_deferred_load(retro_task_t *task)
          char cfg_vp_buf[256];
          char *elems[4]             = {NULL, NULL, NULL, NULL};
          unsigned list_size         = 0;
-         char *tok, *save           = NULL;
+         char *p                    = NULL;
          RARCH_DBG("[Overlay] Found viewport value: %s\n", tmp_str);
 
          strlcpy(cfg_vp_buf, tmp_str, sizeof(cfg_vp_buf));
 
-         for (tok = strtok_r(cfg_vp_buf, ", ", &save);
-              tok && list_size < 4;
-              tok = strtok_r(NULL, ", ", &save))
-            elems[list_size++] = tok;
+         p = cfg_vp_buf;
+
+         while (*p && list_size < 4)
+         {
+            while (*p == ',' || *p == ' ')
+               p++;
+            if (*p == '\0')
+               break;
+            elems[list_size++] = p;
+            while (*p && *p != ',' && *p != ' ')
+               p++;
+            if (*p)
+               *p++ = '\0';
+         }
 
          if (list_size >= 4)
          {
@@ -1104,7 +1146,7 @@ bool task_push_overlay_load_default(
    overlay_loader_t *loader       = NULL;
    struct string_list *image_list = NULL;
 
-   if (string_is_empty(overlay_path))
+   if (!overlay_path || !*overlay_path)
       return false;
 
    /* Expand ~ so archive reads get an absolute path */

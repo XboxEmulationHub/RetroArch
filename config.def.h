@@ -500,11 +500,20 @@
 /* Enable use of shaders */
 #define DEFAULT_SHADER_ENABLE true
 
+/* When enabled, shaders compile one pass per frame instead of
+ * stalling for the entire preset.  Disable to force the legacy
+ * synchronous (blocking) shader load path. */
+#if defined(ANDROID)
+#define DEFAULT_SHADER_DEFERRED_LOADING false
+#else
+#define DEFAULT_SHADER_DEFERRED_LOADING true
+#endif
+
 /* HDR output mode: 0 = off, 1 = HDR10, 2 = scRGB */
 #define DEFAULT_VIDEO_HDR_MODE 0
 
-/* The maximum nunmber of nits the actual display can show - needs to be calibrated */
-#define DEFAULT_VIDEO_HDR_MAX_NITS 1000.0f
+/* Brightness of the SDR menu/overlay when composited into the HDR backbuffer */
+#define DEFAULT_MENU_HDR_BRIGHTNESS_NITS 200.0f
 
 /* The number of nits that paper white is at */
 #define DEFAULT_VIDEO_HDR_PAPER_WHITE_NITS 200.0f
@@ -574,6 +583,9 @@
 
 /* Save configuration file on exit. */
 #define DEFAULT_CONFIG_SAVE_ON_EXIT true
+
+/* Save minimal configuration (only values that differ from defaults). */
+#define DEFAULT_CONFIG_SAVE_MINIMAL false
 
 /* Save active input remap file on exit/close content */
 #define DEFAULT_REMAP_SAVE_ON_EXIT true

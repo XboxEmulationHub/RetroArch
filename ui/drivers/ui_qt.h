@@ -30,20 +30,22 @@
 #include <QRegularExpression>
 #include <QPalette>
 #include <QPlainTextEdit>
-#include <QFutureWatcher>
 #include <QPixmap>
 #include <QImage>
 #include <QPointer>
 #include <QProgressBar>
 #include <QElapsedTimer>
-#include <QSslError>
-#include <QNetworkReply>
+#include <QTableWidget>
+#include <QVBoxLayout>
 #include <QStyledItemDelegate>
 #include <QCache>
 #include <QSortFilterProxyModel>
 #include <QDir>
+#include <QThread>
+#include <QMutex>
+#include <QWaitCondition>
 
-#include "qt/qt_widgets.h"
+#include "ui_qt_widgets.h"
 
 #ifndef CXX_BUILD
 extern "C" {
@@ -58,6 +60,7 @@ extern "C" {
 
 #include "../ui_companion_driver.h"
 #include "../../retroarch.h"
+#include <formats/image.h>
 
 #ifndef CXX_BUILD
 }
@@ -94,10 +97,7 @@ class QScrollArea;
 class QSlider;
 class QDragEnterEvent;
 class QDropEvent;
-class QNetworkAccessManager;
-class QNetworkReply;
 class QProgressDialog;
-class LoadCoreWindow;
 class MainWindow;
 class ThumbnailWidget;
 class ThumbnailLabel;
@@ -125,6 +125,74 @@ static inline double lerp(double x, double y, double a, double b, double d)
 {
    return a + (b - a) * ((double)(d - x) / (double)(y - x));
 }
+
+
+class ThumbnailLoader : public QThread
+{
+   Q_OBJECT
+public:
+   ThumbnailLoader(QObject *parent = 0) : QThread(parent), m_stop(false) {}
+   ~ThumbnailLoader() { stop(); wait(); }
+   void stop() { m_mutex.lock(); m_stop = true; m_cond.wakeOne(); m_mutex.unlock(); }
+   void request(const QModelIndex &index, const QString &path)
+   {
+      m_mutex.lock();
+      m_queue.append(qMakePair(index, path));
+      m_cond.wakeOne();
+      m_mutex.unlock();
+   }
+   static void cleanupTexturePixels(void *pixels)
+   {
+      free(pixels);
+   }
+   static QImage loadImageRA(const QString &path)
+   {
+      struct texture_image tex;
+      QByteArray pathArray = path.toUtf8();
+
+      tex.width         = 0;
+      tex.height        = 0;
+      tex.pixels        = NULL;
+      tex.supports_rgba = false;
+
+      if (image_texture_load(&tex, pathArray.constData()))
+      {
+         /* Transfer pixel ownership to QImage - no copy needed.
+          * QImage will call free() on the buffer when destroyed. */
+         return QImage((unsigned char*)tex.pixels,
+               tex.width, tex.height,
+               tex.width * sizeof(uint32_t),
+               QImage::Format_ARGB32,
+               cleanupTexturePixels, tex.pixels);
+      }
+
+      /* Fallback to Qt for unsupported formats */
+      return QImage(path);
+   }
+signals:
+   void imageLoaded(const QImage image, const QModelIndex index, const QString path);
+protected:
+   void run()
+   {
+      for (;;)
+      {
+         m_mutex.lock();
+         while (m_queue.isEmpty() && !m_stop)
+            m_cond.wait(&m_mutex);
+         if (m_stop) { m_mutex.unlock(); return; }
+         QPair<QModelIndex, QString> item = m_queue.takeFirst();
+         m_mutex.unlock();
+         QImage image = loadImageRA(item.second);
+         if (!image.isNull())
+            emit imageLoaded(image, item.first, item.second);
+      }
+   }
+private:
+   QMutex m_mutex;
+   QWaitCondition m_cond;
+   QList<QPair<QModelIndex, QString> > m_queue;
+   bool m_stop;
+};
 
 class PlaylistModel : public QAbstractListModel
 {
@@ -167,14 +235,13 @@ private:
    QVector<QHash<QString, QString> > m_contents;
    QCache<QString, QPixmap> m_cache;
    QSet<QString> m_pendingImages;
-   QVector<QByteArray> m_imageFormats;
    QRegularExpression m_fileSanitizerRegex;
    ThumbnailType m_thumbnailType = THUMBNAIL_TYPE_BOXART;
+   ThumbnailLoader *m_thumbnailLoader;
    QString getThumbnailPath(const QModelIndex &index, QString type) const;
    QString getThumbnailPath(const QHash<QString, QString> &hash, QString type) const;
    QString getCurrentTypeThumbnailPath(const QModelIndex &index) const;
    void getPlaylistItems(QString path);
-   void loadImage(const QModelIndex &index, const QString &path);
 };
 
 class ThumbnailWidget : public QStackedWidget
@@ -319,6 +386,42 @@ class FileSystemProxyModel : public QSortFilterProxyModel
 protected:
    virtual bool filterAcceptsRow(int sourceRow, const QModelIndex &sourceParent) const;
    void sort(int column, Qt::SortOrder order = Qt::AscendingOrder);
+};
+
+class LoadCoreTableWidget : public QTableWidget
+{
+   Q_OBJECT
+public:
+   LoadCoreTableWidget(QWidget *parent = NULL);
+signals:
+   void enterPressed();
+protected:
+   void keyPressEvent(QKeyEvent *event);
+};
+
+class LoadCoreWindow : public QMainWindow
+{
+   Q_OBJECT
+public:
+   LoadCoreWindow(QWidget *parent = 0);
+   void initCoreList(const QStringList &extensionFilters = QStringList());
+   void setStatusLabel(QString label);
+signals:
+   void coreLoaded();
+   void windowClosed();
+private slots:
+   void onLoadCustomCoreClicked();
+   void onCoreEnterPressed();
+   void onCellDoubleClicked(int row, int column);
+protected:
+   void keyPressEvent(QKeyEvent *event);
+   void closeEvent(QCloseEvent *event);
+private:
+   void loadCore(const char *path);
+
+   QVBoxLayout m_layout;
+   LoadCoreTableWidget *m_table;
+   QLabel *m_statusLabel;
 };
 
 class MainWindow : public QMainWindow
@@ -468,6 +571,8 @@ public slots:
    void showAbout();
    void showDocs();
    void onThumbnailPackExtractFinished(bool success);
+   void onSingleThumbnailDownloadFinishedInternal(const char *system, const char *title, const char *final_path, bool success);
+   void onPlaylistThumbnailDownloadFinishedInternal(const char *system, const char *title, const char *final_path, bool success);
    void deferReloadShaderParams();
    void downloadThumbnail(QString system, QString title, QUrl url = QUrl());
    void downloadAllThumbnails(QString system, QUrl url = QUrl());
@@ -512,26 +617,11 @@ private slots:
    void onDownloadScrollAgain(QString path);
    int onExtractArchive(QString path, QString extractionDir, QString tempExtension, retro_task_callback_t cb);
 
-   void onThumbnailDownloadNetworkError(QNetworkReply::NetworkError code);
-   void onThumbnailDownloadNetworkSslErrors(const QList<QSslError> &errors);
-   void onThumbnailDownloadFinished();
-   void onThumbnailDownloadProgress(qint64 bytesReceived, qint64 bytesTotal);
-   void onThumbnailDownloadReadyRead();
    void onThumbnailDownloadCanceled();
    void onDownloadThumbnail(QString system, QString title);
 
-   void onThumbnailPackDownloadNetworkError(QNetworkReply::NetworkError code);
-   void onThumbnailPackDownloadNetworkSslErrors(const QList<QSslError> &errors);
-   void onThumbnailPackDownloadFinished();
-   void onThumbnailPackDownloadProgress(qint64 bytesReceived, qint64 bytesTotal);
-   void onThumbnailPackDownloadReadyRead();
    void onThumbnailPackDownloadCanceled();
 
-   void onPlaylistThumbnailDownloadNetworkError(QNetworkReply::NetworkError code);
-   void onPlaylistThumbnailDownloadNetworkSslErrors(const QList<QSslError> &errors);
-   void onPlaylistThumbnailDownloadFinished();
-   void onPlaylistThumbnailDownloadProgress(qint64 bytesReceived, qint64 bytesTotal);
-   void onPlaylistThumbnailDownloadReadyRead();
    void onPlaylistThumbnailDownloadCanceled();
 
    void startTimer();
@@ -592,7 +682,6 @@ private:
    QDockWidget *m_logDock;
    QFrame *m_logWidget;
    LogTextEdit *m_logTextEdit;
-   QVector<QByteArray> m_imageFormats;
    QListWidgetItem *m_historyPlaylistsItem;
    QIcon m_folderIcon;
    QString m_customThemeString;
@@ -613,24 +702,16 @@ private:
    QElapsedTimer m_statusMessageElapsedTimer;
    QPointer<ShaderParamsDialog> m_shaderParamsDialog;
    QPointer<CoreOptionsDialog> m_coreOptionsDialog;
-   QNetworkAccessManager *m_networkManager;
+   retro_task_t *m_currentHttpTask;
 
    QProgressDialog *m_updateProgressDialog;
-   QFile m_updateFile;
-   QPointer<QNetworkReply> m_updateReply;
 
    QProgressDialog *m_thumbnailDownloadProgressDialog;
-   QFile m_thumbnailDownloadFile;
-   QPointer<QNetworkReply> m_thumbnailDownloadReply;
    QStringList m_pendingThumbnailDownloadTypes;
 
    QProgressDialog *m_thumbnailPackDownloadProgressDialog;
-   QFile m_thumbnailPackDownloadFile;
-   QPointer<QNetworkReply> m_thumbnailPackDownloadReply;
 
    QProgressDialog *m_playlistThumbnailDownloadProgressDialog;
-   QFile m_playlistThumbnailDownloadFile;
-   QPointer<QNetworkReply> m_playlistThumbnailDownloadReply;
    QVector<QHash<QString, QString> > m_pendingPlaylistThumbnails;
    unsigned m_downloadedThumbnails;
    unsigned m_failedThumbnails;

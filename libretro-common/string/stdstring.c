@@ -141,17 +141,14 @@ char *string_trim_whitespace_left(char *const s)
    if (s && *s)
    {
       char *current  = s;
-
-      while (*current && ISSPACE((unsigned char)*current))
+      while (*current && (*current == ' ' || *current == '\t' || *current == '\n' || *current == '\r' || *current == '\v' || *current == '\f'))
          ++current;
-
       if (s != current)
       {
          size_t _len = strlen(current);
          memmove(s, current, _len + 1);
       }
    }
-
    return s;
 }
 
@@ -251,7 +248,7 @@ size_t word_wrap(
          if (src_end - src <= line_width)
          {
             _len = len - (size_t)(s - s_start);
-            return strlcpy(s, src, _len);
+            return (size_t)(s - s_start) + strlcpy(s, src, _len);
          }
       }
 
@@ -278,14 +275,14 @@ size_t word_wrap(
             if (src_end - src < line_width)
             {
                _len = len - (size_t)(s - s_start);
-               return strlcpy(s, src, _len);
+               return (size_t)(s - s_start) + strlcpy(s, src, _len);
             }
          }
       }
    }
 
    *s = '\0';
-   return 0;
+   return (size_t)(s - s_start);
 }
 
 /**
@@ -384,7 +381,7 @@ size_t word_wrap_wideglyph(char *s, size_t len,
          if (src_end - src <= line_width)
          {
             remaining = len - (size_t)(s - s_start);
-            return strlcpy(s, src, remaining);
+            return (size_t)(s - s_start) + strlcpy(s, src, remaining);
          }
       }
       else if (char_len >= 3)
@@ -420,7 +417,7 @@ size_t word_wrap_wideglyph(char *s, size_t len,
             if (src_end - src <= line_width)
             {
                remaining = len - (size_t)(s - s_start);
-               return strlcpy(s, src, remaining);
+               return (size_t)(s - s_start) + strlcpy(s, src, remaining);
             }
          }
          else if (lastspace)
@@ -438,14 +435,14 @@ size_t word_wrap_wideglyph(char *s, size_t len,
             if (src_end - src < line_width)
             {
                remaining = len - (size_t)(s - s_start);
-               return strlcpy(s, src, remaining);
+               return (size_t)(s - s_start) + strlcpy(s, src, remaining);
             }
          }
       }
    }
 
    *s = '\0';
-   return 0;
+   return (size_t)(s - s_start);
 }
 
 /**
@@ -478,10 +475,10 @@ char* string_tokenize(char **str, const char *delim)
    size_t delim_len = 0;
 
    /* Sanity checks */
-   if (!str || string_is_empty(delim))
+   if (!str || !delim || !*delim)
       return NULL;
 
-   /* Note: we don't check string_is_empty() here,
+   /* Note: we don't check if string is empty here,
     * empty strings are valid */
    if (!(str_ptr = *str))
       return NULL;
@@ -513,21 +510,22 @@ char* string_tokenize(char **str, const char *delim)
  * Leaf function.
  *
  * Removes every instance of character @c from @s
+ *
+ * Returns the length of the resulting string.
  **/
-void string_remove_all_chars(char *s, char c)
+size_t string_remove_all_chars(char *s, char c)
 {
-   char *read_ptr  = s;
-   char *write_ptr = s;
-
-   while (*read_ptr != '\0')
+   char *dst = s;
+   char *src = s;
+   while (*src)
    {
       /* Only write if the character is not the one to remove */
-      if (*read_ptr != c)
-         *write_ptr++ = *read_ptr;
-      read_ptr++;
+      if (*src != c)
+         *dst++ = *src;
+      src++;
    }
-
-   *write_ptr = '\0';
+   *dst = '\0';
+   return (size_t)(dst - s);
 }
 
 /**
@@ -558,7 +556,7 @@ unsigned string_to_unsigned(const char *str)
 {
    const char *ptr = NULL;
 
-   if (string_is_empty(str))
+   if (!str || !*str)
       return 0;
 
    for (ptr = str; *ptr != '\0'; ptr++)
@@ -584,7 +582,7 @@ unsigned string_hex_to_unsigned(const char *str)
    const char *hex_str = str;
    const char *ptr     = NULL;
 
-   if (string_is_empty(str))
+   if (!str || !*str)
       return 0;
 
    /* Remove leading '0x', if present */
@@ -592,7 +590,7 @@ unsigned string_hex_to_unsigned(const char *str)
        && (str[1] == 'x' || str[1] == 'X'))
    {
       hex_str = str + 2;
-      if (string_is_empty(hex_str))
+      if (!hex_str || !*hex_str)
          return 0;
    }
 
@@ -633,8 +631,6 @@ int string_count_occurrences_single_character(const char *str, char c)
  *
  * Replaces all spaces with given character @c.
  **/
-/* FIX: Added unsigned char cast to ISSPACE argument for
- * correct behaviour with high-byte / signed char inputs. */
 void string_replace_whitespace_with_single_character(char *s, char c)
 {
    for (; *s; s++)
@@ -649,7 +645,6 @@ void string_replace_whitespace_with_single_character(char *s, char c)
  *
  * Replaces multiple spaces with a single space in a string.
  **/
-/* FIX: Added unsigned char cast to ISSPACE arguments. */
 void string_replace_multi_space_with_single_space(char *s)
 {
    char *str_trimmed  = s;
@@ -673,14 +668,16 @@ void string_replace_multi_space_with_single_space(char *s)
  * Leaf function.
  *
  * Remove all spaces from the given string.
+ * Returns the length of the resulting string.
  **/
-/* FIX: Added unsigned char cast to ISSPACE argument. */
-void string_remove_all_whitespace(char *s, const char *str)
+size_t string_remove_all_whitespace(char *s, const char *str)
 {
+   char *start = (char*)s;
    for (; *str; str++)
       if (!ISSPACE((unsigned char)*str))
          *s++ = *str;
    *s = '\0';
+   return s - start;
 }
 
 /**
@@ -722,4 +719,94 @@ void string_copy_only_ascii(char *s, const char *str)
       if (*str > 0x1F && *str < 0x7F)
          *s++ = *str;
    *s = '\0';
+}
+
+/**
+ * string_ext_list_find:
+ *
+ * Checks whether a single extension token already exists
+ * in a '|'-delimited string. Exact token matching only.
+ **/
+bool string_ext_list_find(const char *delim_str, size_t delim_len,
+      const char *ext, size_t ext_len)
+{
+   const char *p   = delim_str;
+   const char *end = delim_str + delim_len;
+
+   while (p < end)
+   {
+      const char *tok_end = (const char*)memchr(p, '|', end - p);
+      size_t tok_len;
+
+      if (!tok_end)
+         tok_end = end;
+
+      tok_len = tok_end - p;
+
+      if (tok_len == ext_len && memcmp(p, ext, ext_len) == 0)
+         return true;
+
+      p = tok_end + 1;
+   }
+
+   return false;
+}
+
+/**
+ * string_ext_list_append_dedup:
+ *
+ * Appends a single extension to a '|'-delimited destination buffer,
+ * but only if that extension is not already present.
+ **/
+void string_ext_list_append_dedup(char *dst, size_t *dst_len,
+      size_t dst_size, const char *ext, size_t ext_len)
+{
+   if (ext_len == 0)
+      return;
+   if (string_ext_list_find(dst, *dst_len, ext, ext_len))
+      return;
+   if (*dst_len + 1 + ext_len + 1 > dst_size)
+      return;
+
+   if (*dst_len > 0)
+      dst[(*dst_len)++] = '|';
+
+   memcpy(dst + *dst_len, ext, ext_len);
+   *dst_len += ext_len;
+   dst[*dst_len] = '\0';
+}
+
+/**
+ * string_ext_list_merge_dedup:
+ *
+ * Splits a '|'-delimited source string and appends each unique
+ * extension to the destination buffer via string_ext_list_append_dedup.
+ **/
+void string_ext_list_merge_dedup(char *dst, size_t *dst_len,
+      size_t dst_size, const char *src)
+{
+   const char *p;
+   const char *end;
+
+   if (!src || !*src)
+      return;
+
+   end = src + strlen(src);
+   p   = src;
+
+   while (p < end)
+   {
+      const char *tok_end = (const char*)memchr(p, '|', end - p);
+      size_t tok_len;
+
+      if (!tok_end)
+         tok_end = end;
+
+      tok_len = tok_end - p;
+
+      if (tok_len > 0)
+         string_ext_list_append_dedup(dst, dst_len, dst_size, p, tok_len);
+
+      p = tok_end + 1;
+   }
 }

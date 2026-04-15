@@ -485,6 +485,7 @@ enum retro_language
    RETRO_LANGUAGE_GALICIAN            = 33,
    RETRO_LANGUAGE_NORWEGIAN           = 34,
    RETRO_LANGUAGE_IRISH               = 35,
+   RETRO_LANGUAGE_THAI                = 36,
    RETRO_LANGUAGE_LAST,
 
    /** Defined to ensure that <tt>sizeof(retro_language) == sizeof(int)</tt>. Do not use. */
@@ -4229,6 +4230,9 @@ struct retro_log_callback
 
 /** Indicates CPU support for the ASIMD instruction set. */
 #define RETRO_SIMD_ASIMD    (1 << 21)
+
+/** Indicates CPU support for the AVX512 instruction set. */
+#define RETRO_SIMD_AVX512   (1 << 22)
 
 /** @} */
 

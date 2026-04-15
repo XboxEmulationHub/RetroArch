@@ -21,7 +21,6 @@
 
 #include <compat/strl.h>
 #include <features/features_cpu.h>
-#include <string/stdstring.h>
 
 #ifdef _3DS
 #include <3ds/types.h>
@@ -369,11 +368,11 @@ static bool video_thread_handle_packet(
           * thread sends command right after frame update. */
          break;
 
-      case CMD_POKE_SET_HDR_MAX_NITS:
-         if (thr->driver_data && thr->poke && thr->poke->set_hdr_max_nits)
-            thr->poke->set_hdr_max_nits(
+      case CMD_POKE_SET_HDR_MENU_NITS:
+         if (thr->driver_data && thr->poke && thr->poke->set_hdr_menu_nits)
+            thr->poke->set_hdr_menu_nits(
                thr->driver_data,
-               pkt.data.hdr.max_nits
+               pkt.data.hdr.menu_nits
             );
          video_thread_reply(thr, &pkt);
          break;
@@ -1031,15 +1030,15 @@ static void thread_set_filtering(void *data,
    }
 }
 
-static void thread_set_hdr_max_nits(void *data, float max_nits)
+static void thread_set_hdr_menu_nits(void *data, float menu_nits)
 {
    thread_video_t *thr = (thread_video_t*)data;
 
    if (thr)
    {
       thread_packet_t pkt;
-      pkt.type              = CMD_POKE_SET_HDR_MAX_NITS;
-      pkt.data.hdr.max_nits = max_nits;
+      pkt.type               = CMD_POKE_SET_HDR_MENU_NITS;
+      pkt.data.hdr.menu_nits = menu_nits;
 
       video_thread_send_and_wait_user_to_thread(thr, &pkt);
    }
@@ -1310,7 +1309,7 @@ static const video_poke_interface_t thread_poke = {
    thread_get_current_shader,
    NULL, /* get_current_software_framebuffer */
    NULL, /* get_hw_render_interface */
-   thread_set_hdr_max_nits,
+   thread_set_hdr_menu_nits,
    thread_set_hdr_paper_white_nits,
    thread_set_hdr_expand_gamut,
    thread_set_hdr_scanlines,
@@ -1366,6 +1365,8 @@ static const video_driver_t video_thread = {
 #endif
    video_thread_get_poke_interface,
    NULL, /* wrap_type_to_enum */
+   NULL, /* shader_load_begin */
+   NULL, /* shader_load_step */
 #ifdef HAVE_GFX_WIDGETS
    video_thread_wrapper_gfx_widgets_enabled
 #endif

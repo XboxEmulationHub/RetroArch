@@ -522,21 +522,21 @@ unsigned cpu_features_get_core_amount(void)
    CFGU_GetSystemModel(&device_model);/*(0 = O3DS, 1 = O3DSXL, 2 = N3DS, 3 = 2DS, 4 = N3DSXL, 5 = N2DSXL)*/
    switch (device_model)
    {
-		case 0:
-		case 1:
-		case 3:
-			/*Old 3/2DS*/
-			return 2;
+      case 0:
+      case 1:
+      case 3:
+         /*Old 3/2DS*/
+         return 2;
 
-		case 2:
-		case 4:
-		case 5:
-			/*New 3/2DS*/
-			return 4;
+      case 2:
+      case 4:
+      case 5:
+         /*New 3/2DS*/
+         return 4;
 
-		default:
-			/*Unknown Device Or Check Failed*/
-			break;
+      default:
+         /*Unknown Device Or Check Failed*/
+         break;
    }
    return 1;
 #elif defined(WIIU)
@@ -639,6 +639,9 @@ uint64_t cpu_features_get(void)
    if (sysctlbyname("hw.optional.avx2_0", NULL, &_len, NULL, 0) == 0)
       cpu |= RETRO_SIMD_AVX2;
    _len            = sizeof(size_t);
+   if (sysctlbyname("hw.optional.avx512f", NULL, &_len, NULL, 0) == 0)
+      cpu |= RETRO_SIMD_AVX512;
+   _len            = sizeof(size_t);
    if (sysctlbyname("hw.optional.altivec", NULL, &_len, NULL, 0) == 0)
       cpu |= RETRO_SIMD_VMX;
 #else
@@ -670,12 +673,13 @@ uint64_t cpu_features_get(void)
    /* printf("[CPUID]: Vendor: %s\n", vendor); */
 
    vendor_is_intel = (
-         flags[1] == VENDOR_INTEL_b &&
-         flags[2] == VENDOR_INTEL_c &&
-         flags[3] == VENDOR_INTEL_d);
+            flags[1] == VENDOR_INTEL_b 
+         && flags[2] == VENDOR_INTEL_c
+         && flags[3] == VENDOR_INTEL_d);
 
    max_flag = flags[0];
-   if (max_flag < 1) /* Does CPUID not support func = 1? (unlikely ...) */
+   /* Does CPUID not support func = 1? (unlikely ...) */
+   if (max_flag < 1) 
       return 0;
 
    x86_cpuid(1, flags);
@@ -722,9 +726,48 @@ uint64_t cpu_features_get(void)
 
    if (max_flag >= 7)
    {
-      x86_cpuid(7, flags);
-      if (flags[1] & (1 << 5))
+      /* CPUID leaf 7 sub-leaf 0 requires ECX = 0.
+       * x86_cpuid() does not set ECX, so call cpuid directly. */
+      int32_t flags7[4];
+#if defined(__GNUC__)
+      __asm__ volatile (
+            "mov %%" REG_b ", %%" REG_S "\n"
+            "cpuid\n"
+            "xchg %%" REG_b ", %%" REG_S "\n"
+            : "=a"(flags7[0]), "=S"(flags7[1]), "=c"(flags7[2]), "=d"(flags7[3])
+            : "a"(7), "c"(0));
+#elif defined(_MSC_VER) && INT_MAX == 2147483647
+#if _MSC_VER >= 1500
+      __cpuidex((int*)flags7, 7, 0);
+#else
+      {
+         int *p = (int*)flags7;
+         __asm {
+            mov eax, 7
+            xor ecx, ecx
+            cpuid
+            mov esi, p
+            mov [esi],      eax
+            mov [esi + 4],  ebx
+            mov [esi + 8],  ecx
+            mov [esi + 12], edx
+         }
+      }
+#endif
+#else
+      memset(flags7, 0, sizeof(flags7));
+#endif
+
+      if (flags7[1] & (1 << 5))
          cpu |= RETRO_SIMD_AVX2;
+
+      /* AVX-512 Foundation detection.
+       * Requires CPUID leaf 7 sub-leaf 0 EBX bit 16 (AVX-512F),
+       * and OS support for saving ZMM state:
+       * xgetbv XCR0 bits 1,2 (SSE/AVX) and 5,6,7 (opmask, ZMM_Hi256, Hi16_ZMM). */
+      if ((flags7[1] & (1 << 16))
+            && ((xgetbv_x86(0) & 0xe6) == 0xe6))
+         cpu |= RETRO_SIMD_AVX512;
    }
 
    x86_cpuid(0x80000000, flags);
@@ -789,7 +832,7 @@ void cpu_features_get_model_name(char *s, int len)
       uint8_t s[16];
    } flags;
    int i, j;
-   int pos = 0;
+   int pos    = 0;
    bool start = false;
 
    if (!s)
@@ -810,8 +853,8 @@ void cpu_features_get_model_name(char *s, int len)
       {
          if (!start && flags.s[j] == ' ')
             continue;
-         else
-            start = true;
+
+         start = true;
 
          if (pos == len - 1)
          {
@@ -878,9 +921,11 @@ end:
                   const char *p = strchr(buf, ':');
                   if (p)
                   {
+                     size_t len2;
                      p++; // skip ':'
-                     while (*p == ' ' || *p == '\t') p++;
-                     size_t len2 = strcspn(p, "\r\n");
+                     while (*p == ' ' || *p == '\t')
+                        p++;
+                     len2 = strcspn(p, "\r\n");
 
                      if (len2 > 0)
                      {
@@ -892,15 +937,15 @@ end:
 
                            if (s[0] != '\0')
                            {
-                              size_t oldlen = strlen(s);
-                              char *combined = malloc(oldlen + len2 + 4);
+                              size_t oldlen  = strlen(s);
+                              char *combined = (char*)malloc(oldlen + len2 + 4);
                               if (combined)
                               {
                                  memcpy(combined, s, oldlen);
-                                 combined[oldlen] = ' ';
+                                 combined[oldlen]     = ' ';
                                  combined[oldlen + 1] = '(';
                                  memcpy(combined + oldlen + 2, tmp, len2);
-                                 combined[oldlen + 2 + len2] = ')';
+                                 combined[oldlen + 2 + len2]     = ')';
                                  combined[oldlen + 2 + len2 + 1] = '\0';
 
                                  strlcpy(s, combined, len);
@@ -908,9 +953,7 @@ end:
                               }
                            }
                            else
-                           {
                               strlcpy(s, tmp, len);
-                           }
                            free(tmp);
                         }
                      }

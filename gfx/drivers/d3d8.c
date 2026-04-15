@@ -39,11 +39,13 @@
 #include <file/file_path.h>
 #include <string/stdstring.h>
 #include <retro_math.h>
+#include <gfx/math/matrix_4x4.h>
 
 #include <d3d8.h>
 
 #include <defines/d3d_defines.h>
 #include "../common/d3d_common.h"
+
 #include "../../configuration.h"
 #include "../../retroarch.h"
 #include "../../dynamic.h"
@@ -337,16 +339,16 @@ static void *d3d8_texture_new(LPDIRECT3DDEVICE8 dev,
 
 static void d3d8_set_mvp(void *data, const void *mat_data)
 {
-   struct d3d_matrix matrix;
+   math_matrix_4x4 matrix;
    LPDIRECT3DDEVICE8 d3dr     = (LPDIRECT3DDEVICE8)data;
 
-   d3d_matrix_identity(&matrix);
+   matrix_4x4_identity(matrix);
 
    IDirect3DDevice8_SetTransform(d3dr,
          D3DTS_PROJECTION, (D3DMATRIX*)&matrix);
    IDirect3DDevice8_SetTransform(d3dr,
          D3DTS_VIEW, (D3DMATRIX*)&matrix);
-   d3d_matrix_transpose(&matrix, mat_data);
+   matrix_4x4_transpose(matrix, (*(const math_matrix_4x4*)mat_data));
    IDirect3DDevice8_SetTransform(d3dr, D3DTS_WORLD, (D3DMATRIX*)&matrix);
 }
 
@@ -613,7 +615,7 @@ static INT32 gfx_display_prim_to_d3d8_enum(
    {
       case GFX_DISPLAY_PRIM_TRIANGLES:
       case GFX_DISPLAY_PRIM_TRIANGLESTRIP:
-         return D3DPT_COMM_TRIANGLESTRIP;
+         return D3DPT_TRIANGLESTRIP;
       case GFX_DISPLAY_PRIM_NONE:
       default:
          break;
@@ -746,7 +748,7 @@ static void gfx_display_d3d8_draw(gfx_display_ctx_draw_t *draw,
          0);
    matrix_4x4_multiply(m1, mop, m2);
    matrix_4x4_multiply(m2, d3d->mvp_transposed, m1);
-   d3d_matrix_transpose(&m1, &m2);
+   matrix_4x4_transpose(m1, m2);
 
    d3d8_set_mvp(dev, &m1);
 
@@ -755,13 +757,13 @@ static void gfx_display_d3d8_draw(gfx_display_ctx_draw_t *draw,
       IDirect3DDevice8_SetTexture(dev, 0,
             (IDirect3DBaseTexture8*)draw->texture);
       IDirect3DDevice8_SetTextureStageState(dev, 0,
-            (D3DTEXTURESTAGESTATETYPE)D3DTSS_ADDRESSU, D3DTADDRESS_COMM_CLAMP);
+            (D3DTEXTURESTAGESTATETYPE)D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
       IDirect3DDevice8_SetTextureStageState(dev, 0,
-            (D3DTEXTURESTAGESTATETYPE)D3DTSS_ADDRESSV, D3DTADDRESS_COMM_CLAMP);
+            (D3DTEXTURESTAGESTATETYPE)D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
       IDirect3DDevice8_SetTextureStageState(dev, 0,
-            (D3DTEXTURESTAGESTATETYPE)D3DTSS_MINFILTER, D3DTEXF_COMM_LINEAR);
+            (D3DTEXTURESTAGESTATETYPE)D3DTSS_MINFILTER, D3DTEXF_LINEAR);
       IDirect3DDevice8_SetTextureStageState(dev, 0,
-            (D3DTEXTURESTAGESTATETYPE)D3DTSS_MAGFILTER, D3DTEXF_COMM_LINEAR);
+            (D3DTEXTURESTAGESTATETYPE)D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
    }
 
    type  = gfx_display_prim_to_d3d8_enum(draw->prim_type);
@@ -1227,10 +1229,14 @@ static void d3d8_set_viewport(void *data,
       bool force_full,
       bool allow_rotate)
 {
-   struct d3d_matrix proj, ortho, rot, matrix;
    int x               = 0;
    int y               = 0;
    d3d8_video_t *d3d = (d3d8_video_t*)data;
+
+   /* Pre-computed transpose(ortho(0,1,0,1,0,1)) — constant */
+   static const math_matrix_4x4 k_ortho_mvp = {{
+      2, 0, 0,-1,   0, 2, 0,-1,   0, 0, 1, 0,   0, 0, 0, 1
+   }};
 
    d3d8_calculate_rect(data, &width, &height, &x, &y,
          force_full, allow_rotate);
@@ -1248,13 +1254,24 @@ static void d3d8_set_viewport(void *data,
    d3d->out_vp.MinZ   = 0.0f;
    d3d->out_vp.MaxZ   = 0.0f;
 
-   d3d_matrix_identity(&ortho);
-   d3d_matrix_ortho_off_center_lh(&ortho, 0, 1, 0, 1, 0.0f, 1.0f);
-   d3d_matrix_identity(&rot);
-   d3d_matrix_rotation_z(&rot, d3d->dev_rotation * (M_PI / 2.0));
-   d3d_matrix_multiply(&proj, &ortho, &rot);
-   d3d_matrix_transpose(&d3d->mvp, &ortho);
-   d3d_matrix_transpose(&d3d->mvp_rotate, &matrix);
+   d3d->mvp = k_ortho_mvp;
+
+   /* Compute rotated MVP: transpose(ortho(0,1,0,1,0,1) * rot_z(angle))
+    * Folded into a single analytical formula. */
+   {
+      float angle = d3d->dev_rotation * (M_PI / 2.0);
+      float c     = cosf(angle);
+      float s     = sinf(angle);
+      memset(&d3d->mvp_rotate, 0, sizeof(d3d->mvp_rotate));
+      MAT_ELEM_4X4(d3d->mvp_rotate, 0, 0) =  2.0f * c;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 1, 0) = -2.0f * s;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 3, 0) = -c + s;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 0, 1) =  2.0f * s;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 1, 1) =  2.0f * c;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 3, 1) = -s - c;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 2, 2) =  1.0f;
+      MAT_ELEM_4X4(d3d->mvp_rotate, 3, 3) =  1.0f;
+   }
 }
 
 static bool d3d8_initialize(d3d8_video_t *d3d, const video_info_t *info)
@@ -1273,17 +1290,7 @@ static bool d3d8_initialize(d3d8_video_t *d3d, const video_info_t *info)
    else if (d3d->needs_restore)
    {
       D3DPRESENT_PARAMETERS d3dpp;
-
       d3d8_make_d3dpp(d3d, info, &d3dpp);
-
-      /* the D3DX font driver uses POOL_DEFAULT resources
-       * and will prevent a clean reset here
-       * another approach would be to keep track of all created D3D
-       * font objects and free/realloc them around the d3d_reset call  */
-#ifdef HAVE_MENU
-      menu_driver_ctl(RARCH_MENU_CTL_DEINIT, NULL);
-#endif
-
       if (!d3d8_reset(d3d->dev, &d3dpp))
       {
          d3d8_deinitialize(d3d);
@@ -1339,9 +1346,17 @@ static bool d3d8_initialize(d3d8_video_t *d3d, const video_info_t *info)
    if (!d3d->menu_display.buffer)
       return false;
 
-   d3d_matrix_identity(&d3d->mvp_transposed);
-   d3d_matrix_ortho_off_center_lh(&d3d->mvp_transposed, 0, 1, 0, 1, 0, 1);
-   d3d_matrix_transpose(&d3d->mvp, &d3d->mvp_transposed);
+   /* Pre-computed D3D left-handed orthographic projection (0,1,0,1,0,1) */
+   {
+      static const math_matrix_4x4 k_ortho_transposed = {{
+         2, 0, 0, 0,   0, 2, 0, 0,   0, 0, 1, 0,   -1, -1, 0, 1
+      }};
+      static const math_matrix_4x4 k_ortho = {{
+         2, 0, 0,-1,   0, 2, 0,-1,   0, 0, 1, 0,   0, 0, 0, 1
+      }};
+      d3d->mvp_transposed = k_ortho_transposed;
+      d3d->mvp            = k_ortho;
+   }
 
    IDirect3DDevice8_SetRenderState(d3d->dev, D3DRS_CULLMODE, D3DCULL_NONE);
 
@@ -1568,7 +1583,7 @@ static bool d3d8_init_internal(d3d8_video_t *d3d,
    pass->fbo.type_x                      = pass->fbo.type_y;
    pass->fbo.flags                      |= FBO_SCALE_FLAG_VALID;
 
-   if (!string_is_empty(d3d->shader_path))
+   if (d3d->shader_path && *d3d->shader_path)
       strlcpy(pass->source.path, d3d->shader_path,
             sizeof(pass->source.path));
 
@@ -1671,7 +1686,7 @@ static void d3d8_free(void *data)
 
    d3d8_deinitialize(d3d);
 
-   if (!string_is_empty(d3d->shader_path))
+   if (d3d->shader_path && *d3d->shader_path)
       free(d3d->shader_path);
 
    IDirect3DDevice8_Release(d3d->dev);
@@ -1939,7 +1954,7 @@ static bool d3d8_frame(void *data, const void *frame,
    }
 #endif
 
-   if (!string_is_empty(msg))
+   if (msg && *msg)
    {
       IDirect3DDevice8_SetViewport(d3d->dev, (D3DVIEWPORT8*)&screen_vp);
       IDirect3DDevice8_BeginScene(d3d->dev);
@@ -2172,7 +2187,7 @@ static const video_poke_interface_t d3d_poke_interface = {
    NULL, /* get_current_shader */
    NULL, /* get_current_software_framebuffer */
    NULL, /* get_hw_render_interface */
-   NULL, /* set_hdr_max_nits */
+   NULL, /* set_hdr_menu_nits */
    NULL, /* set_hdr_paper_white_nits */
    NULL, /* set_hdr_expand_gamut */
    NULL, /* set_hdr_scanlines */
@@ -2216,6 +2231,8 @@ video_driver_t video_d3d8 = {
 #endif
    d3d8_get_poke_interface,
    NULL, /* wrap_type_to_enum */
+   NULL, /* shader_load_begin */
+   NULL, /* shader_load_step */
 #ifdef HAVE_GFX_WIDGETS
    NULL  /* gfx_widgets_enabled */
 #endif

@@ -539,7 +539,7 @@ static INLINE void write_quad6(SpriteVertex *pv,
 }
 
 - (void)renderMessage:(const char *)msg
-                height:(unsigned)height
+               height:(unsigned)height
                 scale:(float)scale
                 color:(vector_float4)color
                  posX:(float)posX
@@ -549,18 +549,16 @@ static INLINE void write_quad6(SpriteVertex *pv,
    int lines = 0;
    float line_height;
    struct font_line_metrics *line_metrics = NULL;
-
    if (!_font_driver || !_font_data)
       return;
-
    _font_driver->get_line_metrics(_font_data, &line_metrics);
    line_height = line_metrics->height * scale / height;
-
    for (;;)
    {
-      const char *delim  = strchr(msg, '\n');
-      size_t     msg_len = delim ? (unsigned)(delim - msg) : strlen(msg);
-
+      const char *delim = msg;
+      while (*delim && *delim != '\n')
+         delim++;
+      size_t msg_len = (size_t)(delim - msg);
       /* Draw the line */
       [self _renderLine:msg
                  length:msg_len
@@ -569,10 +567,8 @@ static INLINE void write_quad6(SpriteVertex *pv,
                    posX:posX
                    posY:posY - (float)lines * line_height
                 aligned:aligned];
-
-      if (!delim)
+      if (!*delim)
          break;
-
       msg += msg_len + 1;
       lines++;
    }
@@ -1049,7 +1045,8 @@ font_renderer_t metal_raster_font = {
    {
       float r, g, b, a;
       int msg_width         =
-         font_driver_get_message_width(NULL, msg, strlen(msg), 1.0f);
+         font_driver_get_message_width(NULL,
+               msg, strlen(msg), 1.0f);
       float font_size       = settings->floats.video_font_size;
       unsigned bgcolor_red
                             = settings->uints.video_msg_bgcolor_red;
@@ -2519,12 +2516,12 @@ static bool metal_set_shader(void *data,
    {
       if (type != RARCH_SHADER_SLANG)
       {
-         if (!string_is_empty(path) && type != RARCH_SHADER_SLANG)
+         if (path && *path && type != RARCH_SHADER_SLANG)
             RARCH_WARN("[Metal] Only Slang shaders are supported. Falling back to stock.\n");
          path = NULL;
       }
 
-      if (string_is_empty(path))
+      if (!path || !*path)
       {
          [md.frameView clearShader];
          return true;
@@ -2767,7 +2764,7 @@ static const video_poke_interface_t metal_poke_interface = {
    metal_get_current_shader,
    NULL, /* get_current_software_framebuffer */
    NULL, /* get_hw_render_interface */
-   NULL, /* set_hdr_max_nits */
+   NULL, /* set_hdr_menu_nits */
    NULL, /* set_hdr_paper_white_nits */
    NULL, /* set_hdr_contrast */
    NULL  /* set_hdr_expand_gamut */
@@ -2870,6 +2867,8 @@ video_driver_t video_metal = {
 #endif
    metal_get_poke_interface,
    NULL, /* wrap_type_to_enum */
+   NULL, /* shader_load_begin */
+   NULL, /* shader_load_step */
 #ifdef HAVE_GFX_WIDGETS
    metal_widgets_enabled
 #endif

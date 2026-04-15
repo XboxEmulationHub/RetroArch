@@ -157,6 +157,42 @@ static void nbio_mmap_unix_free(void *data)
    free(handle);
 }
 
+static int nbio_mmap_unix_get_fd(void *data)
+{
+   struct nbio_mmap_unix_t* handle = (struct nbio_mmap_unix_t*)data;
+   if (handle)
+      return handle->fd;
+   return -1;
+}
+
+static bool nbio_mmap_unix_get_progress(void *data,
+      size_t *completed, size_t *total)
+{
+   struct nbio_mmap_unix_t* handle = (struct nbio_mmap_unix_t*)data;
+   if (!handle)
+   {
+      if (completed) *completed = 0;
+      if (total)     *total     = 0;
+      return false;
+   }
+   /* mmap is always "complete" — pages fault on demand */
+   if (completed) *completed = handle->len;
+   if (total)     *total     = handle->len;
+   return false;
+}
+
+static void *nbio_mmap_unix_load_entire(void *data, size_t *len)
+{
+   /* mmap: data is already mapped — just return the pointer.
+    * No begin_read/iterate ceremony needed. */
+   struct nbio_mmap_unix_t* handle = (struct nbio_mmap_unix_t*)data;
+   if (!handle)
+      return NULL;
+   if (len)
+      *len = handle->len;
+   return handle->ptr;
+}
+
 nbio_intf_t nbio_mmap_unix = {
    nbio_mmap_unix_open,
    nbio_mmap_unix_begin_read,
@@ -166,6 +202,10 @@ nbio_intf_t nbio_mmap_unix = {
    nbio_mmap_unix_get_ptr,
    nbio_mmap_unix_cancel,
    nbio_mmap_unix_free,
+   NULL, /* set_chunk_size - mmap doesn't chunk */
+   nbio_mmap_unix_get_fd,
+   nbio_mmap_unix_get_progress,
+   nbio_mmap_unix_load_entire,
    "nbio_mmap_unix",
 };
 #else
@@ -178,6 +218,10 @@ nbio_intf_t nbio_mmap_unix = {
    NULL,
    NULL,
    NULL,
+   NULL, /* set_chunk_size */
+   NULL, /* get_fd */
+   NULL, /* get_progress */
+   NULL, /* load_entire */
    "nbio_mmap_unix",
 };
 

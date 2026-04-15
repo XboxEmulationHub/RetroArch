@@ -347,9 +347,7 @@ OBJ += \
        $(LIBRETRO_COMM_DIR)/queues/message_queue.o
 
 ifeq ($(HAVE_MENU), 1)
-   OBJ += \
-       gfx/gfx_thumbnail_path.o \
-       gfx/gfx_thumbnail.o
+   OBJ += gfx/gfx_thumbnail.o
 endif
 
 ifeq ($(HAVE_MICROPHONE), 1)
@@ -434,6 +432,7 @@ OBJ += \
        $(LIBRETRO_COMM_DIR)/playlists/label_sanitization.o \
        $(LIBRETRO_COMM_DIR)/time/rtime.o \
        manual_content_scan.o \
+       tasks/task_database.o \
        disk_control_interface.o
 
 ifeq ($(HAVE_CONFIGFILE), 1)
@@ -526,34 +525,21 @@ endif
 
 ifeq ($(HAVE_QT), 1)
    OBJ += ui/drivers/ui_qt.o \
-          ui/drivers/qt/gridview.o \
-          ui/drivers/qt/qt_dialogs.o \
-          ui/drivers/qt/qt_widgets.o \
-          ui/drivers/qt/qt_playlist.o \
-          ui/drivers/qt/qt_downloads.o
-    ifeq ($(HAVE_MENU), 1)
-       OBJ += ui/drivers/qt/qt_options.o
-    endif
+          ui/drivers/ui_qt_widgets.o
 
    MOC_HEADERS += ui/drivers/ui_qt.h \
-                  ui/drivers/qt/ui_qt_load_core_window.h \
-                  ui/drivers/qt/gridview.h \
-                  ui/drivers/qt/qt_dialogs.h \
-                  ui/drivers/qt/qt_widgets.h
-   ifeq ($(HAVE_MENU), 1)
-      MOC_HEADERS += ui/drivers/qt/qt_options.h
-   endif
+                  ui/drivers/ui_qt_widgets.h
 
    DEFINES += -DHAVE_MAIN
 ifeq ($(HAVE_QT6), 1)
-   CXXFLAGS += -DQT_DISABLE_DEPRECATED_BEFORE=0x060000 $(QT6CORE_CFLAGS) $(QT6GUI_CFLAGS) $(QT6WIDGETS_CFLAGS) $(QT6CONCURRENT_CFLAGS) $(QT6NETWORK_CFLAGS)
+   CXXFLAGS += -DQT_DISABLE_DEPRECATED_BEFORE=0x060000 $(QT6CORE_CFLAGS) $(QT6GUI_CFLAGS) $(QT6WIDGETS_CFLAGS)
    #DEF_FLAGS += $(QT6WEBENGINE_CFLAGS)
-   LIBS += $(QT6CORE_LIBS) $(QT6GUI_LIBS) $(QT6WIDGETS_LIBS) $(QT6CONCURRENT_LIBS) $(QT6NETWORK_LIBS)
+   LIBS += $(QT6CORE_LIBS) $(QT6GUI_LIBS) $(QT6WIDGETS_LIBS)
    #LIBS += $(QT6WEBENGINE_LIBS)
 else
-   DEF_FLAGS += $(QT5CORE_CFLAGS) $(QT5GUI_CFLAGS) $(QT5WIDGETS_CFLAGS) $(QT5CONCURRENT_CFLAGS) $(QT5NETWORK_CFLAGS)
+   DEF_FLAGS += $(QT5CORE_CFLAGS) $(QT5GUI_CFLAGS) $(QT5WIDGETS_CFLAGS)
    #DEF_FLAGS += $(QT5WEBENGINE_CFLAGS)
-   LIBS += $(QT5CORE_LIBS) $(QT5GUI_LIBS) $(QT5WIDGETS_LIBS) $(QT5CONCURRENT_LIBS) $(QT5NETWORK_LIBS)
+   LIBS += $(QT5CORE_LIBS) $(QT5GUI_LIBS) $(QT5WIDGETS_LIBS)
    #LIBS += $(QT5WEBENGINE_LIBS)
 endif
 
@@ -583,7 +569,6 @@ ifeq ($(HAVE_LIBRETRODB), 1)
           libretro-db/rmsgpack.o \
           libretro-db/rmsgpack_dom.o \
           database_info.o \
-          tasks/task_database.o \
           tasks/task_database_cue.o
 
    ifeq ($(HAVE_MENU), 1)
@@ -960,6 +945,12 @@ ifeq ($(HAVE_WASAPI), 1)
    LIBS += -lole32 -lksuser
 endif
 
+ifeq ($(HAVE_ASIO), 1)
+   OBJ += audio/drivers/asio.o
+   DEFINES += -DHAVE_ASIO
+   LIBS += -lole32
+endif
+
 ifeq ($(HAVE_XAUDIO), 1)
    OBJ += audio/drivers/xaudio.o
    DEFINES += -DHAVE_XAUDIO
@@ -1238,8 +1229,8 @@ endif
 
 ifeq ($(TARGET), retroarch_orbis)
    OBJ +=  input/drivers/ps4_input.o \
-			  input/drivers_joypad/ps4_joypad.o \
-			  audio/drivers/psp_audio.o
+	   input/drivers_joypad/ps4_joypad.o \
+	   audio/drivers/psp_audio.o
 endif
 
 ifeq ($(TARGET), retroarch_vita)
@@ -1460,6 +1451,7 @@ ifneq ($(findstring Win32,$(OS)),)
 ifeq ($(HAVE_WINRAWINPUT), 1)
    DEFINES += -DHAVE_WINRAWINPUT
    OBJ     += input/drivers/winraw_input.o
+   OBJ     += input/drivers_joypad/winraw_joypad.o
 endif
 endif
 
@@ -1601,8 +1593,6 @@ ifeq ($(HAVE_GL_CONTEXT), 1)
 
    ifeq ($(HAVE_FFMPEG), 1)
       ifneq ($(HAVE_OPENGLES), 1)
-         OBJ += cores/libretro-ffmpeg/ffmpeg_fft.o
-         DEFINES += -DHAVE_GL_FFT
          INCLUDE_DIRS += -I$(DEPS_DIR)
       endif
    endif
@@ -1786,17 +1776,10 @@ endif
 ifeq ($(HAVE_D3D9), 1)
    HAVE_D3D_COMMON = 1
    DEFINES += -DHAVE_D3D9
-   ifeq ($(HAVE_D3DX9), 1)
-      HAVE_D3DX_COMMON = 1
-   endif
    ifneq ($(HAVE_DYLIB), 1)
       LIBS += $(D3D9_LIBS)
-      ifeq ($(HAVE_D3DX9), 1)
-         LIBS += $(D3DX9_LIBS)
-      endif
    endif
    HAVE_DX_COMMON  = 1
-   OBJ  += gfx/drivers_font/d3d9x_w32_font.o
    ifeq ($(HAVE_CG), 1)
       LIBS += -lcgD3D9
       OBJ  += gfx/drivers/d3d9cg.o
@@ -1832,19 +1815,9 @@ ifeq ($(HAVE_D3D8), 1)
    HAVE_D3D_COMMON = 1
    HAVE_DX_COMMON  = 1
    DEFINES += -DHAVE_D3D8
-   ifeq ($(HAVE_D3DX8), 1)
-      HAVE_D3DX_COMMON = 1
-   endif
    ifneq ($(HAVE_DYLIB), 1)
       LIBS += $(D3D8_LIBS)
-      ifeq ($(HAVE_D3DX8), 1)
-         LIBS += $(D3DX8_LIBS)
-      endif
    endif
-endif
-
-ifeq ($(HAVE_D3DX_COMMON), 1)
-   DEFINES += -DHAVE_D3DX
 endif
 
 ifeq ($(HAVE_DX_COMMON), 1)
@@ -1886,8 +1859,6 @@ ifeq ($(HAVE_SLANG),1)
    DEFINES += -DHAVE_SLANG
    OBJ += gfx/drivers_shader/slang_process.o
    OBJ += gfx/drivers_shader/glslang_util.o
-   OBJ += gfx/drivers_shader/glslang_util_cxx.o
-   OBJ += gfx/drivers_shader/slang_reflection.o
 endif
 
 ifeq ($(HAVE_SHADERS_COMMON), 1)
@@ -2022,7 +1993,8 @@ ifeq ($(HAVE_ZSTD),1)
            $(DEPS_DIR)/zstd/lib/decompress/zstd_decompress.o \
            $(DEPS_DIR)/zstd/lib/decompress/zstd_decompress_block.o
 
-   OBJ +=  $(ZSOBJ)
+   OBJ +=  $(LIBRETRO_COMM_DIR)/file/archive_file_zstd.o \
+           $(ZSOBJ)
 endif
 
 ifeq ($(HAVE_IBXM), 1)
@@ -2568,8 +2540,6 @@ endif
 ifeq ($(HAVE_FFMPEG), 1)
    OBJ += record/drivers/record_ffmpeg.o \
           cores/libretro-ffmpeg/ffmpeg_core.o \
-          cores/libretro-ffmpeg/packet_buffer.o \
-          cores/libretro-ffmpeg/video_buffer.o \
           $(LIBRETRO_COMM_DIR)/rthreads/tpool.o
 
    LIBS += $(AVCODEC_LIBS) $(AVFORMAT_LIBS) $(AVUTIL_LIBS) $(SWSCALE_LIBS) $(SWRESAMPLE_LIBS) $(FFMPEG_LIBS) $(AVDEVICE_LIBS)

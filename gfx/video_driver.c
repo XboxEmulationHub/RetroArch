@@ -65,6 +65,9 @@
 #include "../list_special.h"
 #include "../retroarch.h"
 #include "../verbosity.h"
+#include "../command.h"
+#include "../configuration.h"
+#include "video_shader_parse.h"
 
 #define TIME_TO_FPS(last_time, new_time, frames) ((1000000.0f * (frames)) / ((new_time) - (last_time)))
 
@@ -340,6 +343,9 @@ video_driver_t video_null = {
   NULL, /* overlay_interface */
 #endif
   NULL, /* get_poke_interface */
+   NULL, /* wrap_type_to_enum */
+   NULL, /* shader_load_begin */
+   NULL, /* shader_load_step */
 };
 
 const video_driver_t *video_drivers[] = {
@@ -484,6 +490,120 @@ video_driver_state_t *video_state_get_ptr(void)
    return &video_driver_st;
 }
 
+/**
+ * video_driver_shader_deferred_tick:
+ *
+ * Called once per runloop iteration. If a deferred shader
+ * load is in progress, compiles one pass per frame and
+ * handles completion or failure.
+ **/
+void video_driver_shader_deferred_tick(void)
+{
+   video_driver_state_t *video_st  = &video_driver_st;
+   shader_load_deferred_t *d       = &video_st->shader_deferred;
+
+   if (d->state != SHADER_LOAD_COMPILING)
+      return;
+
+   if (  !video_st->current_video
+      || !video_st->current_video->shader_load_step)
+   {
+      d->state = SHADER_LOAD_FAILED;
+      return;
+   }
+
+   if (!video_st->current_video->shader_load_step(
+            video_st->data, d))
+   {
+      /* shader_load_step returned false: no more work.
+       * The step function sets d->state to DONE or FAILED. */
+      if (d->state == SHADER_LOAD_DONE)
+      {
+         settings_t *settings = config_get_ptr();
+
+         if (d->preset_path[0] != '\0')
+         {
+            configuration_set_bool(settings,
+                  settings->bools.video_shader_enable, true);
+
+#ifdef HAVE_MENU
+            {
+#if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
+               struct video_shader *shader = menu_shader_get();
+               if (shader)
+               {
+                  video_shader_load_preset_into_shader(
+                        d->preset_path, shader);
+                  shader->flags &= ~SHDR_FLAG_MODIFIED;
+               }
+#endif
+               menu_state_get_ptr()->flags |=
+                  MENU_ST_FLAG_ENTRIES_NEED_REFRESH;
+            }
+#endif
+         }
+
+         {
+            char msg[256];
+            const char *preset_file = path_basename_nocompression(
+                  d->preset_path);
+            snprintf(msg, sizeof(msg), "Shader: \"%s\"",
+                  preset_file ? preset_file : "N/A");
+#ifdef HAVE_GFX_WIDGETS
+            if (dispwidget_get_ptr()->active)
+               gfx_widget_set_generic_message(msg, 2000);
+            else
+#endif
+               runloop_msg_queue_push(msg, strlen(msg),
+                     1, 120, true, NULL,
+                     MESSAGE_QUEUE_ICON_DEFAULT,
+                     MESSAGE_QUEUE_CATEGORY_INFO);
+         }
+
+         RARCH_LOG("[Shaders] Deferred load complete: \"%s\".\n",
+               d->preset_path);
+         command_event(CMD_EVENT_SHADER_PRESET_LOADED, NULL);
+      }
+      else /* SHADER_LOAD_FAILED */
+      {
+         RARCH_ERR("[Shaders] Deferred shader load failed.\n");
+#ifdef HAVE_GFX_WIDGETS
+         if (dispwidget_get_ptr()->active)
+            gfx_widget_set_generic_message(
+                  "Shader preset failed to load.", 2000);
+         else
+#endif
+            runloop_msg_queue_push(
+                  "Shader preset failed to load.", 32,
+                  1, 180, true, NULL,
+                  MESSAGE_QUEUE_ICON_DEFAULT,
+                  MESSAGE_QUEUE_CATEGORY_ERROR);
+         command_event(CMD_EVENT_SHADER_PRESET_LOADED, NULL);
+      }
+
+      /* Reset to idle regardless */
+      d->state = SHADER_LOAD_IDLE;
+      d->driver_data = NULL;
+   }
+#ifdef HAVE_GFX_WIDGETS
+   else
+   {
+      /* Still compiling — show progress widget */
+      dispgfx_widget_t *p_dispwidget = dispwidget_get_ptr();
+      if (p_dispwidget->active && d->total_passes > 0)
+      {
+         char msg[64];
+         int8_t progress = (int8_t)(
+               (d->current_pass * 100) / d->total_passes);
+         snprintf(msg, sizeof(msg), "Loading shader %u/%u...",
+               d->current_pass, d->total_passes);
+         gfx_widget_set_progress_message(
+               msg, 200, 0, progress);
+      }
+   }
+#endif
+}
+
 #ifdef HAVE_THREADS
 void *video_thread_get_ptr(video_driver_state_t *video_st)
 {
@@ -611,32 +731,34 @@ const char *hw_render_context_name(
 
 static enum retro_hw_context_type hw_render_context_type(const char *s)
 {
+   size_t len = strlen(s) + 1;
+
 #ifdef HAVE_OPENGL_CORE
-   if (string_is_equal(s, "glcore"))
+   if (len >= 7 && memcmp(s, "glcore", 7) == 0)
       return RETRO_HW_CONTEXT_OPENGL_CORE;
 #endif
 #ifdef HAVE_OPENGL
-   if (string_is_equal(s, "gl"))
+   if (len >= 3 && memcmp(s, "gl", 3) == 0)
       return RETRO_HW_CONTEXT_OPENGL;
 #endif
 #ifdef HAVE_VULKAN
-   if (string_is_equal(s, "vulkan"))
+   if (len >= 7 && memcmp(s, "vulkan", 7) == 0)
       return RETRO_HW_CONTEXT_VULKAN;
 #endif
 #if defined(HAVE_D3D9) && defined(HAVE_HLSL)
-   if (string_is_equal(s, "d3d9_hlsl"))
+   if (len >= 10 && memcmp(s, "d3d9_hlsl", 10) == 0)
       return RETRO_HW_CONTEXT_D3D9;
 #endif
 #ifdef HAVE_D3D10
-   if (string_is_equal(s, "d3d10"))
+   if (len >= 6 && memcmp(s, "d3d10", 6) == 0)
       return RETRO_HW_CONTEXT_D3D10;
 #endif
 #ifdef HAVE_D3D11
-   if (string_is_equal(s, "d3d11"))
+   if (len >= 6 && memcmp(s, "d3d11", 6) == 0)
       return RETRO_HW_CONTEXT_D3D11;
 #endif
 #ifdef HAVE_D3D12
-   if (string_is_equal(s, "d3d12"))
+   if (len >= 6 && memcmp(s, "d3d12", 6) == 0)
       return RETRO_HW_CONTEXT_D3D12;
 #endif
    return RETRO_HW_CONTEXT_NONE;
@@ -945,7 +1067,7 @@ const char* config_get_video_driver_options(void)
    return char_list_new_special(STRING_LIST_VIDEO_DRIVERS, NULL);
 }
 
-void video_driver_pixel_converter_free(video_pixel_scaler_t *scalr)
+static void video_driver_pixel_converter_free(video_pixel_scaler_t *scalr)
 {
    if (!scalr)
       return;
@@ -964,7 +1086,7 @@ void video_driver_pixel_converter_free(video_pixel_scaler_t *scalr)
    free(scalr);
 }
 
-video_pixel_scaler_t *video_driver_pixel_converter_init(
+static video_pixel_scaler_t *video_driver_pixel_converter_init(
       const enum retro_pixel_format video_driver_pix_fmt,
       struct retro_hw_render_callback *hwr,
       unsigned size)
@@ -1027,7 +1149,7 @@ void video_driver_gpu_record_deinit(void)
    video_st->record_gpu_buffer = NULL;
 }
 
-void recording_dump_frame(
+static void recording_dump_frame(
       const void *data, unsigned width,
       unsigned height, size_t pitch, bool is_idle)
 {
@@ -1152,7 +1274,7 @@ void* video_display_server_init(enum rarch_display_type type)
       if (current_display_server->init)
          video_st->current_display_server_data = current_display_server->init();
 
-      if (!string_is_empty(current_display_server->ident))
+      if (current_display_server->ident && *current_display_server->ident)
       {
          RARCH_LOG("[Video] Found display server: \"%s\".\n",
                current_display_server->ident);
@@ -1649,6 +1771,24 @@ void video_driver_free_internal(void)
       input_st->current_data                = NULL;
    }
 
+   /* Cancel any in-progress deferred shader load before
+    * freeing the driver — the deferred state holds pointers
+    * into driver-owned GPU resources. */
+   {
+      shader_load_deferred_t *d = &video_st->shader_deferred;
+      if (d->state == SHADER_LOAD_COMPILING && d->driver_data)
+      {
+         if (vid && vid->shader_load_step)
+         {
+            d->current_pass = d->total_passes;
+            d->state        = SHADER_LOAD_FAILED; /* signal cancellation */
+            vid->shader_load_step(video_st->data, d);
+         }
+         d->state       = SHADER_LOAD_IDLE;
+         d->driver_data = NULL;
+      }
+   }
+
    if (video_st->data && vid && vid->free)
       vid->free(video_st->data);
 
@@ -1672,7 +1812,7 @@ void video_driver_free_internal(void)
       video_monitor_compute_fps_statistics(video_st->frame_time_count);
 }
 
-void video_driver_set_viewport_config(
+static void video_driver_set_viewport_config(
       struct retro_game_geometry *geom,
       float video_aspect_ratio,
       bool video_aspect_ratio_auto)
@@ -1699,10 +1839,11 @@ void video_driver_set_viewport_config(
       aspectratio_lut[ASPECT_RATIO_CONFIG].value = video_aspect_ratio;
 }
 
-void video_driver_set_viewport_square_pixel(struct retro_game_geometry *geom)
+static void video_driver_set_viewport_square_pixel(
+   struct retro_game_geometry *geom,
+   unsigned int rotation)
 {
    unsigned _len, i, aspect_x, aspect_y;
-   unsigned int rotation             = 0;
    unsigned highest                  = 1;
    unsigned width                    = geom->base_width;
    unsigned height                   = geom->base_height;
@@ -1710,7 +1851,6 @@ void video_driver_set_viewport_square_pixel(struct retro_game_geometry *geom)
    if (width == 0 || height == 0)
       return;
 
-   rotation                          = retroarch_get_rotation();
    _len                              = MIN(width, height);
 
    for (i = 1; i < _len; i++)
@@ -1963,7 +2103,6 @@ float video_driver_get_core_aspect(void)
    /* Flip rotated aspect */
    if ((retroarch_get_rotation() + retroarch_get_core_requested_rotation()) % 2)
       return (1.0f / out_aspect);
-
    return out_aspect;
 }
 
@@ -2120,11 +2259,13 @@ void video_driver_set_aspect_ratio(void)
    video_driver_state_t *video_st     = &video_driver_st;
    const video_poke_interface_t *poke = video_st->poke;
    unsigned  aspect_ratio_idx         = settings->uints.video_aspect_ratio_idx;
+   unsigned int rotation              = retroarch_get_rotation();
 
    switch (aspect_ratio_idx)
    {
       case ASPECT_RATIO_SQUARE:
-         video_driver_set_viewport_square_pixel(&video_st->av_info.geometry);
+         video_driver_set_viewport_square_pixel(&video_st->av_info.geometry,
+         rotation);
          break;
 
       case ASPECT_RATIO_CORE:
@@ -2156,15 +2297,6 @@ void video_driver_set_aspect_ratio(void)
 
    if (poke && poke->set_aspect_ratio)
       poke->set_aspect_ratio(video_st->data, aspect_ratio_idx);
-}
-
-void video_viewport_get_scaled_aspect(struct video_viewport *vp,
-      unsigned vp_width, unsigned vp_height, bool y_down)
-{
-   float device_aspect      = (float)vp_width / vp_height;
-   float desired_aspect     = video_driver_get_aspect_ratio();
-   video_viewport_get_scaled_aspect2(vp, vp_width, vp_height,
-         y_down, device_aspect, desired_aspect);
 }
 
 void video_viewport_get_scaled_aspect2(struct video_viewport *vp,
@@ -2258,275 +2390,6 @@ void video_viewport_get_scaled_aspect2(struct video_viewport *vp,
    video_st->scale_height = vp->height;
 }
 
-void video_driver_update_viewport(
-      struct video_viewport* vp, bool force_full, bool keep_aspect, bool y_down)
-{
-   settings_t *settings            = config_get_ptr();
-   bool video_scale_integer        = settings->bools.video_scale_integer;
-   video_driver_state_t *video_st  = &video_driver_st;
-   const gfx_ctx_driver_t *ctx     = &video_st->current_video_context;
-   void *ctx_data                  = (void*)video_st->context_data;
-   float video_driver_aspect_ratio = video_st->aspect_ratio;
-
-   vp->x                           = 0;
-   vp->y                           = 0;
-   vp->width                       = vp->full_width;
-   vp->height                      = vp->full_height;
-
-#ifdef HAVE_OVERLAY
-   /* Check if active overlay specifies viewport override.
-    * Only apply to game viewport, not UI elements (force_full=true) */
-   if (!force_full)
-   {
-      input_driver_state_t *input_st = input_state_get_ptr();
-      if (input_st && input_st->overlay_ptr && input_st->overlay_ptr->active)
-      {
-         const struct overlay *ol = input_st->overlay_ptr->active;
-         if (ol->flags & OVERLAY_HAS_VIEWPORT)
-         {
-            /* Calculate overlay's viewport bounds in pixels */
-            int ol_x      = (int)(ol->viewport.x * vp->full_width);
-            int ol_y      = (int)(ol->viewport.y * vp->full_height);
-            unsigned ol_w = (unsigned)(ol->viewport.w * vp->full_width);
-            unsigned ol_h = (unsigned)(ol->viewport.h * vp->full_height);
-            RARCH_LOG("[Overlay] Applying viewport override!\n");
-
-            if (ol->flags & OVERLAY_VIEWPORT_FILL)
-            {
-               /* Fill mode: stretch to fill overlay viewport exactly */
-               vp->x      = ol_x;
-               vp->y      = ol_y;
-               vp->width  = ol_w;
-               vp->height = ol_h;
-            }
-            else
-            {
-               /* Fit mode: preserve aspect ratio within overlay viewport */
-               float game_aspect = video_driver_get_aspect_ratio();
-               float ol_aspect   = (float)ol_w / (float)ol_h;
-
-               if (game_aspect > ol_aspect)
-               {
-                  /* Game is wider - pillarbox (bars top/bottom) */
-                  vp->width  = ol_w;
-                  vp->height = (unsigned)(ol_w / game_aspect);
-                  vp->x      = ol_x;
-                  vp->y      = ol_y + (int)(ol_h - vp->height) / 2;
-               }
-               else
-               {
-                  /* Game is taller - letterbox (bars left/right) */
-                  vp->height = ol_h;
-                  vp->width  = (unsigned)(ol_h * game_aspect);
-                  vp->x      = ol_x + (int)(ol_w - vp->width) / 2;
-                  vp->y      = ol_y;
-               }
-            }
-            return;  /* Skip all other viewport calculations */
-         }
-      }
-   }
-#endif
-
-   if (video_scale_integer && !force_full)
-      video_viewport_get_scaled_integer(
-            vp,
-            vp->full_width,
-            vp->full_height,
-            video_driver_aspect_ratio, keep_aspect, y_down);
-   else if (keep_aspect && !force_full)
-   {
-      /* Calculate device_aspect, using translate_aspect if available
-       * (e.g. for SD TV detection on Raspberry Pi) */
-      float device_aspect = (float)vp->full_width / vp->full_height;
-      if (ctx->translate_aspect)
-         device_aspect = ctx->translate_aspect(ctx_data,
-            vp->full_width, vp->full_height);
-      video_viewport_get_scaled_aspect2(vp, vp->full_width, vp->full_height,
-            y_down, device_aspect, video_driver_aspect_ratio);
-   }
-}
-
-void video_driver_restore_cached(void *settings_data)
-{
-   settings_t *settings           = (settings_t*)settings_data;
-   video_driver_state_t *video_st = &video_driver_st;
-   if (video_st->cached_driver_id[0])
-   {
-      configuration_set_string(settings,
-            settings->arrays.video_driver, video_st->cached_driver_id);
-
-      video_st->cached_driver_id[0] = 0;
-      RARCH_LOG("[Video] Restored video driver to \"%s\".\n",
-            settings->arrays.video_driver);
-   }
-}
-
-bool video_driver_find_driver(
-      void *settings_data,
-      const char *prefix, bool verbosity_enabled)
-{
-   int i;
-   settings_t *settings                    = (settings_t*)settings_data;
-   video_driver_state_t *video_st          = &video_driver_st;
-
-   if (video_driver_is_hw_context())
-   {
-      struct retro_hw_render_callback *hwr =
-         VIDEO_DRIVER_GET_HW_CONTEXT_INTERNAL(video_st);
-      int rdr_major                        = hwr->version_major;
-      int rdr_minor                        = hwr->version_minor;
-      const char *rdr_context_name         = hw_render_context_name(hwr->context_type, rdr_major, rdr_minor);
-      enum retro_hw_context_type rdr_type  = hw_render_context_type(rdr_context_name);
-
-      video_st->current_video              = NULL;
-
-      if (hwr)
-      {
-         switch (rdr_type)
-         {
-            case RETRO_HW_CONTEXT_OPENGL_CORE:
-            case RETRO_HW_CONTEXT_VULKAN:
-            case RETRO_HW_CONTEXT_D3D9:
-            case RETRO_HW_CONTEXT_D3D10:
-            case RETRO_HW_CONTEXT_D3D11:
-            case RETRO_HW_CONTEXT_D3D12:
-#if defined(HAVE_VULKAN) || defined(HAVE_D3D9) || defined(HAVE_D3D10) || defined(HAVE_D3D11) || defined(HAVE_D3D12) || defined(HAVE_OPENGL_CORE)
-               RARCH_LOG("[Video] Using HW render, %s driver forced.\n",
-                     rdr_context_name);
-
-               if (!string_is_equal(settings->arrays.video_driver,
-                        rdr_context_name))
-               {
-                  strlcpy(video_st->cached_driver_id,
-                        settings->arrays.video_driver,
-                        sizeof(video_st->cached_driver_id));
-                  configuration_set_string(settings,
-                        settings->arrays.video_driver,
-                        rdr_context_name);
-                  RARCH_LOG("[Video] \"%s\" saved as cached driver.\n",
-                        settings->arrays.video_driver);
-               }
-
-               video_st->current_video = hw_render_context_driver(rdr_type, rdr_major, rdr_minor);
-               return true;
-#else
-               break;
-#endif
-            case RETRO_HW_CONTEXT_OPENGL:
-#if defined(HAVE_OPENGL)
-               RARCH_LOG("[Video] Using HW render, OpenGL driver forced.\n");
-
-               /* If we have configured one of the HW render
-                * capable GL drivers, go with that. */
-#if defined(HAVE_OPENGL_CORE)
-               if (     !string_is_equal(settings->arrays.video_driver, "gl")
-                     && !string_is_equal(settings->arrays.video_driver, "glcore"))
-               {
-                  strlcpy(video_st->cached_driver_id,
-                        settings->arrays.video_driver,
-                        sizeof(video_st->cached_driver_id));
-                  configuration_set_string(settings,
-                        settings->arrays.video_driver,
-                        "glcore");
-                  RARCH_LOG("[Video] \"%s\" saved as cached driver.\n",
-                        settings->arrays.video_driver);
-                  video_st->current_video = &video_gl3;
-                  return true;
-               }
-#else
-               if (  !string_is_equal(settings->arrays.video_driver, "gl"))
-               {
-                  strlcpy(video_st->cached_driver_id,
-                        settings->arrays.video_driver,
-                        sizeof(video_st->cached_driver_id));
-                  configuration_set_string(settings,
-                        settings->arrays.video_driver,
-                        "gl");
-                  RARCH_LOG("[Video] \"%s\" saved as cached driver.\n",
-                        settings->arrays.video_driver);
-                  video_st->current_video = &video_gl2;
-                  return true;
-               }
-#endif
-
-               RARCH_LOG("[Video] Using configured \"%s\""
-                     " driver for GL HW render.\n",
-                     settings->arrays.video_driver);
-               break;
-#endif
-            default:
-            case RETRO_HW_CONTEXT_NONE:
-               break;
-         }
-      }
-   }
-
-   if (frontend_driver_has_get_video_driver_func())
-   {
-      if ((video_st->current_video = (video_driver_t*)
-               frontend_driver_get_video_driver()))
-         return true;
-
-      RARCH_WARN("[Video] Frontend supports get_video_driver() but did not specify one.\n");
-   }
-
-   i                   = (int)driver_find_index(
-         "video_driver",
-         settings->arrays.video_driver);
-
-   if (i >= 0)
-      video_st->current_video = (video_driver_t*)video_drivers[i];
-   else
-   {
-      if (verbosity_enabled)
-      {
-         unsigned d;
-         RARCH_ERR("Couldn't find any %s named \"%s\"\n", prefix,
-               settings->arrays.video_driver);
-         RARCH_LOG_OUTPUT("Available %ss are:\n", prefix);
-         for (d = 0; video_drivers[d]; d++)
-            RARCH_LOG_OUTPUT("\t%s\n", video_drivers[d]->ident);
-         RARCH_WARN("Going to default to first %s...\n", prefix);
-      }
-
-      if (!(video_st->current_video = (video_driver_t*)video_drivers[0]))
-         return false;
-   }
-   return true;
-}
-
-void video_driver_apply_state_changes(void)
-{
-   video_driver_state_t *video_st     = &video_driver_st;
-   const video_poke_interface_t *poke = video_st->poke;
-   if (poke && poke->apply_state_changes)
-      poke->apply_state_changes(video_st->data);
-}
-
-bool video_driver_is_hw_context(void)
-{
-   bool            is_hw_context  = false;
-   video_driver_state_t *video_st = &video_driver_st;
-
-   VIDEO_DRIVER_CONTEXT_LOCK(video_st);
-   is_hw_context                 = (video_st->hw_render.context_type
-         != RETRO_HW_CONTEXT_NONE);
-   VIDEO_DRIVER_CONTEXT_UNLOCK(video_st);
-
-   return is_hw_context;
-}
-
-bool video_driver_get_viewport_info(struct video_viewport *viewport)
-{
-   video_driver_state_t *video_st  = &video_driver_st;
-   const video_driver_t *vid       = video_st->current_video;
-   if (!vid || !vid->viewport_info)
-      return false;
-   vid->viewport_info(video_st->data, viewport);
-   return true;
-}
-
 /**
  * video_viewport_get_scaled_integer:
  * @vp            : Viewport handle
@@ -2539,15 +2402,17 @@ bool video_driver_get_viewport_info(struct video_viewport *viewport)
  * Gets viewport scaling dimensions based on
  * scaled integer aspect ratio.
  **/
-void video_viewport_get_scaled_integer(struct video_viewport *vp,
+static void video_viewport_get_scaled_integer(
+      video_driver_state_t *video_st,
+      settings_t *settings,
+      struct video_viewport *vp,
       unsigned width, unsigned height,
       float aspect_ratio, bool keep_aspect,
-      bool y_down)
+      bool y_down,
+      unsigned int rotation)
 {
    int x                           = 0;
    int y                           = 0;
-   settings_t *settings            = config_get_ptr();
-   video_driver_state_t *video_st  = &video_driver_st;
    unsigned video_aspect_ratio_idx = settings->uints.video_aspect_ratio_idx;
    unsigned scaling                = settings->uints.video_scale_integer_scaling;
    unsigned axis                   = settings->uints.video_scale_integer_axis;
@@ -2557,7 +2422,6 @@ void video_viewport_get_scaled_integer(struct video_viewport *vp,
    float vp_bias_y                 = settings->floats.video_vp_bias_y;
    unsigned content_width          = video_st->frame_cache_width;
    unsigned content_height         = video_st->frame_cache_height;
-   unsigned int rotation           = retroarch_get_rotation();
 #if defined(RARCH_MOBILE)
    if (width < height)
    {
@@ -2589,7 +2453,10 @@ void video_viewport_get_scaled_integer(struct video_viewport *vp,
    /* Use regular scaling if there is no room for 1x */
    if (content_width > width || content_height > height)
    {
-      video_viewport_get_scaled_aspect(vp, width, height, y_down);
+      float device_aspect      = (float)width / height;
+      float desired_aspect     = video_st->aspect_ratio;
+      video_viewport_get_scaled_aspect2(vp, width, height,
+            y_down, device_aspect, desired_aspect);
       return;
    }
 
@@ -2716,7 +2583,10 @@ void video_viewport_get_scaled_integer(struct video_viewport *vp,
                /* Use regular scaling if there is no room for 1x */
                if (content_width > width || content_height > height)
                {
-                  video_viewport_get_scaled_aspect(vp, width, height, y_down);
+                  float device_aspect      = (float)width / height;
+                  float desired_aspect     = video_st->aspect_ratio;
+                  video_viewport_get_scaled_aspect2(vp, width, height,
+                        y_down, device_aspect, desired_aspect);
                   return;
                }
 
@@ -2839,7 +2709,10 @@ void video_viewport_get_scaled_integer(struct video_viewport *vp,
             float height_utilization = (float)(height - padding_y) / height;
             if (MAX(height_utilization, width_utilization) < 0.88)
             {
-               video_viewport_get_scaled_aspect(vp, width, height, y_down);
+               float device_aspect      = (float)width / height;
+               float desired_aspect     = video_st->aspect_ratio;
+               video_viewport_get_scaled_aspect2(vp, width, height,
+                     y_down, device_aspect, desired_aspect);
                return;
             }
          }
@@ -2848,7 +2721,10 @@ void video_viewport_get_scaled_integer(struct video_viewport *vp,
          if (     padding_x <= (int)-video_st->av_info.geometry.base_width
                || padding_y <= (int)-video_st->av_info.geometry.base_height)
          {
-            video_viewport_get_scaled_aspect(vp, width, height, y_down);
+            float device_aspect      = (float)width / height;
+            float desired_aspect     = video_st->aspect_ratio;
+            video_viewport_get_scaled_aspect2(vp, width, height,
+                  y_down, device_aspect, desired_aspect);
             return;
          }
       }
@@ -2874,6 +2750,278 @@ void video_viewport_get_scaled_integer(struct video_viewport *vp,
    /* Statistics */
    video_st->scale_width  = vp->width;
    video_st->scale_height = vp->height;
+}
+
+
+void video_driver_update_viewport(
+      struct video_viewport* vp, bool force_full, bool keep_aspect, bool y_down)
+{
+   settings_t *settings            = config_get_ptr();
+   bool video_scale_integer        = settings->bools.video_scale_integer;
+   video_driver_state_t *video_st  = &video_driver_st;
+   const gfx_ctx_driver_t *ctx     = &video_st->current_video_context;
+   void *ctx_data                  = (void*)video_st->context_data;
+   float video_driver_aspect_ratio = video_st->aspect_ratio;
+   unsigned int rotation           = retroarch_get_rotation();
+
+   vp->x                           = 0;
+   vp->y                           = 0;
+   vp->width                       = vp->full_width;
+   vp->height                      = vp->full_height;
+
+#ifdef HAVE_OVERLAY
+   /* Check if active overlay specifies viewport override.
+    * Only apply to game viewport, not UI elements (force_full=true) */
+   if (!force_full)
+   {
+      input_driver_state_t *input_st = input_state_get_ptr();
+      if (input_st && input_st->overlay_ptr && input_st->overlay_ptr->active)
+      {
+         const struct overlay *ol = input_st->overlay_ptr->active;
+         if (ol->flags & OVERLAY_HAS_VIEWPORT)
+         {
+            /* Calculate overlay's viewport bounds in pixels */
+            int ol_x      = (int)(ol->viewport.x * vp->full_width);
+            int ol_y      = (int)(ol->viewport.y * vp->full_height);
+            unsigned ol_w = (unsigned)(ol->viewport.w * vp->full_width);
+            unsigned ol_h = (unsigned)(ol->viewport.h * vp->full_height);
+            RARCH_LOG("[Overlay] Applying viewport override!\n");
+
+            if (ol->flags & OVERLAY_VIEWPORT_FILL)
+            {
+               /* Fill mode: stretch to fill overlay viewport exactly */
+               vp->x      = ol_x;
+               vp->y      = ol_y;
+               vp->width  = ol_w;
+               vp->height = ol_h;
+            }
+            else
+            {
+               /* Fit mode: preserve aspect ratio within overlay viewport */
+               float game_aspect = video_st->aspect_ratio;
+               float ol_aspect   = (float)ol_w / (float)ol_h;
+
+               if (game_aspect > ol_aspect)
+               {
+                  /* Game is wider - pillarbox (bars top/bottom) */
+                  vp->width  = ol_w;
+                  vp->height = (unsigned)(ol_w / game_aspect);
+                  vp->x      = ol_x;
+                  vp->y      = ol_y + (int)(ol_h - vp->height) / 2;
+               }
+               else
+               {
+                  /* Game is taller - letterbox (bars left/right) */
+                  vp->height = ol_h;
+                  vp->width  = (unsigned)(ol_h * game_aspect);
+                  vp->x      = ol_x + (int)(ol_w - vp->width) / 2;
+                  vp->y      = ol_y;
+               }
+            }
+            return;  /* Skip all other viewport calculations */
+         }
+      }
+   }
+#endif
+
+   if (video_scale_integer && !force_full)
+      video_viewport_get_scaled_integer(video_st,
+            settings,
+            vp,
+            vp->full_width,
+            vp->full_height,
+            video_driver_aspect_ratio, keep_aspect, y_down, rotation);
+   else if (keep_aspect && !force_full)
+   {
+      /* Calculate device_aspect, using translate_aspect if available
+       * (e.g. for SD TV detection on Raspberry Pi) */
+      float device_aspect = (float)vp->full_width / vp->full_height;
+      if (ctx->translate_aspect)
+         device_aspect = ctx->translate_aspect(ctx_data,
+            vp->full_width, vp->full_height);
+      video_viewport_get_scaled_aspect2(vp, vp->full_width, vp->full_height,
+            y_down, device_aspect, video_driver_aspect_ratio);
+   }
+}
+
+void video_driver_restore_cached(void *settings_data)
+{
+   settings_t *settings           = (settings_t*)settings_data;
+   video_driver_state_t *video_st = &video_driver_st;
+   if (video_st->cached_driver_id[0])
+   {
+      configuration_set_string(settings,
+            settings->arrays.video_driver, video_st->cached_driver_id);
+
+      video_st->cached_driver_id[0] = 0;
+      RARCH_LOG("[Video] Restored video driver to \"%s\".\n",
+            settings->arrays.video_driver);
+   }
+}
+
+bool video_driver_find_driver(
+      void *settings_data,
+      const char *prefix, bool verbosity_enabled)
+{
+   int i;
+   settings_t *settings                    = (settings_t*)settings_data;
+   video_driver_state_t *video_st          = &video_driver_st;
+
+   if (video_driver_is_hw_context())
+   {
+      struct retro_hw_render_callback *hwr =
+         VIDEO_DRIVER_GET_HW_CONTEXT_INTERNAL(video_st);
+      int rdr_major                        = hwr->version_major;
+      int rdr_minor                        = hwr->version_minor;
+      const char *rdr_context_name         = hw_render_context_name(hwr->context_type, rdr_major, rdr_minor);
+      enum retro_hw_context_type rdr_type  = hw_render_context_type(rdr_context_name);
+
+      video_st->current_video              = NULL;
+
+      if (hwr)
+      {
+         switch (rdr_type)
+         {
+            case RETRO_HW_CONTEXT_OPENGL_CORE:
+            case RETRO_HW_CONTEXT_VULKAN:
+            case RETRO_HW_CONTEXT_D3D9:
+            case RETRO_HW_CONTEXT_D3D10:
+            case RETRO_HW_CONTEXT_D3D11:
+            case RETRO_HW_CONTEXT_D3D12:
+#if defined(HAVE_VULKAN) || defined(HAVE_D3D9) || defined(HAVE_D3D10) || defined(HAVE_D3D11) || defined(HAVE_D3D12) || defined(HAVE_OPENGL_CORE)
+               RARCH_LOG("[Video] Using HW render, %s driver forced.\n",
+                     rdr_context_name);
+
+               if (!string_is_equal(settings->arrays.video_driver,
+                        rdr_context_name))
+               {
+                  strlcpy(video_st->cached_driver_id,
+                        settings->arrays.video_driver,
+                        sizeof(video_st->cached_driver_id));
+                  configuration_set_string(settings,
+                        settings->arrays.video_driver,
+                        rdr_context_name);
+                  RARCH_LOG("[Video] \"%s\" saved as cached driver.\n",
+                        settings->arrays.video_driver);
+               }
+
+               video_st->current_video = hw_render_context_driver(rdr_type, rdr_major, rdr_minor);
+               return true;
+#else
+               break;
+#endif
+            case RETRO_HW_CONTEXT_OPENGL:
+#if defined(HAVE_OPENGL)
+               RARCH_LOG("[Video] Using HW render, OpenGL driver forced.\n");
+
+               /* If we have configured one of the HW render
+                * capable GL drivers, go with that. */
+#if defined(HAVE_OPENGL_CORE)
+               if (     memcmp(settings->arrays.video_driver, "gl", 3) != 0
+                     && memcmp(settings->arrays.video_driver, "glcore", 7) != 0)
+               {
+                  strlcpy(video_st->cached_driver_id,
+                        settings->arrays.video_driver,
+                        sizeof(video_st->cached_driver_id));
+                  configuration_set_string(settings,
+                        settings->arrays.video_driver,
+                        "glcore");
+                  RARCH_LOG("[Video] \"%s\" saved as cached driver.\n",
+                        settings->arrays.video_driver);
+                  video_st->current_video = &video_gl3;
+                  return true;
+               }
+#else
+               if (memcmp(settings->arrays.video_driver, "gl", 3) != 0)
+               {
+                  strlcpy(video_st->cached_driver_id,
+                        settings->arrays.video_driver,
+                        sizeof(video_st->cached_driver_id));
+                  configuration_set_string(settings,
+                        settings->arrays.video_driver,
+                        "gl");
+                  RARCH_LOG("[Video] \"%s\" saved as cached driver.\n",
+                        settings->arrays.video_driver);
+                  video_st->current_video = &video_gl2;
+                  return true;
+               }
+#endif
+
+               RARCH_LOG("[Video] Using configured \"%s\""
+                     " driver for GL HW render.\n",
+                     settings->arrays.video_driver);
+               break;
+#endif
+            default:
+            case RETRO_HW_CONTEXT_NONE:
+               break;
+         }
+      }
+   }
+
+   if (frontend_driver_has_get_video_driver_func())
+   {
+      if ((video_st->current_video = (video_driver_t*)
+               frontend_driver_get_video_driver()))
+         return true;
+
+      RARCH_WARN("[Video] Frontend supports get_video_driver() but did not specify one.\n");
+   }
+
+   i                   = (int)driver_find_index(
+         "video_driver",
+         settings->arrays.video_driver);
+
+   if (i >= 0)
+      video_st->current_video = (video_driver_t*)video_drivers[i];
+   else
+   {
+      if (verbosity_enabled)
+      {
+         unsigned d;
+         RARCH_ERR("Couldn't find any %s named \"%s\"\n", prefix,
+               settings->arrays.video_driver);
+         RARCH_LOG_OUTPUT("Available %ss are:\n", prefix);
+         for (d = 0; video_drivers[d]; d++)
+            RARCH_LOG_OUTPUT("\t%s\n", video_drivers[d]->ident);
+         RARCH_WARN("Going to default to first %s...\n", prefix);
+      }
+
+      if (!(video_st->current_video = (video_driver_t*)video_drivers[0]))
+         return false;
+   }
+   return true;
+}
+
+void video_driver_apply_state_changes(void)
+{
+   video_driver_state_t *video_st     = &video_driver_st;
+   const video_poke_interface_t *poke = video_st->poke;
+   if (poke && poke->apply_state_changes)
+      poke->apply_state_changes(video_st->data);
+}
+
+bool video_driver_is_hw_context(void)
+{
+   bool            is_hw_context  = false;
+   video_driver_state_t *video_st = &video_driver_st;
+
+   VIDEO_DRIVER_CONTEXT_LOCK(video_st);
+   is_hw_context                 = (video_st->hw_render.context_type
+         != RETRO_HW_CONTEXT_NONE);
+   VIDEO_DRIVER_CONTEXT_UNLOCK(video_st);
+
+   return is_hw_context;
+}
+
+bool video_driver_get_viewport_info(struct video_viewport *viewport)
+{
+   video_driver_state_t *video_st  = &video_driver_st;
+   const video_driver_t *vid       = video_st->current_video;
+   if (!vid || !vid->viewport_info)
+      return false;
+   vid->viewport_info(video_st->data, viewport);
+   return true;
 }
 
 void video_driver_display_type_set(enum rarch_display_type type)
@@ -3170,7 +3318,7 @@ void video_driver_build_info(video_frame_info_t *video_info)
     * frameskip target to make it smoother and faster. */
    if (     video_info->fullscreen
          && settings->bools.video_vsync
-         && string_is_equal(video_driver_get_ident(), "vulkan"))
+         && (memcmp(video_driver_get_ident(), "vulkan", 6) == 0))
       video_info->frame_time_target       /= 2.0f;
 #endif
 #endif
@@ -3400,40 +3548,37 @@ enum gfx_ctx_api video_context_driver_get_api(void)
    enum gfx_ctx_api         ctx_api = ctx_data
       ? ctx->get_api(ctx_data)
       : GFX_CTX_NONE;
-
    if (ctx_api == GFX_CTX_NONE)
    {
       const char *video_ident  = (vid) ? vid->ident : NULL;
       if (string_starts_with_size(video_ident, "d3d", STRLEN_CONST("d3d")))
       {
-         if (string_is_equal(video_ident, "d3d9_hlsl"))
+         if (!memcmp(video_ident, "d3d9_hlsl", STRLEN_CONST("d3d9_hlsl") + 1))
             return GFX_CTX_DIRECT3D9_API;
-         else if (string_is_equal(video_ident, "d3d10"))
+         else if (!memcmp(video_ident, "d3d10", STRLEN_CONST("d3d10") + 1))
             return GFX_CTX_DIRECT3D10_API;
-         else if (string_is_equal(video_ident, "d3d11"))
+         else if (!memcmp(video_ident, "d3d11", STRLEN_CONST("d3d11") + 1))
             return GFX_CTX_DIRECT3D11_API;
-         else if (string_is_equal(video_ident, "d3d12"))
+         else if (!memcmp(video_ident, "d3d12", STRLEN_CONST("d3d12") + 1))
             return GFX_CTX_DIRECT3D12_API;
       }
       if (string_starts_with_size(video_ident, "gl", STRLEN_CONST("gl")))
       {
-         if (string_is_equal(video_ident, "gl"))
+         if (!memcmp(video_ident, "gl", STRLEN_CONST("gl") + 1))
             return GFX_CTX_OPENGL_API;
-         else if (string_is_equal(video_ident, "gl1"))
+         else if (!memcmp(video_ident, "gl1", STRLEN_CONST("gl1") + 1))
             return GFX_CTX_OPENGL_API;
-         else if (string_is_equal(video_ident, "glcore"))
+         else if (!memcmp(video_ident, "glcore", STRLEN_CONST("glcore") + 1))
             return GFX_CTX_OPENGL_API;
       }
-      else if (string_is_equal(video_ident, "vulkan"))
+      else if (!memcmp(video_ident, "vulkan", STRLEN_CONST("vulkan") + 1))
          return GFX_CTX_VULKAN_API;
-      else if (string_is_equal(video_ident, "metal"))
+      else if (!memcmp(video_ident, "metal", STRLEN_CONST("metal") + 1))
          return GFX_CTX_METAL_API;
-      else if (string_is_equal(video_ident, "rsx"))
+      else if (!memcmp(video_ident, "rsx", STRLEN_CONST("rsx") + 1))
          return GFX_CTX_RSX_API;
-
       return GFX_CTX_NONE;
    }
-
    return ctx_api;
 }
 
@@ -3498,12 +3643,13 @@ bool video_driver_init_internal(bool *video_is_threaded, bool verbosity_enabled)
    struct retro_game_geometry *geom       = &video_st->av_info.geometry;
    const enum retro_pixel_format
       video_driver_pix_fmt                = video_st->pix_fmt;
+   unsigned int rotation                  = retroarch_get_rotation();
 #ifdef HAVE_VIDEO_FILTER
    const char *path_softfilter_plugin     = settings->paths.path_softfilter_plugin;
 
    /* Init video filter only when game is running */
    if ((     runloop_st->current_core.flags & RETRO_CORE_FLAG_GAME_LOADED)
-         && !string_is_empty(path_softfilter_plugin))
+         && (path_softfilter_plugin && *path_softfilter_plugin))
       video_driver_init_filter(video_driver_pix_fmt, settings);
 #endif
 
@@ -3530,7 +3676,7 @@ bool video_driver_init_internal(bool *video_is_threaded, bool verbosity_enabled)
          sizeof(aspectratio_lut[ASPECT_RATIO_FULL].name));
 
    /* Update core-dependent aspect ratio values. */
-   video_driver_set_viewport_square_pixel(geom);
+   video_driver_set_viewport_square_pixel(geom, rotation);
    video_driver_set_viewport_core();
    video_driver_set_viewport_config(geom,
          settings->floats.video_aspect_ratio,
@@ -3616,7 +3762,7 @@ bool video_driver_init_internal(bool *video_is_threaded, bool verbosity_enabled)
 
             /* rotated games send unrotated width/height and
              * require special handling here because of it */
-            if ((retroarch_get_rotation() % 2))
+            if (rotation % 2)
             {
                 /* Determine nominal window size based on
                  * core geometry */
@@ -3794,7 +3940,7 @@ bool video_driver_init_internal(bool *video_is_threaded, bool verbosity_enabled)
       video_st->current_video->viewport_info(video_st->data, custom_vp);
    }
 
-   video_driver_set_rotation(retroarch_get_rotation() % 4);
+   video_driver_set_rotation(rotation % 4);
 
    video_st->current_video->suppress_screensaver(video_st->data,
          settings->bools.ui_suspend_screensaver_enable);
@@ -3880,6 +4026,7 @@ void video_driver_frame(const void *data, unsigned width,
    video_driver_state_t *video_st = &video_driver_st;
    const video_driver_t *vid      = video_st->current_video;
    runloop_state_t *runloop_st    = runloop_state_get_ptr();
+   unsigned int rotation          = retroarch_get_rotation();
    const enum retro_pixel_format
       video_driver_pix_fmt        = video_st->pix_fmt;
    bool runloop_idle              = (runloop_st->flags & RUNLOOP_FLAG_IDLE) ? true : false;
@@ -4110,7 +4257,7 @@ void video_driver_frame(const void *data, unsigned width,
          __len = strlcpy(video_st->window_title, video_st->title_buf,
                sizeof(video_st->window_title));
 
-         if (!string_is_empty(status_text))
+         if (*status_text)
          {
             video_st->window_title[  __len  ] = ' ';
             video_st->window_title[++__len  ] = '|';
@@ -4173,7 +4320,7 @@ void video_driver_frame(const void *data, unsigned width,
       {
          /* If status text is already set, add status
           * message at the end */
-         if (!string_is_empty(status_text))
+         if (*status_text)
          {
             status_text[  _len] = ' ';
             status_text[++_len] = '|';
@@ -4309,7 +4456,6 @@ void video_driver_frame(const void *data, unsigned width,
       float scale                            = ((float)video_info.height / 480)
             * 0.50f * (DEFAULT_FONT_SIZE / video_info.font_size);
       struct retro_system_av_info *av_info   = &video_st->av_info;
-      unsigned rotation                      = retroarch_get_rotation();
       unsigned red                           = 235;
       unsigned green                         = 235;
       unsigned blue                          = 235;
@@ -4526,7 +4672,7 @@ void video_driver_frame(const void *data, unsigned width,
             native_width, width,
             height,
             video_st->core_hz,
-            retroarch_get_rotation() & 1,
+            rotation & 1,
             video_info.crt_switch_resolution,
             video_info.crt_switch_center_adjust,
             video_info.crt_switch_porch_adjust,
@@ -4769,123 +4915,7 @@ static void video_frame_delay_leftover(video_driver_state_t *video_st,
 #endif
 }
 
-void video_frame_delay(video_driver_state_t *video_st,
-      settings_t *settings)
-{
-   runloop_state_t *runloop_st         = runloop_state_get_ptr();
-   float refresh_rate                  = settings->floats.video_refresh_rate;
-   uint8_t video_frame_delay           = settings->uints.video_frame_delay;
-   uint8_t video_frame_delay_effective = video_st->frame_delay_effective;
-   uint8_t video_swap_interval         = runloop_get_video_swap_interval(settings->uints.video_swap_interval);
-   uint8_t video_bfi                   = settings->uints.video_black_frame_insertion;
-   uint8_t shader_subframes            = settings->uints.video_shader_subframes;
-   bool skip_delay                     = video_st->frame_count < 4
-         || (runloop_st->flags & RUNLOOP_FLAG_SLOWMOTION)
-         || (runloop_st->flags & RUNLOOP_FLAG_FASTMOTION)
-         || state_manager_frame_is_reversed();
-
-   /* Treat values 20+ as frame time percentage */
-   if (video_frame_delay >= 20)
-      video_frame_delay = 1 / refresh_rate * 1000 * (video_frame_delay / 100.0f);
-   /* Set 0 (Auto) delay target as 3/4 frame time */
-   else if (video_frame_delay == 0 && settings->bools.video_frame_delay_auto)
-      video_frame_delay = 1 / refresh_rate * 1000 * 0.75f;
-
-   /* Black frame insertion + swap interval multiplier */
-   refresh_rate = (refresh_rate / (video_bfi + 1.0f) / video_swap_interval / shader_subframes);
-
-   if (settings->bools.video_frame_delay_auto)
-   {
-      static uint8_t skip_update  = 0;
-      uint8_t frame_time_interval = 8;
-      static bool skip_delay_prev = false;
-      bool frame_time_update      =
-            /* Skip some initial frames for stabilization */
-               video_st->frame_count > frame_time_interval
-            /* Only update when there are enough frames for averaging */
-            && video_st->frame_count % frame_time_interval == 0;
-
-      /* A few frames must be ignored after slow+fastmotion/pause
-       * is disabled or geometry change is triggered. Also ignore
-       * processing when window is not focused, but allow sleeping. */
-      if (     (!skip_delay && skip_delay_prev)
-            || (video_st->frame_delay_pause)
-            || (runloop_st->flags & RUNLOOP_FLAG_PAUSED)
-            || !(runloop_st->flags & RUNLOOP_FLAG_FOCUSED))
-      {
-         video_st->frame_delay_pause = false;
-         skip_update = frame_time_interval * 4;
-      }
-
-      if (skip_update)
-         skip_update--;
-
-      skip_delay_prev = skip_delay;
-
-      /* Always skip when slow+fastmotion/pause is active */
-      if (skip_delay_prev && !skip_update)
-         skip_update = 1;
-
-      /* Reset new desired delay target and reserve */
-      if (video_st->frame_delay_target != video_frame_delay || !video_st->frame_delay_target)
-      {
-         frame_time_update            = false;
-         video_st->frame_delay_target = video_frame_delay_effective = video_frame_delay;
-         video_st->frame_time_reserve = ((int)(1 / refresh_rate * 1000) - video_st->frame_delay_target) * 1000;
-         RARCH_DBG("[Video] Frame delay target reset to %d ms.\n", video_frame_delay);
-
-         /* Enforce minimum reserve */
-         if (video_st->frame_time_reserve < 1000)
-         {
-            video_st->frame_time_reserve = 1000;
-            video_frame_delay_effective -= video_st->frame_time_reserve / 1000;
-         }
-      }
-
-      /* Negative leftover force update */
-      if ((1000000.0f / refresh_rate) - (video_frame_delay_effective * 1000) - runloop_st->core_run_time < 0)
-         skip_delay = false;
-
-      /* Immediate reaction based on core time */
-      if (!skip_delay)
-      {
-         video_frame_delay_leftover(video_st, runloop_st,
-               refresh_rate, frame_time_interval,
-               &skip_update, &video_frame_delay_effective);
-
-         if (video_frame_delay_effective > video_frame_delay)
-            video_frame_delay_effective = video_frame_delay;
-      }
-
-      if (skip_update)
-         frame_time_update = false;
-
-      /* Average calculations */
-      if (video_frame_delay_effective > 0 && frame_time_update)
-      {
-         video_frame_delay_auto_t vfda = {0};
-         vfda.frame_time_interval      = frame_time_interval;
-         vfda.refresh_rate             = refresh_rate;
-
-         video_frame_delay_auto(video_st, &vfda);
-         if (vfda.delay_decrease > 0)
-         {
-            video_st->frame_time_reserve += vfda.delay_decrease * 1000;
-            skip_update = frame_time_interval;
-         }
-      }
-   }
-   else
-      video_st->frame_delay_target = video_frame_delay_effective = video_frame_delay;
-
-   video_st->frame_delay_effective = video_frame_delay_effective;
-
-   /* Never apply frame delay when slow/fastmotion is active */
-   if (video_frame_delay_effective > 0 && !skip_delay)
-      retro_sleep(video_frame_delay_effective);
-}
-
-void video_frame_delay_auto(video_driver_state_t *video_st, video_frame_delay_auto_t *vfda)
+static void video_frame_delay_auto(video_driver_state_t *video_st, video_frame_delay_auto_t *vfda)
 {
    int i;
    retro_time_t frame_time_avg    = 0;
@@ -5026,3 +5056,120 @@ void video_frame_delay_auto(video_driver_state_t *video_st, video_frame_delay_au
       );
 #endif
 }
+
+void video_frame_delay(video_driver_state_t *video_st,
+      settings_t *settings)
+{
+   runloop_state_t *runloop_st         = runloop_state_get_ptr();
+   float refresh_rate                  = settings->floats.video_refresh_rate;
+   uint8_t video_frame_delay           = settings->uints.video_frame_delay;
+   uint8_t video_frame_delay_effective = video_st->frame_delay_effective;
+   uint8_t video_swap_interval         = runloop_get_video_swap_interval(settings->uints.video_swap_interval);
+   uint8_t video_bfi                   = settings->uints.video_black_frame_insertion;
+   uint8_t shader_subframes            = settings->uints.video_shader_subframes;
+   bool skip_delay                     = video_st->frame_count < 4
+         || (runloop_st->flags & RUNLOOP_FLAG_SLOWMOTION)
+         || (runloop_st->flags & RUNLOOP_FLAG_FASTMOTION)
+         || state_manager_frame_is_reversed();
+
+   /* Treat values 20+ as frame time percentage */
+   if (video_frame_delay >= 20)
+      video_frame_delay = 1 / refresh_rate * 1000 * (video_frame_delay / 100.0f);
+   /* Set 0 (Auto) delay target as 3/4 frame time */
+   else if (video_frame_delay == 0 && settings->bools.video_frame_delay_auto)
+      video_frame_delay = 1 / refresh_rate * 1000 * 0.75f;
+
+   /* Black frame insertion + swap interval multiplier */
+   refresh_rate = (refresh_rate / (video_bfi + 1.0f) / video_swap_interval / shader_subframes);
+
+   if (settings->bools.video_frame_delay_auto)
+   {
+      static uint8_t skip_update  = 0;
+      uint8_t frame_time_interval = 8;
+      static bool skip_delay_prev = false;
+      bool frame_time_update      =
+            /* Skip some initial frames for stabilization */
+               video_st->frame_count > frame_time_interval
+            /* Only update when there are enough frames for averaging */
+            && video_st->frame_count % frame_time_interval == 0;
+
+      /* A few frames must be ignored after slow+fastmotion/pause
+       * is disabled or geometry change is triggered. Also ignore
+       * processing when window is not focused, but allow sleeping. */
+      if (     (!skip_delay && skip_delay_prev)
+            || (video_st->frame_delay_pause)
+            || (runloop_st->flags & RUNLOOP_FLAG_PAUSED)
+            || !(runloop_st->flags & RUNLOOP_FLAG_FOCUSED))
+      {
+         video_st->frame_delay_pause = false;
+         skip_update = frame_time_interval * 4;
+      }
+
+      if (skip_update)
+         skip_update--;
+
+      skip_delay_prev = skip_delay;
+
+      /* Always skip when slow+fastmotion/pause is active */
+      if (skip_delay_prev && !skip_update)
+         skip_update = 1;
+
+      /* Reset new desired delay target and reserve */
+      if (video_st->frame_delay_target != video_frame_delay || !video_st->frame_delay_target)
+      {
+         frame_time_update            = false;
+         video_st->frame_delay_target = video_frame_delay_effective = video_frame_delay;
+         video_st->frame_time_reserve = ((int)(1 / refresh_rate * 1000) - video_st->frame_delay_target) * 1000;
+         RARCH_DBG("[Video] Frame delay target reset to %d ms.\n", video_frame_delay);
+
+         /* Enforce minimum reserve */
+         if (video_st->frame_time_reserve < 1000)
+         {
+            video_st->frame_time_reserve = 1000;
+            video_frame_delay_effective -= video_st->frame_time_reserve / 1000;
+         }
+      }
+
+      /* Negative leftover force update */
+      if ((1000000.0f / refresh_rate) - (video_frame_delay_effective * 1000) - runloop_st->core_run_time < 0)
+         skip_delay = false;
+
+      /* Immediate reaction based on core time */
+      if (!skip_delay)
+      {
+         video_frame_delay_leftover(video_st, runloop_st,
+               refresh_rate, frame_time_interval,
+               &skip_update, &video_frame_delay_effective);
+
+         if (video_frame_delay_effective > video_frame_delay)
+            video_frame_delay_effective = video_frame_delay;
+      }
+
+      if (skip_update)
+         frame_time_update = false;
+
+      /* Average calculations */
+      if (video_frame_delay_effective > 0 && frame_time_update)
+      {
+         video_frame_delay_auto_t vfda = {0};
+         vfda.frame_time_interval      = frame_time_interval;
+         vfda.refresh_rate             = refresh_rate;
+
+         video_frame_delay_auto(video_st, &vfda);
+         if (vfda.delay_decrease > 0)
+         {
+            video_st->frame_time_reserve += vfda.delay_decrease * 1000;
+            skip_update = frame_time_interval;
+         }
+      }
+   }
+   else
+      video_st->frame_delay_target = video_frame_delay_effective = video_frame_delay;
+
+   video_st->frame_delay_effective = video_frame_delay_effective;
+
+   /* Never apply frame delay when slow/fastmotion is active */
+   if (video_frame_delay_effective > 0 && !skip_delay)
+      retro_sleep(video_frame_delay_effective);
+}
+

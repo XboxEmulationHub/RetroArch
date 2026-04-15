@@ -81,7 +81,8 @@ void *task_push_http_post_transfer_with_headers(const char *url, const char *pos
 
 void *task_push_http_transfer_with_content(const char *url, const char *method,
    const void *content, size_t content_len, const char *content_type, bool mute,
-   const char *headers, retro_task_callback_t cb, void *user_data);
+   bool headers_accept_err, const char *headers,
+   retro_task_callback_t cb, void *user_data);
 
 void *task_push_webdav_stat(const char *url, bool mute, const char *headers,
       retro_task_callback_t cb, void *userdata);
@@ -182,6 +183,14 @@ bool task_push_image_load(const char *fullpath,
       bool supports_rgba, unsigned upscale_threshold,
       retro_task_callback_t cb, void *userdata);
 
+/* Async icon/texture loading.  generation_ptr must point to a static
+ * variable in the calling module (not a heap struct field). */
+bool task_push_icon_load(const char *fullpath,
+      bool supports_rgba,
+      uintptr_t *target_texture,
+      uint64_t generation,
+      uint64_t *generation_ptr);
+
 #ifdef HAVE_LIBRETRODB
 bool task_push_dbscan(
       const char *playlist_directory,
@@ -192,8 +201,7 @@ bool task_push_dbscan(
 #endif
 
 bool task_push_manual_content_scan(
-      const playlist_config_t *playlist_config,
-      const char *playlist_directory);
+      bool do_menu_refresh);
 
 #ifdef HAVE_OVERLAY
 bool task_push_overlay_load_default(

@@ -468,8 +468,16 @@ static cdfs_track_t* cdfs_open_cue_track(
                --file_end;
             }
 
-            memcpy(current_track_path, file, file_end - file);
-            current_track_path[file_end - file] = '\0';
+            if (file_end - file < PATH_MAX_LENGTH)
+            {
+               memcpy(current_track_path, file, file_end - file);
+               current_track_path[file_end - file] = '\0';
+            }
+            else
+            {
+               memcpy(current_track_path, file, PATH_MAX_LENGTH - 1);
+               current_track_path[PATH_MAX_LENGTH - 1] = '\0';
+            }
          }
 
          previous_sector_size = 0;
@@ -510,12 +518,21 @@ static cdfs_track_t* cdfs_open_cue_track(
          const char *index     = line + 5;
 
          cdfs_skip_spaces(&index);
-         sscanf(index, "%u", &index_number);
+         index_number = (unsigned)strtol(index, NULL, 10);
          while (*index && *index != ' ' && *index != '\n')
             ++index;
          cdfs_skip_spaces(&index);
 
-         sscanf(index, "%u:%u:%u", &min, &sec, &frame);
+         {
+            char *end;
+            min   = (unsigned)strtol(index, &end, 10);
+            if (*end == ':')
+               ++end;
+            sec   = (unsigned)strtol(end, &end, 10);
+            if (*end == ':')
+               ++end;
+            frame = (unsigned)strtol(end, NULL, 10);
+         }
          sector_offset                 = ((min * 60) + sec) * 75 + frame;
          sector_offset                -= previous_index_sector_offset;
          track_offset                 += sector_offset * previous_sector_size;
@@ -540,7 +557,7 @@ static cdfs_track_t* cdfs_open_cue_track(
 
    free(cue_contents);
 
-   if (string_is_empty(track_path))
+   if (!*track_path)
       return NULL;
 
    /* NOTE: previous_index_sector_offset will only be valid if all tracks are in the same BIN file.

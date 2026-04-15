@@ -23,6 +23,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <errno.h>
+#include <string.h>
 
 #include <net/net_http.h>
 #include <net/net_compat.h>
@@ -33,11 +35,10 @@
 #include <compat/strl.h>
 #include <features/features_cpu.h>
 #include <file/file_path.h>
-#include <string/stdstring.h>
-#include <string.h>
 #include <lists/string_list.h>
 #include <retro_common_api.h>
 #include <retro_miscellaneous.h>
+#include <string/stdstring.h>
 #ifdef HAVE_THREADS
 #include <rthreads/rthreads.h>
 #endif
@@ -133,6 +134,54 @@ struct http_connection_t
    bool ssl;
 };
 
+static void net_http_log_transport_state(
+      const struct http_t *state, const char *stage, ssize_t io_len)
+{
+#if defined(DEBUG)
+   const char *method = "GET";
+   const char *domain = "<null>";
+   const char *path   = "<null>";
+   int port           = 0;
+   int fd             = -1;
+   int connected      = 0;
+
+   if (state)
+   {
+      method = state->request.method ? state->request.method : "GET";
+      domain = state->request.domain ? state->request.domain : "<null>";
+      path   = state->request.path ? state->request.path : "<null>";
+      port   = state->request.port;
+
+      if (state->conn)
+      {
+         fd        = state->conn->fd;
+         connected = state->conn->connected ? 1 : 0;
+      }
+   }
+
+   fprintf(stderr,
+         "[net_http] %s: method=%s host=%s port=%d path=/%s ssl=%d fd=%d connected=%d request_sent=%d err=%d io_len=%ld errno=%d (%s)\n",
+         stage ? stage : "unknown",
+         method,
+         domain,
+         port,
+         path,
+         state ? (state->ssl ? 1 : 0) : 0,
+         fd,
+         connected,
+         state ? (state->request_sent ? 1 : 0) : 0,
+         state ? (state->err ? 1 : 0) : 0,
+         (long)io_len,
+         errno,
+         strerror(errno));
+   fflush(stderr);
+#else
+   (void)state;
+   (void)stage;
+   (void)io_len;
+#endif
+}
+
 struct dns_cache_entry
 {
    char *domain;
@@ -168,156 +217,47 @@ static slock_t *dns_cache_lock = NULL;
  **/
 void net_http_urlencode(char **dest, const char *source)
 {
-   static const char urlencode_lut[] =
-   {
-      0,       /* 0   */
-      0,       /* 1   */
-      0,       /* 2   */
-      0,       /* 3   */
-      0,       /* 4   */
-      0,       /* 5   */
-      0,       /* 6   */
-      0,       /* 7   */
-      0,       /* 8   */
-      0,       /* 9   */
-      0,       /* 10  */
-      0,       /* 11  */
-      0,       /* 12  */
-      0,       /* 13  */
-      0,       /* 14  */
-      0,       /* 15  */
-      0,       /* 16  */
-      0,       /* 17  */
-      0,       /* 18  */
-      0,       /* 19  */
-      0,       /* 20  */
-      0,       /* 21  */
-      0,       /* 22  */
-      0,       /* 23  */
-      0,       /* 24  */
-      0,       /* 25  */
-      0,       /* 26  */
-      0,       /* 27  */
-      0,       /* 28  */
-      0,       /* 29  */
-      0,       /* 30  */
-      0,       /* 31  */
-      0,       /* 32  */
-      0,       /* 33  */
-      0,       /* 34  */
-      0,       /* 35  */
-      0,       /* 36  */
-      0,       /* 37  */
-      0,       /* 38  */
-      0,       /* 39  */
-      0,       /* 40  */
-      0,       /* 41  */
-      '*',     /* 42  */
-      0,       /* 43  */
-      0,       /* 44  */
-      '-',     /* 45  */
-      '.',     /* 46  */
-      '/',     /* 47  */
-      '0',     /* 48  */
-      '1',     /* 49  */
-      '2',     /* 50  */
-      '3',     /* 51  */
-      '4',     /* 52  */
-      '5',     /* 53  */
-      '6',     /* 54  */
-      '7',     /* 55  */
-      '8',     /* 56  */
-      '9',     /* 57  */
-      0,       /* 58  */
-      0,       /* 59  */
-      0,       /* 60  */
-      0,       /* 61  */
-      0,       /* 62  */
-      0,       /* 63  */
-      0,       /* 64  */
-      'A',     /* 65  */
-      'B',     /* 66  */
-      'C',     /* 67  */
-      'D',     /* 68  */
-      'E',     /* 69  */
-      'F',     /* 70  */
-      'G',     /* 71  */
-      'H',     /* 72  */
-      'I',     /* 73  */
-      'J',     /* 74  */
-      'K',     /* 75  */
-      'L',     /* 76  */
-      'M',     /* 77  */
-      'N',     /* 78  */
-      'O',     /* 79  */
-      'P',     /* 80  */
-      'Q',     /* 81  */
-      'R',     /* 82  */
-      'S',     /* 83  */
-      'T',     /* 84  */
-      'U',     /* 85  */
-      'V',     /* 86  */
-      'W',     /* 87  */
-      'X',     /* 88  */
-      'Y',     /* 89  */
-      'Z',     /* 90  */
-      0,       /* 91  */
-      0,       /* 92  */
-      0,       /* 93  */
-      0,       /* 94  */
-      '_',     /* 95  */
-      0,       /* 96  */
-      'a',     /* 97  */
-      'b',     /* 98  */
-      'c',     /* 99  */
-      'd',     /* 100 */
-      'e',     /* 101 */
-      'f',     /* 102 */
-      'g',     /* 103 */
-      'h',     /* 104 */
-      'i',     /* 105 */
-      'j',     /* 106 */
-      'k',     /* 107 */
-      'l',     /* 108 */
-      'm',     /* 109 */
-      'n',     /* 110 */
-      'o',     /* 111 */
-      'p',     /* 112 */
-      'q',     /* 113 */
-      'r',     /* 114 */
-      's',     /* 115 */
-      't',     /* 116 */
-      'u',     /* 117 */
-      'v',     /* 118 */
-      'w',     /* 119 */
-      'x',     /* 120 */
-      'y',     /* 121 */
-      'z'      /* 122 */
+   /* Bitmask for unreserved chars: A-Z a-z 0-9 * - . / _ */
+   static const uint32_t safe[4] = {
+      0x00000000, /*  0-31:  none           */
+      0x03FFE400, /* 32-63:  * - . / 0-9    */
+      0x87FFFFFE, /* 64-95:  A-Z _          */
+      0x07FFFFFE  /* 96-127: a-z            */
    };
 
-   /* Assume every character will be encoded, so we need 3 times the space. */
-   size_t _len                      = strlen(source) * 3 + 1;
-   size_t count                     = _len;
-   char *enc                        = (char*)calloc(1, _len);
-   *dest                            = enc;
+   const char *s;
+   char *enc;
+   size_t len = 0;
 
-   for (; *source; source++)
+   /* First pass: compute exact output length */
+   for (s = source; *s; s++)
    {
-      int written = 0;
-
-      /* any non-ASCII character will just be encoded without question */
-      if ((unsigned)*source < sizeof(urlencode_lut) && urlencode_lut[(unsigned)*source])
-         written = snprintf(enc, count, "%c", urlencode_lut[(unsigned)*source]);
+      unsigned char c = (unsigned char)*s;
+      if (c < 128 && (safe[c >> 5] & (1u << (c & 31))))
+         len += 1;
       else
-         written = snprintf(enc, count, "%%%02X", *source & 0xFF);
-
-      if (written > 0)
-         count -= written;
-
-      while (*++enc);
+         len += 3;
    }
 
-   (*dest)[_len - 1] = '\0';
+   enc   = (char*)malloc(len + 1);
+   *dest = enc;
+
+   /* Second pass: encode */
+   for (s = source; *s; s++)
+   {
+      unsigned char c = (unsigned char)*s;
+      if (c < 128 && (safe[c >> 5] & (1u << (c & 31))))
+         *enc++ = (char)c;
+      else
+      {
+         static const char hex[] = "0123456789ABCDEF";
+         *enc++ = '%';
+         *enc++ = hex[c >> 4];
+         *enc++ = hex[c & 0x0F];
+      }
+   }
+
+   *enc = '\0';
 }
 
 /**
@@ -327,90 +267,112 @@ void net_http_urlencode(char **dest, const char *source)
  **/
 void net_http_urlencode_full(char *s, const char *source, size_t len)
 {
-   size_t buf_pos;
-   size_t tmp_len;
-   char url_domain[256];
-   char url_path[PATH_MAX_LENGTH];
-   int count      = 0;
-   char *tmp      = url_path;
+   static const char hex[] = "0123456789ABCDEF";
+   const char *path_start;
+   const char *p;
+   size_t domain_len;
+   size_t pos;
+   int slashes = 0;
 
-   strlcpy(url_path, source, sizeof(url_path));
+   if (!s || !source || len == 0)
+      return;
 
-   while (count < 3 && tmp[0] != '\0')
+   /* Find the third '/' to locate the domain/path boundary */
+   for (p = source; *p && slashes < 3; p++)
    {
-      tmp = strchr(tmp, '/');
-      if (!tmp)
-         break;
-      count++;
-      tmp++;
+      if (*p == '/')
+         slashes++;
    }
 
-   tmp_len        = strlen(tmp);
-   buf_pos        = ((strlcpy(url_domain, source, tmp - url_path)) - tmp_len) - 1;
-   strlcpy(url_path,
-         source  + buf_pos + 1,
-         tmp_len           + 1
-         );
+   /* If fewer than 3 slashes, no path to encode — just copy as-is */
+   if (slashes < 3)
+   {
+      strlcpy(s, source, len);
+      return;
+   }
 
-   tmp             = NULL;
-   net_http_urlencode(&tmp, url_path);
-   buf_pos         = strlcpy(s, url_domain, len);
-   s[  buf_pos] = '/';
-   s[++buf_pos] = '\0';
-   strlcpy(s + buf_pos, tmp, len - buf_pos);
-   free(tmp);
+   path_start = p; /* points just past the third '/' */
+   domain_len = (size_t)(path_start - source);
+
+   /* Copy domain (including trailing '/') */
+   if (domain_len >= len)
+   {
+      strlcpy(s, source, len);
+      return;
+   }
+   memcpy(s, source, domain_len);
+   pos = domain_len;
+
+   /* Encode path directly into output buffer */
+   for (p = path_start; *p && pos + 1 < len; p++)
+   {
+      unsigned char c = (unsigned char)*p;
+
+      if (   (c >= 'A' && c <= 'Z')
+          || (c >= 'a' && c <= 'z')
+          || (c >= '0' && c <= '9')
+          || c == '-' || c == '_'
+          || c == '.' || c == '~'
+          || c == '/' || c == ':' 
+          || c == '?' || c == '#'
+          || c == '&' || c == '=')
+      {
+         s[pos++] = c;
+      }
+      else if (pos + 3 < len)
+      {
+         s[pos++] = '%';
+         s[pos++] = hex[(c >> 4) & 0x0F];
+         s[pos++] = hex[ c       & 0x0F];
+      }
+      else
+         break; /* not enough space for encoded char */
+   }
+
+   s[pos] = '\0';
 }
 
 struct http_connection_t *net_http_connection_new(const char *url,
       const char *method, const char *data)
 {
    struct http_connection_t *conn = NULL;
-
    if (!url)
       return NULL;
    if (!(conn = (struct http_connection_t*)calloc(1, sizeof(*conn))))
       return NULL;
-
    if (method)
-      conn->method         = strdup(method);
-
+   {
+      conn->method = strdup(method);
+      if (!conn->method)
+         goto error;
+   }
    if (data)
    {
-      conn->postdata       = strdup(data);
-      conn->contentlength  = strlen(data);
+      conn->postdata = strdup(data);
+      if (!conn->postdata)
+         goto error;
+      conn->contentlength = strlen(data);
    }
-
-   if ((conn->url = strdup(url)))
+   conn->url = strdup(url);
+   if (!conn->url)
+      goto error;
+   if (memcmp(url, "http://", 7) == 0)
+      conn->scan = conn->url + 7;
+   else if (memcmp(url, "https://", 8) == 0)
    {
-      if (!strncmp(url, "http://", STRLEN_CONST("http://")))
-      {
-         conn->scan   = conn->url + STRLEN_CONST("http://");
-
-         if (!string_is_empty(conn->scan))
-         {
-            conn->domain = conn->scan;
-            return conn;
-         }
-      }
-      else if (!strncmp(url, "https://", STRLEN_CONST("https://")))
-      {
-         conn->scan   = conn->url + STRLEN_CONST("https://");
-         conn->ssl    = true;
-
-         if (!string_is_empty(conn->scan))
-         {
-            conn->domain = conn->scan;
-            return conn;
-         }
-      }
+      conn->scan = conn->url + 8;
+      conn->ssl  = true;
    }
-
-   if (conn->url)
-      free(conn->url);
-   if (conn->method)
-      free(conn->method);
-   if (conn->postdata)
-      free(conn->postdata);
+   else
+      goto error;
+   if (*conn->scan == '\0')
+      goto error;
+   conn->domain = conn->scan;
+   return conn;
+error:
+   free(conn->url);
+   free(conn->method);
+   free(conn->postdata);
    free(conn);
    return NULL;
 }
@@ -608,7 +570,8 @@ static void net_http_dns_cache_remove_expired(void)
    }
 }
 
-static struct dns_cache_entry *net_http_dns_cache_find(const char *domain, int port)
+static struct dns_cache_entry *net_http_dns_cache_find(
+   const char *domain, int port)
 {
    struct dns_cache_entry *entry;
 
@@ -617,7 +580,7 @@ static struct dns_cache_entry *net_http_dns_cache_find(const char *domain, int p
    entry = dns_cache;
    while (entry)
    {
-      if (port == entry->port && string_is_equal(entry->domain, domain))
+      if (port == entry->port && strcmp(entry->domain, domain) == 0)
       {
 #ifdef HAVE_THREADS
          if (entry->thread && entry->valid)
@@ -636,9 +599,11 @@ static struct dns_cache_entry *net_http_dns_cache_find(const char *domain, int p
    return NULL;
 }
 
-static struct dns_cache_entry *net_http_dns_cache_add(const char *domain, int port, struct addrinfo *addr)
+static struct dns_cache_entry *net_http_dns_cache_add(
+   const char *domain, int port, struct addrinfo *addr)
 {
-   struct dns_cache_entry *entry = (struct dns_cache_entry*)calloc(1, sizeof(*entry));
+   struct dns_cache_entry *entry = (struct dns_cache_entry*)
+      calloc(1, sizeof(*entry));
    if (!entry)
       return NULL;
    entry->domain = strdup(domain);
@@ -723,7 +688,8 @@ static void net_http_conn_pool_remove_expired(void)
    {
       if (!entry->in_use && FD_ISSET(entry->fd, &fds))
       {
-         /* if it's not in use and it's reaadable we assume that means it's closed without checking recv */
+         /* If it's not in use and it's readable,
+          * we assume that means it's closed without checking recv */
          if (prev)
             prev->next = entry->next;
          else
@@ -776,7 +742,8 @@ static void net_http_conn_pool_move_to_end(struct conn_pool_entry *entry)
       entry->next = NULL;
 }
 
-static struct conn_pool_entry *net_http_conn_pool_find(const char *domain, int port)
+static struct conn_pool_entry *net_http_conn_pool_find(
+   const char *domain, int port)
 {
    struct conn_pool_entry *entry;
 
@@ -787,7 +754,9 @@ static struct conn_pool_entry *net_http_conn_pool_find(const char *domain, int p
    entry = conn_pool;
    while (entry)
    {
-      if (!entry->in_use && port == entry->port && string_is_equal(entry->domain, domain))
+      if (  !entry->in_use 
+          && port == entry->port
+          && strcmp(entry->domain, domain) == 0)
       {
          entry->in_use = true;
          net_http_conn_pool_move_to_end(entry);
@@ -802,7 +771,8 @@ static struct conn_pool_entry *net_http_conn_pool_find(const char *domain, int p
 
 static struct conn_pool_entry *net_http_conn_pool_add(const char *domain, int port, int fd, bool ssl)
 {
-   struct conn_pool_entry *entry = (struct conn_pool_entry*)calloc(1, sizeof(*entry));
+   struct conn_pool_entry *entry = (struct conn_pool_entry*)
+      calloc(1, sizeof(*entry));
    if (!entry)
       return NULL;
    entry->domain = strdup(domain);
@@ -841,9 +811,9 @@ struct http_t *net_http_new(struct http_connection_t *conn)
       state->request.postdata   = malloc(conn->contentlength);
       memcpy(state->request.postdata, conn->postdata, conn->contentlength);
    }
-   state->request.useragent     = conn->useragent ? strdup(conn->useragent) : NULL;
-   state->request.headers       = conn->headers ? strdup(conn->headers) : NULL;
-   state->request.port          = conn->port;
+   state->request.useragent= conn->useragent ? strdup(conn->useragent) : NULL;
+   state->request.headers  = conn->headers ? strdup(conn->headers) : NULL;
+   state->request.port     = conn->port;
 
    state->response.status  = -1;
    state->response.buflen  = 64 * 1024;  /* Start with larger buffer to reduce reallocations */
@@ -855,21 +825,21 @@ struct http_t *net_http_new(struct http_connection_t *conn)
 
 static void net_http_resolve(void *data)
 {
+   int port;
+   char *domain;
+   char port_buf[6];
    struct dns_cache_entry *entry = (struct dns_cache_entry*)data;
    struct addrinfo hints         = {0};
    struct addrinfo *addr         = NULL;
-   char *domain;
-   int port;
-   char port_buf[6];
 #if defined(HAVE_SOCKET_LEGACY) || defined(WIIU)
    int family                    = AF_INET;
 #else
    int family                    = AF_UNSPEC;
 #endif
 
-   hints.ai_family = family;
-   hints.ai_socktype = SOCK_STREAM;
-   hints.ai_flags |= AI_NUMERICSERV;
+   hints.ai_family               = family;
+   hints.ai_socktype             = SOCK_STREAM;
+   hints.ai_flags               |= AI_NUMERICSERV;
 
    LOCK_DNS_CACHE();
    domain = strdup(entry->domain);
@@ -920,6 +890,7 @@ static bool net_http_new_socket(struct http_t *state)
          int fd;
          if (!entry->addr)
          {
+            net_http_log_transport_state(state, "dns_lookup_failed", -1);
             UNLOCK_DNS_CACHE();
             return false;
          }
@@ -927,6 +898,8 @@ static bool net_http_new_socket(struct http_t *state)
          fd = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
          if (fd >= 0)
             state->conn = net_http_conn_pool_add(state->request.domain, state->request.port, fd, state->ssl);
+         else
+            net_http_log_transport_state(state, "socket_create_failed", -1);
          /* still waiting on thread */
          UNLOCK_DNS_CACHE();
          return (fd >= 0);
@@ -969,12 +942,15 @@ static bool net_http_connect(struct http_t *state)
    if (state->ssl)
    {
       if (!conn)
+      {
+         net_http_log_transport_state(state, "connect_missing_dns_or_conn", -1);
          return false;
-
+      }
       for (next_addr = addr; conn->fd >= 0; conn->fd = socket_next((void**)&next_addr))
       {
          if (!(conn->ssl_ctx = ssl_socket_init(conn->fd, state->request.domain)))
          {
+            net_http_log_transport_state(state, "ssl_init_failed", -1);
             socket_close(conn->fd);
             break;
          }
@@ -992,6 +968,7 @@ static bool net_http_connect(struct http_t *state)
 
          if (ssl_socket_connect(conn->ssl_ctx, next_addr, timeout, true) < 0)
          {
+            net_http_log_transport_state(state, "ssl_connect_failed", -1);
             ssl_socket_close(conn->ssl_ctx);
             ssl_socket_free(conn->ssl_ctx);
             conn->ssl_ctx = NULL;
@@ -1019,6 +996,7 @@ static bool net_http_connect(struct http_t *state)
             return true;
          }
 
+         net_http_log_transport_state(state, "socket_connect_failed", -1);
          socket_close(conn->fd);
       }
       conn->fd    = -1; /* already closed */
@@ -1039,36 +1017,38 @@ static void net_http_send_str(
    {
       if (!ssl_socket_send_all_blocking(
                   state->conn->ssl_ctx, text, text_size, true))
+      {
          state->err = true;
+         net_http_log_transport_state(state, "ssl_send_failed", -1);
+      }
    }
    else
 #endif
    {
       if (!socket_send_all_blocking(
                   state->conn->fd, text, text_size, true))
+      {
          state->err = true;
+         net_http_log_transport_state(state, "socket_send_failed", -1);
+      }
    }
 }
 
 static bool net_http_send_request(struct http_t *state)
 {
    struct request *request = (struct request*)&state->request;
-
    /* This is a bit lazy, but it works. */
    if (request->method)
    {
       net_http_send_str(state, request->method, strlen(request->method));
-      net_http_send_str(state, " /", STRLEN_CONST(" /"));
+      net_http_send_str(state, " /", sizeof(" /")-1);
    }
    else
-      net_http_send_str(state, "GET /", STRLEN_CONST("GET /"));
-
+      net_http_send_str(state, "GET /", sizeof("GET /")-1);
    net_http_send_str(state, request->path, strlen(request->path));
-   net_http_send_str(state, " HTTP/1.1\r\n", STRLEN_CONST(" HTTP/1.1\r\n"));
-
-   net_http_send_str(state, "Host: ", STRLEN_CONST("Host: "));
+   net_http_send_str(state, " HTTP/1.1\r\n", sizeof(" HTTP/1.1\r\n")-1);
+   net_http_send_str(state, "Host: ", sizeof("Host: ")-1);
    net_http_send_str(state, request->domain, strlen(request->domain));
-
    if (request->port && request->port != 80 && request->port != 443)
    {
       char portstr[16];
@@ -1079,37 +1059,33 @@ static bool net_http_send_request(struct http_t *state)
             "%i", request->port);
       net_http_send_str(state, portstr, _len);
    }
-
-   net_http_send_str(state, "\r\n", STRLEN_CONST("\r\n"));
-
+   net_http_send_str(state, "\r\n", sizeof("\r\n")-1);
    /* Pre-formatted headers */
    if (request->headers)
       net_http_send_str(state, request->headers, strlen(request->headers));
    if (request->contenttype)
    {
-      net_http_send_str(state, "Content-Type: ", STRLEN_CONST("Content-Type: "));
+      net_http_send_str(state, "Content-Type: ", sizeof("Content-Type: ")-1);
       net_http_send_str(state, request->contenttype, strlen(request->contenttype));
-      net_http_send_str(state, "\r\n", STRLEN_CONST("\r\n"));
+      net_http_send_str(state, "\r\n", sizeof("\r\n")-1);
    }
-
-   if (request->method && (string_is_equal(request->method, "POST") || string_is_equal(request->method, "PUT")))
+   if (request->method && request->method[0] == 'P')
    {
       size_t _len, len;
       char *len_str = NULL;
-
-      if (!request->postdata && !string_is_equal(request->method, "PUT"))
+      if (     !request->postdata
+            && request->method[1] == 'O' /* POST, not PUT */
+            && request->contentlength > 0)
       {
          state->err = true;
+         net_http_log_transport_state(state, "post_without_payload", -1);
          return true;
       }
-
       if (!request->headers && !request->contenttype)
          net_http_send_str(state,
                "Content-Type: application/x-www-form-urlencoded\r\n",
-               STRLEN_CONST("Content-Type: application/x-www-form-urlencoded\r\n"));
-
-      net_http_send_str(state, "Content-Length: ", STRLEN_CONST("Content-Length: "));
-
+               sizeof("Content-Type: application/x-www-form-urlencoded\r\n")-1);
+      net_http_send_str(state, "Content-Length: ", sizeof("Content-Length: ")-1);
       _len = request->contentlength;
 #ifdef _WIN32
       len     = snprintf(NULL, 0, "%" PRIuPTR, _len);
@@ -1120,28 +1096,21 @@ static bool net_http_send_request(struct http_t *state)
       len_str = (char*)malloc(len + 1);
       snprintf(len_str, len + 1, "%llu", (long long unsigned)_len);
 #endif
-
       len_str[len] = '\0';
-
       net_http_send_str(state, len_str, strlen(len_str));
-      net_http_send_str(state, "\r\n", STRLEN_CONST("\r\n"));
-
+      net_http_send_str(state, "\r\n", sizeof("\r\n")-1);
       free(len_str);
    }
-
-   net_http_send_str(state, "User-Agent: ", STRLEN_CONST("User-Agent: "));
+   net_http_send_str(state, "User-Agent: ", sizeof("User-Agent: ")-1);
    if (request->useragent)
       net_http_send_str(state, request->useragent, strlen(request->useragent));
    else
-      net_http_send_str(state, "libretro", STRLEN_CONST("libretro"));
-   net_http_send_str(state, "\r\n", STRLEN_CONST("\r\n"));
-
-   net_http_send_str(state, "\r\n", STRLEN_CONST("\r\n"));
-
+      net_http_send_str(state, "libretro", sizeof("libretro")-1);
+   net_http_send_str(state, "\r\n", sizeof("\r\n")-1);
+   net_http_send_str(state, "\r\n", sizeof("\r\n")-1);
    if (request->postdata && request->contentlength)
       net_http_send_str(state, (const char*)request->postdata,
             request->contentlength);
-
    state->request_sent = true;
    return state->err;
 }
@@ -1164,71 +1133,99 @@ int net_http_fd(struct http_t *state)
 static ssize_t net_http_receive_header(struct http_t *state, ssize_t len)
 {
    struct response *response = (struct response*)&state->response;
+   char *scan;
+   char *dataend;
 
    response->pos += len;
+   scan    = response->data;
+   dataend = response->data + response->pos;
 
    while (response->part < P_BODY)
    {
-      char *dataend  = response->data + response->pos;
-      char *lineend  = (char*)memchr(response->data, '\n', response->pos);
-
+      ssize_t remaining = dataend - scan;
+      char *lineend     = (char*)memchr(scan, '\n', remaining);
       if (!lineend)
          break;
 
-      *lineend       = '\0';
-
-      if (lineend != response->data && lineend[-1]=='\r')
+      *lineend = '\0';
+      if (lineend != scan && lineend[-1] == '\r')
          lineend[-1] = '\0';
 
       if (response->part == P_HEADER_TOP)
       {
-         if (strncmp(response->data, "HTTP/1.", STRLEN_CONST("HTTP/1."))!=0)
+         if (   scan[0] != 'H' || scan[1] != 'T' || scan[2] != 'T'
+             || scan[3] != 'P' || scan[4] != '/' || scan[5] != '1'
+             || scan[6] != '.')
          {
             response->part = P_DONE;
             state->err     = true;
             return -1;
          }
-         response->status = (int)strtoul(response->data
-               + STRLEN_CONST("HTTP/1.1 "), NULL, 10);
-         response->part   = P_HEADER;
+         {
+            const char *p  = scan + 9;
+            response->status = (p[0] - '0') * 100
+                             + (p[1] - '0') * 10
+                             + (p[2] - '0');
+         }
+         response->part = P_HEADER;
       }
       else
       {
-         if (string_starts_with_case_insensitive(response->data, "Content-Length:"))
-         {
-            char* ptr = response->data + STRLEN_CONST("Content-Length:");
-            while (ISSPACE(*ptr))
-               ++ptr;
-
-            response->bodytype = T_LEN;
-            response->len      = strtol(ptr, NULL, 10);
-         }
-         else if (string_is_equal_case_insensitive(response->data, "Transfer-Encoding: chunked"))
-            response->bodytype = T_CHUNK;
-
-         if (response->data[0]=='\0')
+         if (scan[0] == '\0')
          {
             if (response->status == 100)
-            {
                response->part = P_HEADER_TOP;
-            }
             else
             {
                response->part = P_BODY;
                if (response->bodytype == T_CHUNK)
                   response->part = P_BODY_CHUNKLEN;
             }
+            scan = lineend + 1;
+            continue;
          }
-         else
+
+         switch (scan[0] | 0x20)
+         {
+            case 'c':
+               if (strncasecmp(scan, "Content-Length:",
+                     sizeof("Content-Length:") - 1) == 0)
+               {
+                  char *ptr      = scan + (sizeof("Content-Length:") - 1);
+                  ssize_t val    = 0;
+                  while (*ptr == ' ' || *ptr == '\t')
+                     ++ptr;
+                  while (*ptr >= '0' && *ptr <= '9')
+                     val = val * 10 + (*ptr++ - '0');
+                  response->bodytype = T_LEN;
+                  response->len      = val;
+               }
+               break;
+            case 't':
+               if (strcasecmp(scan,
+                     "Transfer-Encoding: chunked") == 0)
+                  response->bodytype = T_CHUNK;
+               break;
+            default:
+               break;
+         }
+
          {
             union string_list_elem_attr attr;
             attr.i = 0;
-            string_list_append(response->headers, response->data, attr);
+            string_list_append(response->headers, scan, attr);
          }
       }
 
-      memmove(response->data, lineend + 1, dataend-(lineend+1));
-      response->pos = (dataend-(lineend + 1));
+      scan = lineend + 1;
+   }
+
+   if (scan != response->data)
+   {
+      ssize_t leftover = dataend - scan;
+      if (leftover > 0)
+         memmove(response->data, scan, leftover);
+      response->pos = leftover;
    }
 
    if (response->part >= P_BODY)
@@ -1262,7 +1259,7 @@ static bool net_http_receive_body(struct http_t *state, ssize_t newlen)
          return false;
       response->part      = P_DONE;
       if (response->buflen != response->len)
-         response->data      = (char*)realloc(response->data, response->len);
+         response->data   = (char*)realloc(response->data, response->len);
       return true;
    }
 
@@ -1281,8 +1278,8 @@ parse_again:
              */
 
             char *fullend = response->data + response->pos;
-            char *end     = (char*)memchr(response->data + response->len + 2, '\n',
-                  response->pos - response->len - 2);
+            char *end     = (char*)memchr(response->data + response->len + 2,
+            '\n', response->pos - response->len - 2);
 
             if (end)
             {
@@ -1352,15 +1349,17 @@ parse_again:
 
 static bool net_http_redirect(struct http_t *state, const char *location)
 {
-   /* this reinitializes state based on the new location */
+   /* This reinitializes state based on the new location */
 
-   /* url may be absolute or relative to the current url */
-   bool absolute = (strstr(location, "://") != NULL);
+   /* URL may be absolute or relative to the current URL */
+   bool absolute = (!strncmp(location, "http://", sizeof("http://")-1)
+                 || !strncmp(location, "https://", sizeof("https://")-1));
 
    if (absolute)
    {
       /* this block is a little wasteful, memory-wise */
-      struct http_connection_t *new_url = net_http_connection_new(location, NULL, NULL);
+      struct http_connection_t *new_url = net_http_connection_new(
+      location, NULL, NULL);
       net_http_connection_iterate(new_url);
       if (!net_http_connection_done(new_url))
       {
@@ -1388,7 +1387,8 @@ static bool net_http_redirect(struct http_t *state, const char *location)
       else
       {
          char *path = (char*)malloc(PATH_MAX_LENGTH);
-         fill_pathname_resolve_relative(path, state->request.path, location, PATH_MAX_LENGTH);
+         fill_pathname_resolve_relative(path, state->request.path,
+         location, PATH_MAX_LENGTH);
          free(state->request.path);
          state->request.path = path;
       }
@@ -1396,8 +1396,10 @@ static bool net_http_redirect(struct http_t *state, const char *location)
    state->request_sent       = false;
    state->response.part      = P_HEADER_TOP;
    state->response.status    = -1;
-   state->response.buflen    = 64 * 1024;  /* Start with larger buffer to reduce reallocations */
-   state->response.data      = (char*)realloc(state->response.data, state->response.buflen);
+   /* Start with larger buffer to reduce reallocations */
+   state->response.buflen    = 64 * 1024;
+   state->response.data      = (char*)realloc(state->response.data,
+   state->response.buflen);
    state->response.pos       = 0;
    state->response.len       = 0;
    state->response.bodytype  = T_FULL;
@@ -1460,6 +1462,7 @@ bool net_http_update(struct http_t *state, size_t* progress, size_t* total)
    {
       if (_len < 0 || state->err)
       {
+         net_http_log_transport_state(state, "receive_header_failed", _len);
          net_http_conn_pool_remove(state->conn);
          state->conn      = NULL;
          state->err       = true;
@@ -1474,6 +1477,7 @@ bool net_http_update(struct http_t *state, size_t* progress, size_t* total)
    {
       if (!net_http_receive_body(state, _len))
       {
+         net_http_log_transport_state(state, "receive_body_failed", _len);
          net_http_conn_pool_remove(state->conn);
          state->conn      = NULL;
          state->err       = true;
@@ -1516,7 +1520,7 @@ bool net_http_update(struct http_t *state, size_t* progress, size_t* total)
       for (_len = 0; (size_t)_len < response->headers->size; _len++)
       {
          if (string_starts_with_case_insensitive(response->headers->elems[_len].data, "Location: "))
-            return net_http_redirect(state, response->headers->elems[_len].data + STRLEN_CONST("Location: "));
+            return net_http_redirect(state, response->headers->elems[_len].data + (sizeof("Location: ")-1));
       }
    }
 
@@ -1548,11 +1552,18 @@ int net_http_status(struct http_t *state)
  * caller of net_http_new; it is not freed by net_http_delete().
  * If the status is not 20x and accept_err is false, it returns NULL.
  **/
-struct string_list *net_http_headers(struct http_t *state)
+struct string_list *net_http_headers_ex(struct http_t *state, bool accept_err)
 {
-   if (!state || !state->err)
+   if (!state)
+      return NULL;
+   if (!accept_err && !state->err)
       return NULL;
    return state->response.headers;
+}
+
+struct string_list *net_http_headers(struct http_t *state)
+{
+   return net_http_headers_ex(state, false);
 }
 
 /**

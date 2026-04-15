@@ -42,6 +42,7 @@
 
 #include "win32_common.h"
 
+
 #ifdef HAVE_GDI
 #include "gdi_defines.h"
 #endif
@@ -54,6 +55,7 @@
 #include "../../tasks/task_content.h"
 #include "../../tasks/tasks_internal.h"
 #include "../../core_info.h"
+#include "../../ui/drivers/ui_win32.h"
 
 #if !defined(_XBOX)
 
@@ -81,7 +83,6 @@
 #endif
 
 /* These are defined in later SDKs, thus ifdeffed. */
-
 #ifndef WM_MOUSEHWHEEL
 #define WM_MOUSEHWHEEL                  0x20e
 #endif
@@ -101,6 +102,53 @@
 #ifndef WM_POINTERUP
 #define WM_POINTERUP                    0x0247
 #endif
+
+/* Win32 UI resource identifiers (formerly ui_win32_resource.h) */
+enum
+{
+   IDR_MENU          = 101,
+   IDR_PICKCORE      = 103,
+   IDR_ACCELERATOR1,
+
+   ID_M_LOAD_CONTENT = 40001,
+   ID_CORELISTBOX,
+   ID_M_RESET,
+   ID_M_QUIT,
+   ID_M_MENU_TOGGLE,
+   ID_M_PAUSE_TOGGLE,
+   ID_M_LOAD_CORE,
+   ID_M_LOAD_STATE,
+   ID_M_SAVE_STATE,
+   ID_M_DISK_CYCLE,
+   ID_M_DISK_NEXT,
+   ID_M_DISK_PREV,
+   ID_M_WINDOW_SCALE_1X,
+   ID_M_WINDOW_SCALE_2X,
+   ID_M_WINDOW_SCALE_3X,
+   ID_M_WINDOW_SCALE_4X,
+   ID_M_WINDOW_SCALE_5X,
+   ID_M_WINDOW_SCALE_6X,
+   ID_M_WINDOW_SCALE_7X,
+   ID_M_WINDOW_SCALE_8X,
+   ID_M_WINDOW_SCALE_9X,
+   ID_M_WINDOW_SCALE_10X,
+   ID_M_FULL_SCREEN,
+   ID_M_MOUSE_GRAB,
+   ID_M_STATE_INDEX_AUTO,
+   ID_M_STATE_INDEX_0,
+   ID_M_STATE_INDEX_1,
+   ID_M_STATE_INDEX_2,
+   ID_M_STATE_INDEX_3,
+   ID_M_STATE_INDEX_4,
+   ID_M_STATE_INDEX_5,
+   ID_M_STATE_INDEX_6,
+   ID_M_STATE_INDEX_7,
+   ID_M_STATE_INDEX_8,
+   ID_M_STATE_INDEX_9,
+   ID_M_TAKE_SCREENSHOT,
+   ID_M_MUTE_TOGGLE,
+   ID_M_TOGGLE_DESKTOP
+};
 
 const GUID GUID_DEVINTERFACE_HID = { 0x4d1e55b2, 0xf16f, 0x11Cf, { 0x88, 0xcb, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30 } };
 #if defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x501
@@ -328,32 +376,29 @@ static INT_PTR_COMPAT CALLBACK pick_core_proc(
       WPARAM wParam, LPARAM lParam)
 {
    size_t list_size;
-   core_info_list_t *core_info_list = NULL;
-   const core_info_t *core_info     = NULL;
 
    switch (message)
    {
       case WM_INITDIALOG:
          {
-            HWND hwndList;
-            unsigned i;
-
+            const core_info_t *core_info     = NULL;
+            core_info_list_t *core_info_list = NULL;
             /* Add items to list. */
             core_info_get_list(&core_info_list);
             core_info_list_get_supported_cores(core_info_list,
                   path_get(RARCH_PATH_CONTENT), &core_info, &list_size);
-
-            hwndList = GetDlgItem(hDlg, ID_CORELISTBOX);
-
-            for (i = 0; i < list_size; i++)
-               SendMessage(hwndList, LB_ADDSTRING, 0,
-                     (LPARAM)core_info[i].display_name);
-
-            /* Select the first item in the list */
-            SendMessage(hwndList, LB_SETCURSEL, 0, 0);
-            path_set(RARCH_PATH_CORE, core_info[0].path);
-
-            SetFocus(hwndList);
+            if (list_size != 0)
+            {
+               size_t i;
+               HWND hwndList = GetDlgItem(hDlg, ID_CORELISTBOX);
+               for (i = 0; i < list_size; i++)
+                  SendMessage(hwndList, LB_ADDSTRING, 0,
+                        (LPARAM)core_info[i].display_name);
+               /* Select the first item in the list */
+               SendMessage(hwndList, LB_SETCURSEL, 0, 0);
+               path_set(RARCH_PATH_CORE, core_info[0].path);
+               SetFocus(hwndList);
+            }
             return TRUE;
          }
 
@@ -369,13 +414,18 @@ static INT_PTR_COMPAT CALLBACK pick_core_proc(
                {
                   case LBN_SELCHANGE:
                      {
+                        const core_info_t *core_info     = NULL;
+                        core_info_list_t *core_info_list = NULL;
                         HWND hwndList = GetDlgItem(hDlg, ID_CORELISTBOX);
                         int lbItem    = (int)
                            SendMessage(hwndList, LB_GETCURSEL, 0, 0);
 
                         core_info_get_list(&core_info_list);
                         core_info_list_get_supported_cores(core_info_list,
-                              path_get(RARCH_PATH_CONTENT), &core_info, &list_size);
+                              path_get(RARCH_PATH_CONTENT), &core_info,
+                              &list_size);
+                        if (lbItem < 0 || (size_t)lbItem >= list_size)
+                           break;
                         path_set(RARCH_PATH_CORE, core_info[lbItem].path);
                      }
                      break;
@@ -391,7 +441,8 @@ static BOOL CALLBACK win32_monitor_enum_proc(HMONITOR hMonitor,
 {
    win32_common_state_t
       *g_win32           = (win32_common_state_t*)&win32_st;
-
+   if (g_win32->monitor_count >= MAX_MONITORS)
+      return FALSE;
    win32_monitor_all[g_win32->monitor_count++] = hMonitor;
    return TRUE;
 }
@@ -470,7 +521,7 @@ void win32_monitor_info(void *data, void *hm_data, unsigned *mon_id)
       }
    }
 
-   if (hm_to_use)
+   if (*hm_to_use)
    {
       memset(mon, 0, sizeof(*mon));
       mon->cbSize = sizeof(MONITORINFOEX);
@@ -573,8 +624,8 @@ static bool win32_load_content_from_gui(const char *szFilename)
                video_st->poke->show_mouse(video_st->data, true);
 
             /* Pick one core that could be compatible. */
-            if (DialogBoxParam(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_PICKCORE),
-                     main_window.hwnd, pick_core_proc, (LPARAM)NULL) == IDOK)
+            if (win32_resources_pick_core_dialog(
+                     main_window.hwnd, pick_core_proc) == IDOK)
             {
                task_push_load_content_with_current_core_from_companion_ui(
                      NULL, &content_info, CORE_TYPE_PLAIN, NULL, NULL);
@@ -638,6 +689,76 @@ static void win32_resize_after_display_change(HWND hwnd, HMONITOR monitor)
             SWP_NOMOVE);
 }
 
+#ifdef HAVE_THREADS
+/* Set by win32_browser() before calling browser->open() so
+ * the threaded dialog knows whether the result should trigger a
+ * core load or a content load. Only touched on the main thread.
+ * Declared extern in ui_win32.c. */
+enum win32_browser_mode g_win32_browser_mode =
+   WIN32_BROWSER_MODE_LOAD_CONTENT;
+
+static bool win32_browser(
+      HWND owner,
+      char *filename,
+      size_t filename_size,
+      const char *extensions,
+      const char *title,
+      const char *initial_dir,
+      enum win32_browser_mode mode)
+{
+   bool result = false;
+   const ui_browser_window_t *browser =
+      ui_companion_driver_get_browser_window_ptr();
+
+   if (browser)
+   {
+      ui_browser_window_state_t browser_state;
+
+      /* These need to be big enough to hold the
+       * path/name of any file the user may select. */
+      char new_title[PATH_MAX];
+      char new_file[PATH_MAX_LENGTH]; /* MAX_PATH-length path buffer */
+      char new_dir[DIR_MAX_LENGTH];
+
+      new_title[0] = '\0';
+      new_file[0]  = '\0';
+      new_dir[0]   = '\0';
+
+      if (title && *title)
+         strlcpy(new_title, title, sizeof(new_title));
+
+      if (filename && *filename)
+         strlcpy(new_file, filename, sizeof(new_file));
+
+      if (initial_dir && *initial_dir)
+         strlcpy(new_dir, initial_dir, sizeof(new_dir));
+
+      /* OPENFILENAME.lpstrFilters is actually const,
+       * so this cast should be safe */
+      browser_state.filters  = (char*)extensions;
+      browser_state.title    = new_title;
+      browser_state.startdir = new_dir;
+      browser_state.path     = new_file;
+      browser_state.window   = owner;
+
+      /* Stash the mode so the threaded dialog can tag its result. */
+      g_win32_browser_mode   = mode;
+
+      result = browser->open(&browser_state);
+
+      /* With the threaded dialog, browser->open() spawns the thread
+       * and returns false immediately.  The real result arrives via
+       * WM_BROWSER_OPEN_RESULT.  The copy below is harmless but
+       * will not contain anything useful in the threaded path. */
+      if (filename && browser_state.path)
+         strlcpy(filename, browser_state.path, filename_size);
+   }
+
+   return result;
+}
+#else
+/* Non-threaded fallback: the dialog blocks the main thread and the
+ * result is returned synchronously to the caller (old behavior). */
 static bool win32_browser(
       HWND owner,
       char *filename,
@@ -657,22 +778,27 @@ static bool win32_browser(
       /* These need to be big enough to hold the
        * path/name of any file the user may select. */
       char new_title[PATH_MAX];
-      char new_file[PATH_MAX_LENGTH]; /* MAX_PATH-length path buffer */
+      char new_file[PATH_MAX_LENGTH];
+      char new_dir[DIR_MAX_LENGTH];
 
       new_title[0] = '\0';
       new_file[0]  = '\0';
+      new_dir[0]   = '\0';
 
-      if (!string_is_empty(title))
+      if (title && *title)
          strlcpy(new_title, title, sizeof(new_title));
 
       if (filename && *filename)
          strlcpy(new_file, filename, sizeof(new_file));
 
+      if (initial_dir && *initial_dir)
+         strlcpy(new_dir, initial_dir, sizeof(new_dir));
+
       /* OPENFILENAME.lpstrFilters is actually const,
        * so this cast should be safe */
       browser_state.filters  = (char*)extensions;
       browser_state.title    = new_title;
-      browser_state.startdir = strdup(initial_dir);
+      browser_state.startdir = new_dir;
       browser_state.path     = new_file;
       browser_state.window   = owner;
 
@@ -682,12 +808,11 @@ static bool win32_browser(
        * copy the final path back to the caller's buffer. */
       if (filename && browser_state.path)
          strlcpy(filename, browser_state.path, filename_size);
-
-      free(browser_state.startdir);
    }
 
    return result;
 }
+#endif /* HAVE_THREADS */
 
 static LRESULT win32_menu_loop(HWND owner, WPARAM wparam)
 {
@@ -697,6 +822,9 @@ static LRESULT win32_menu_loop(HWND owner, WPARAM wparam)
    {
       case ID_M_LOAD_CORE:
          {
+#ifndef HAVE_THREADS
+            content_ctx_info_t content_info;
+#endif
             char win32_file[PATH_MAX_LENGTH] = {0};
             settings_t *settings    = config_get_ptr();
             char    *title_cp       = NULL;
@@ -704,17 +832,29 @@ static LRESULT win32_menu_loop(HWND owner, WPARAM wparam)
             const char *title       = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_LIST);
             const char *initial_dir = settings->paths.directory_libretro;
 
+            wchar_t *title_wide     = utf8_to_utf16_string_alloc(title);
+
+            if (title_wide)
+               title_cp             = utf16_to_utf8_string_alloc(title_wide);
+
+#ifdef HAVE_THREADS
+            /* Fire-and-forget: the dialog runs on a worker thread.
+             * The actual core-load happens in WM_BROWSER_OPEN_RESULT. */
+            win32_browser(owner, win32_file, sizeof(win32_file),
+                     extensions, title_cp, initial_dir,
+                     WIN32_BROWSER_MODE_LOAD_CORE);
+
+            if (title_wide)
+               free(title_wide);
+            if (title_cp)
+               free(title_cp);
+#else
             /* Convert UTF8 to UTF16, then back to the
              * local code page.
              * This is needed for proper multi-byte
              * string display until Unicode is
              * fully supported.
              */
-            wchar_t *title_wide     = utf8_to_utf16_string_alloc(title);
-
-            if (title_wide)
-               title_cp             = utf16_to_utf8_string_alloc(title_wide);
-
             if (!win32_browser(owner, win32_file, sizeof(win32_file),
                      extensions, title_cp, initial_dir))
             {
@@ -729,8 +869,16 @@ static LRESULT win32_menu_loop(HWND owner, WPARAM wparam)
                free(title_wide);
             if (title_cp)
                free(title_cp);
-            path_set(RARCH_PATH_CORE, win32_file);
-            command_event(CMD_EVENT_LOAD_CORE, NULL);
+            content_info.argc        = 0;
+            content_info.argv        = NULL;
+            content_info.args        = NULL;
+            content_info.environ_get = NULL;
+            task_push_load_new_core(
+                     win32_file, NULL,
+                     &content_info,
+                     CORE_TYPE_PLAIN,
+                     NULL, NULL);
+#endif
          }
          break;
       case ID_M_LOAD_CONTENT:
@@ -743,7 +891,9 @@ static LRESULT win32_menu_loop(HWND owner, WPARAM wparam)
                   MENU_ENUM_LABEL_VALUE_LOAD_CONTENT_LIST);
             settings_t *settings    = config_get_ptr();
             const char *initial_dir = settings->paths.directory_menu_content;
+#ifndef HAVE_THREADS
             bool browser            = true;
+#endif
 
             /* Menubar accelerator hotkey is hijacked always, therefore must
              * press the keyboard event manually when blocking the accelerator. */
@@ -766,7 +916,20 @@ static LRESULT win32_menu_loop(HWND owner, WPARAM wparam)
             if (title_wide)
                title_cp = utf16_to_utf8_string_alloc(title_wide);
 
-            browser = win32_browser(owner, win32_file, sizeof(win32_file), extensions, title_cp, initial_dir);
+#ifdef HAVE_THREADS
+            /* Fire-and-forget: the dialog runs on a worker thread.
+             * The actual content-load happens in WM_BROWSER_OPEN_RESULT. */
+            win32_browser(owner, win32_file, sizeof(win32_file),
+                  extensions, title_cp, initial_dir,
+                  WIN32_BROWSER_MODE_LOAD_CONTENT);
+
+            if (title_wide)
+               free(title_wide);
+            if (title_cp)
+               free(title_cp);
+#else
+            browser = win32_browser(owner, win32_file, sizeof(win32_file),
+                  extensions, title_cp, initial_dir);
 
             if (title_wide)
                free(title_wide);
@@ -775,6 +938,7 @@ static LRESULT win32_menu_loop(HWND owner, WPARAM wparam)
 
             if (browser)
                win32_load_content_from_gui(win32_file);
+#endif
          }
          break;
       case ID_M_RESET:
@@ -1065,6 +1229,75 @@ static LRESULT CALLBACK wnd_proc_common(
       case WM_COMMAND:
          win32_menu_loop(main_window.hwnd, wparam);
          break;
+#ifdef HAVE_THREADS
+      case WM_BROWSER_OPEN_RESULT:
+         /* The threaded file-dialog picked a file.
+          * LPARAM is a heap-allocated win32_browser_thread_data_t*. */
+         {
+            win32_browser_thread_data_t *td =
+               (win32_browser_thread_data_t *)lparam;
+            if (td)
+            {
+               content_ctx_info_t content_info;
+               settings_t      *settings = config_get_ptr();
+               video_driver_state_t *video_st = video_state_get_ptr();
+
+               switch (td->mode)
+               {
+                  case WIN32_BROWSER_MODE_LOAD_CORE:
+                     content_info.argc        = 0;
+                     content_info.argv        = NULL;
+                     content_info.args        = NULL;
+                     content_info.environ_get = NULL;
+                     task_push_load_new_core(
+                           td->path, NULL,
+                           &content_info,
+                           CORE_TYPE_PLAIN,
+                           NULL, NULL);
+                     break;
+                  case WIN32_BROWSER_MODE_LOAD_CONTENT:
+                     win32_load_content_from_gui(td->path);
+                     break;
+                  default:
+                     break;
+               }
+
+               /* Full screen: hide mouse now that the dialog is gone */
+               if (settings->bools.video_fullscreen)
+               {
+                  if (     video_st->poke
+                        && video_st->poke->show_mouse)
+                     video_st->poke->show_mouse(video_st->data, false);
+               }
+
+               free(td);
+            }
+         }
+         break;
+      case WM_BROWSER_CANCELLED:
+         /* The threaded file-dialog was cancelled / closed.
+          * LPARAM is a heap-allocated win32_browser_thread_data_t*. */
+         {
+            win32_browser_thread_data_t *td =
+               (win32_browser_thread_data_t *)lparam;
+            if (td)
+            {
+               settings_t      *settings = config_get_ptr();
+               video_driver_state_t *video_st = video_state_get_ptr();
+
+               /* Full screen: hide mouse now that the dialog is gone */
+               if (settings->bools.video_fullscreen)
+               {
+                  if (     video_st->poke
+                        && video_st->poke->show_mouse)
+                     video_st->poke->show_mouse(video_st->data, false);
+               }
+
+               free(td);
+            }
+         }
+         break;
+#endif /* HAVE_THREADS */
    }
    return 0;
 }
@@ -1154,6 +1387,10 @@ static LRESULT CALLBACK wnd_proc_common_internal(HWND hwnd,
       case WM_SIZE:
       case WM_GETMINMAXINFO:
       case WM_COMMAND:
+#ifdef HAVE_THREADS
+      case WM_BROWSER_OPEN_RESULT:
+      case WM_BROWSER_CANCELLED:
+#endif
          ret = wnd_proc_common(&quit, hwnd, message, wparam, lparam);
          if (quit)
             return ret;
@@ -1236,6 +1473,10 @@ static LRESULT CALLBACK wnd_proc_winraw_common_internal(HWND hwnd,
       case WM_SIZE:
       case WM_GETMINMAXINFO:
       case WM_COMMAND:
+#ifdef HAVE_THREADS
+      case WM_BROWSER_OPEN_RESULT:
+      case WM_BROWSER_CANCELLED:
+#endif
          ret = wnd_proc_common(&quit, hwnd, message, wparam, lparam);
          if (quit)
             return ret;
@@ -1304,30 +1545,58 @@ static LRESULT CALLBACK wnd_proc_common_dinput_internal(HWND hwnd,
       case WM_IME_COMPOSITION:
          {
             HIMC    hIMC = ImmGetContext(hwnd);
-            unsigned gcs = lparam & (GCS_COMPSTR|GCS_RESULTSTR);
-            if (gcs)
+            /* Process composition and result strings separately;
+             * ImmGetCompositionStringW expects a single flag per call. */
+            unsigned gcs_flags[2] = { GCS_RESULTSTR, GCS_COMPSTR };
+            int f;
+            for (f = 0; f < 2; f++)
             {
-               int i;
-               wchar_t wstr[4] = {0,};
-               LONG _len       = ImmGetCompositionStringW(hIMC, gcs, wstr, 4);
-               wstr[2]         = wstr[1];
-               wstr[1]         = 0;
-               if ((_len <= 0) || (_len > 4))
-                  break;
-               for (i = 0; i < _len; i = i + 2)
+               unsigned gcs_flag = gcs_flags[f];
+               if (!(lparam & gcs_flag))
+                  continue;
                {
-                  size_t __len;
-                  char *utf8   = utf16_to_utf8_string_alloc(wstr+i);
-                  if (!utf8)
+                  int i;
+                  /* Request up to 2 wide chars (4 bytes). Return value is in bytes. */
+                  wchar_t wstr[3] = {0, 0, 0};
+                  LONG byte_len   = ImmGetCompositionStringW(
+                        hIMC, gcs_flag, wstr, 2 * sizeof(wchar_t));
+                  int char_count;
+
+                  if (byte_len <= 0 || byte_len > (LONG)(2 * sizeof(wchar_t)))
                      continue;
-                  __len         = strlen(utf8) + 1;
-                  if (__len >= 1 && __len <= 3)
+
+                  char_count = byte_len / (int)sizeof(wchar_t);
+
+                  for (i = 0; i < char_count; i++)
                   {
-                     if (__len >= 2)
-                        utf8[3] = (gcs) | (gcs >> 4);
-                     input_keyboard_event(true, 1, *((int*)utf8), 0, RETRO_DEVICE_KEYBOARD);
+                     wchar_t single[2];
+                     char *utf8;
+                     size_t utf8_len;
+                     uint32_t packed = 0;
+
+                     single[0] = wstr[i];
+                     single[1] = 0;
+
+                     utf8 = utf16_to_utf8_string_alloc(single);
+                     if (!utf8)
+                        continue;
+
+                     utf8_len = strlen(utf8);
+
+                     /* Pack up to 3 UTF-8 bytes into the low 24 bits and
+                      * the composition/result flag into the high byte.
+                      * This matches what the receiver expects as a uint32. */
+                     if (utf8_len >= 1 && utf8_len <= 3)
+                     {
+                        memcpy(&packed, utf8, utf8_len);
+                        if (utf8_len >= 2)
+                           ((unsigned char*)&packed)[3] =
+                              (unsigned char)((gcs_flag) | (gcs_flag >> 4));
+                        input_keyboard_event(true, 1, (uint32_t)packed, 0,
+                              RETRO_DEVICE_KEYBOARD);
+                     }
+                     free(utf8);
                   }
-                  free(utf8);
                }
             }
             ImmReleaseContext(hwnd, hIMC);
@@ -1429,6 +1698,10 @@ static LRESULT CALLBACK wnd_proc_common_dinput_internal(HWND hwnd,
       case WM_SIZE:
       case WM_GETMINMAXINFO:
       case WM_COMMAND:
+#ifdef HAVE_THREADS
+      case WM_BROWSER_OPEN_RESULT:
+      case WM_BROWSER_CANCELLED:
+#endif
          ret = wnd_proc_common(&quit, hwnd, message, wparam, lparam);
          if (quit)
             return ret;
@@ -1834,7 +2107,7 @@ bool win32_window_create(void *data, unsigned style,
    if (!main_window.hwnd)
       return false;
 
-   window_accelerators = LoadAcceleratorsA(GetModuleHandleA(NULL), MAKEINTRESOURCE(IDR_ACCELERATOR1));
+   window_accelerators = win32_resources_get_accelerator();
 
 #ifdef HAVE_TASKBAR
    g_win32->taskbar_message            =
@@ -1969,15 +2242,21 @@ void win32_check_window(void *data,
 #ifdef HAVE_CLIP_WINDOW
 void win32_clip_window(bool state)
 {
-   RECT clip_rect;
-
    if (state && main_window.hwnd)
    {
       WINDOWINFO info;
-      info.cbSize = sizeof(WINDOWINFO);
+      RECT clip_rect;
+      info.cbSize      = sizeof(WINDOWINFO);
 
       if (GetWindowInfo(main_window.hwnd, &info))
          clip_rect = info.rcClient;
+      else
+      {
+         clip_rect.left   = 0;
+         clip_rect.top    = 0;
+         clip_rect.right  = 0;
+         clip_rect.bottom = 0;
+      }
 
       ClipCursor(&clip_rect);
    }
@@ -2067,10 +2346,14 @@ static unsigned int menu_id_to_meta_key(unsigned int menu_id)
    return 0;
 }
 
-/* Given a short key (meta key), get its name as a string */
-/* For single character results, may return same pointer
- * with different data inside (modifying the old result) */
-static const char *win32_meta_key_to_name(unsigned int meta_key)
+/* Given a short key (meta key), get its name as a string.
+ * For named keys the return value points into the global
+ * input_config_key_map table.  For single printable-ASCII
+ * characters the name is written into the caller-supplied
+ * buffer (buf, buf_size) and the return value points there.
+ * Returns NULL when no name can be determined. */
+static const char *win32_meta_key_to_name(unsigned int meta_key,
+      char *buf, size_t buf_size)
 {
    int i = 0;
    const struct retro_keybind* key = &input_config_binds[0][meta_key];
@@ -2086,11 +2369,11 @@ static const char *win32_meta_key_to_name(unsigned int meta_key)
       i++;
    }
 
-   if (key_code >= 32 && key_code < 127)
+   if (key_code >= 32 && key_code < 127 && buf_size >= 2)
    {
-      static char single_char[2] = "A";
-      single_char[0]              = key_code;
-      return single_char;
+      buf[0] = (char)key_code;
+      buf[1] = '\0';
+      return buf;
    }
    return NULL;
 }
@@ -2133,8 +2416,8 @@ static void win32_localize_menu(HMENU menu)
       label_enum = menu_id_to_label_enum(menu_item_info.wID);
       if (label_enum != MSG_UNKNOWN)
       {
-         size_t ___len;
-         size_t __len;
+         size_t final_len;
+         size_t key_name_len;
 #ifndef LEGACY_WIN32
          wchar_t* new_label_unicode = NULL;
 #else
@@ -2145,6 +2428,7 @@ static void win32_localize_menu(HMENU menu)
          const char* new_label2     = new_label;
          const char* meta_key_name  = NULL;
          char* new_label_text       = NULL;
+         char key_name_buf[2]       = {0};
 
          /* specific replacements:
             Load Content = "Ctrl+O"
@@ -2153,53 +2437,54 @@ static void win32_localize_menu(HMENU menu)
                MENU_ENUM_LABEL_VALUE_LOAD_CONTENT_LIST)
          {
             meta_key_name = "Ctrl+O";
-            __len         = STRLEN_CONST("Ctrl+O");
+            key_name_len  = STRLEN_CONST("Ctrl+O");
          }
          else if (label_enum ==
                MENU_ENUM_LABEL_VALUE_INPUT_META_FULLSCREEN_TOGGLE_KEY)
          {
             meta_key_name = "Alt+Enter";
-            __len        = STRLEN_CONST("Alt+Enter");
+            key_name_len  = STRLEN_CONST("Alt+Enter");
          }
          else if (meta_key != 0)
          {
-            meta_key_name = win32_meta_key_to_name(meta_key);
-            __len         = meta_key_name ? strlen(meta_key_name) : 0;
+            meta_key_name = win32_meta_key_to_name(meta_key,
+                  key_name_buf, sizeof(key_name_buf));
+            key_name_len  = meta_key_name ? strlen(meta_key_name) : 0;
          }
 
          /* Append localized name, tab character, and Shortcut Key */
          if (meta_key_name && string_is_not_equal(meta_key_name, "nul"))
          {
-            size_t _len     = strlen(new_label);
-            size_t buf_size = _len + __len + 2;
-            new_label_text  = (char*)malloc(buf_size);
+            size_t label_len = strlen(new_label);
+            size_t buf_size  = label_len + key_name_len + 2;
+            new_label_text   = (char*)malloc(buf_size);
 
             if (new_label_text)
             {
-               size_t __len;
+               size_t copy_len;
                new_label2              = new_label_text;
-               __len                   = strlcpy(new_label_text, new_label,
+               copy_len                = strlcpy(new_label_text, new_label,
                      buf_size);
-               new_label_text[  __len] = '\t';
-               new_label_text[++__len] = '\0';
-               strlcpy(new_label_text + __len, meta_key_name, buf_size - __len);
+               new_label_text[  copy_len] = '\t';
+               new_label_text[++copy_len] = '\0';
+               strlcpy(new_label_text + copy_len, meta_key_name, buf_size - copy_len);
                /* Make first character of shortcut name uppercase */
-               new_label_text[_len + 1] = toupper(new_label_text[_len + 1]);
+               new_label_text[label_len + 1] = toupper(new_label_text[label_len + 1]);
             }
          }
 
 #ifndef LEGACY_WIN32
          /* Convert string from UTF-8, then assign menu text */
          new_label_unicode         = utf8_to_utf16_string_alloc(new_label2);
-         ___len                    = wcslen(new_label_unicode);
-         menu_item_info.cch        = ___len;
+         final_len                 = wcslen(new_label_unicode);
+         menu_item_info.cch        = final_len;
          menu_item_info.dwTypeData = new_label_unicode;
          SetMenuItemInfoW(menu, index, true, &menu_item_info);
          free(new_label_unicode);
 #else
          new_label_ansi            = utf8_to_local_string_alloc(new_label2);
-         ___len                    = strlen(new_label_ansi);
-         menu_item_info.cch        = ___len;
+         final_len                 = strlen(new_label_ansi);
+         menu_item_info.cch        = final_len;
          menu_item_info.dwTypeData = new_label_ansi;
          SetMenuItemInfoA(menu, index, true, &menu_item_info);
          free(new_label_ansi);
@@ -2319,7 +2604,13 @@ bool win32_suspend_screensaver(void *data, bool enable)
                Request                                  =
                   powerCreateRequest(&RequestContext);
 
-               powerSetRequest( Request, PowerRequestDisplayRequired);
+               powerSetRequest(Request, PowerRequestDisplayRequired);
+               /* TODO/FIXME - handle is never released so
+                * technically counts as a memory leak. However, this
+                * handle needs to be kept alive so long as the screensaver
+                * should be suppressed. So this variable might need to
+                * be bookkept somewhere else where it can be properly
+                * closed upon shutdown */
                return true;
             }
          }
@@ -2490,7 +2781,7 @@ void win32_set_window(unsigned *width, unsigned *height,
          rc_temp.right  = (LONG)*height;
          rc_temp.bottom = 0x7FFF;
 
-         menuItem = LoadMenuA(GetModuleHandle(NULL), MAKEINTRESOURCE(IDR_MENU));
+         menuItem = win32_resources_create_menu();
          win32_localize_menu(menuItem);
          SetMenu(main_window.hwnd, menuItem);
 
@@ -2572,7 +2863,7 @@ bool win32_set_video_mode(void *data,
 
 bool win32_get_client_rect(RECT* rect)
 {
-   return GetWindowRect(main_window.hwnd, rect);
+   return GetClientRect(main_window.hwnd, rect);
 }
 
 void win32_window_reset(void)
@@ -2604,13 +2895,13 @@ void win32_get_video_output_prev(
    unsigned curr_width  = 0;
    unsigned curr_height = 0;
 
-   if (win32_get_video_output(&dm, -1, sizeof(dm)))
+   if (win32_get_video_output(&dm, -1))
    {
       curr_width  = dm.dmPelsWidth;
       curr_height = dm.dmPelsHeight;
    }
 
-   for (i = 0; win32_get_video_output(&dm, i, sizeof(dm)); i++)
+   for (i = 0; win32_get_video_output(&dm, i); i++)
    {
       if (     dm.dmPelsWidth  == curr_width
             && dm.dmPelsHeight == curr_height)
@@ -2636,13 +2927,13 @@ void win32_get_video_output_prev(
 
 float win32_get_refresh_rate(void *data)
 {
-   float refresh_rate                      = 0.0f;
 #if _WIN32_WINNT >= 0x0601 || _WIN32_WINDOWS >= 0x0601 /* Win 7 */
    UINT32 TopologyID;
-   unsigned int NumPathArrayElements       = 0;
-   unsigned int NumModeInfoArrayElements   = 0;
-   DISPLAYCONFIG_PATH_INFO_CUSTOM *PathInfoArray  = NULL;
-   DISPLAYCONFIG_MODE_INFO_CUSTOM *ModeInfoArray  = NULL;
+   float refresh_rate                            = 0.0f;
+   unsigned int NumPathArrayElements             = 0;
+   unsigned int NumModeInfoArrayElements         = 0;
+   DISPLAYCONFIG_PATH_INFO_CUSTOM *PathInfoArray = NULL;
+   DISPLAYCONFIG_MODE_INFO_CUSTOM *ModeInfoArray = NULL;
 #ifdef HAVE_DYLIB
    static QUERYDISPLAYCONFIG pQueryDisplayConfig;
    static GETDISPLAYCONFIGBUFFERSIZES pGetDisplayConfigBufferSizes;
@@ -2650,51 +2941,56 @@ float win32_get_refresh_rate(void *data)
    {
       HMODULE user32 = GetModuleHandle("user32.dll");
       if (!pQueryDisplayConfig)
-         pQueryDisplayConfig        = (QUERYDISPLAYCONFIG)GetProcAddress(
-               user32, "QueryDisplayConfig");
+         pQueryDisplayConfig        = (QUERYDISPLAYCONFIG)
+         GetProcAddress(user32, "QueryDisplayConfig");
       if (!pGetDisplayConfigBufferSizes)
-         pGetDisplayConfigBufferSizes = (GETDISPLAYCONFIGBUFFERSIZES)GetProcAddress(
-               user32, "GetDisplayConfigBufferSizes");
+         pGetDisplayConfigBufferSizes = (GETDISPLAYCONFIGBUFFERSIZES)
+         GetProcAddress(user32, "GetDisplayConfigBufferSizes");
    }
 #else
-   static QUERYDISPLAYCONFIG pQueryDisplayConfig                   = QueryDisplayConfig;
+   static QUERYDISPLAYCONFIG pQueryDisplayConfig = QueryDisplayConfig;
    static GETDISPLAYCONFIGBUFFERSIZES pGetDisplayConfigBufferSizes = GetDisplayConfigBufferSizes;
 #endif
 
    /* Both function pointers must be valid before proceeding. */
    if (!pQueryDisplayConfig || !pGetDisplayConfigBufferSizes)
-      return refresh_rate;
+      return 0.0f;
 
    if (pGetDisplayConfigBufferSizes(
             QDC_DATABASE_CURRENT,
             &NumPathArrayElements,
             &NumModeInfoArrayElements) != ERROR_SUCCESS)
-      return refresh_rate;
+      return 0.0f;
 
    PathInfoArray = (DISPLAYCONFIG_PATH_INFO_CUSTOM *)
       malloc(sizeof(DISPLAYCONFIG_PATH_INFO_CUSTOM) * NumPathArrayElements);
+   if (!PathInfoArray)
+      return 0.0f;
    ModeInfoArray = (DISPLAYCONFIG_MODE_INFO_CUSTOM *)
       malloc(sizeof(DISPLAYCONFIG_MODE_INFO_CUSTOM) * NumModeInfoArrayElements);
-
-   if (PathInfoArray && ModeInfoArray)
+   if (!ModeInfoArray)
    {
-      if (pQueryDisplayConfig(QDC_DATABASE_CURRENT,
-                                 &NumPathArrayElements,
-                                 PathInfoArray,
-                                 &NumModeInfoArrayElements,
-                                 ModeInfoArray,
-                                 &TopologyID) == ERROR_SUCCESS
-            && NumPathArrayElements >= 1
-            && PathInfoArray[0].targetInfo.refreshRate.Denominator != 0)
-         refresh_rate = (float)PathInfoArray[0].targetInfo.refreshRate.Numerator /
-                               PathInfoArray[0].targetInfo.refreshRate.Denominator;
+      free(PathInfoArray);
+      return 0.0f;
    }
+
+   if (pQueryDisplayConfig(QDC_DATABASE_CURRENT,
+            &NumPathArrayElements,
+            PathInfoArray,
+            &NumModeInfoArrayElements,
+            ModeInfoArray,
+            &TopologyID) == ERROR_SUCCESS
+         && NumPathArrayElements >= 1
+         && PathInfoArray[0].targetInfo.refreshRate.Denominator != 0)
+      refresh_rate = (float)PathInfoArray[0].targetInfo.refreshRate.Numerator
+         / PathInfoArray[0].targetInfo.refreshRate.Denominator;
 
    free(ModeInfoArray);
    free(PathInfoArray);
-
-#endif
    return refresh_rate;
+#else
+   return 0.0f;
+#endif
 }
 
 void win32_get_video_output_next(
@@ -2706,13 +3002,13 @@ void win32_get_video_output_next(
    unsigned curr_width  = 0;
    unsigned curr_height = 0;
 
-   if (win32_get_video_output(&dm, -1, sizeof(dm)))
+   if (win32_get_video_output(&dm, -1))
    {
       curr_width  = dm.dmPelsWidth;
       curr_height = dm.dmPelsHeight;
    }
 
-   for (i = 0; win32_get_video_output(&dm, i, sizeof(dm)); i++)
+   for (i = 0; win32_get_video_output(&dm, i); i++)
    {
       if (found)
       {
@@ -2733,26 +3029,28 @@ void win32_get_video_output_next(
 #define WIN32_GET_VIDEO_OUTPUT(devName, iModeNum, dm) EnumDisplaySettings(devName, iModeNum, dm)
 #endif
 
-bool win32_get_video_output(DEVMODE *dm, int mode, size_t len)
+bool win32_get_video_output(DEVMODE *dm, int mode)
 {
    MONITORINFOEX current_mon;
    HMONITOR hm_to_use        = NULL;
    unsigned mon_id           = 0;
-   memset(dm, 0, len);
-   dm->dmSize  = len;
+
+   memset(dm, 0, sizeof(DEVMODE));
+   dm->dmSize = sizeof(DEVMODE);
+
    win32_monitor_info(&current_mon, &hm_to_use, &mon_id);
-   if (WIN32_GET_VIDEO_OUTPUT((const char*)&current_mon.szDevice, (mode == -1)
-            ? ENUM_CURRENT_SETTINGS
-            : (DWORD)mode,
-            dm) == 0)
-      return false;
-   return true;
+
+   return WIN32_GET_VIDEO_OUTPUT(
+         current_mon.szDevice,
+         (mode == -1) ? ENUM_CURRENT_SETTINGS : (DWORD)mode,
+         dm) != 0;
 }
 
-void win32_get_video_output_size(void *data, unsigned *width, unsigned *height, char *desc, size_t len)
+void win32_get_video_output_size(void *data, unsigned *width,
+   unsigned *height, char *desc, size_t len)
 {
    DEVMODE dm;
-   if (win32_get_video_output(&dm, -1, sizeof(dm)))
+   if (win32_get_video_output(&dm, -1))
    {
       *width  = dm.dmPelsWidth;
       *height = dm.dmPelsHeight;
@@ -2761,6 +3059,7 @@ void win32_get_video_output_size(void *data, unsigned *width, unsigned *height, 
 
 void win32_setup_pixel_format(HDC hdc, bool supports_gl)
 {
+   int pf;
    PIXELFORMATDESCRIPTOR pfd = {0};
    pfd.nSize        = sizeof(PIXELFORMATDESCRIPTOR);
    pfd.nVersion     = 1;
@@ -2774,7 +3073,9 @@ void win32_setup_pixel_format(HDC hdc, bool supports_gl)
    if (supports_gl)
       pfd.dwFlags  |= PFD_SUPPORT_OPENGL;
 
-   SetPixelFormat(hdc, ChoosePixelFormat(hdc, &pfd), &pfd);
+   pf = ChoosePixelFormat(hdc, &pfd);
+   if (pf == 0 || !SetPixelFormat(hdc, pf, &pfd))
+      RARCH_ERR("[Win32] Failed to set pixel format.\n");
 }
 
 #ifndef __WINRT__
@@ -2813,4 +3114,290 @@ bool win32_window_init(WNDCLASSEX *wndclass,
 
    return RegisterClassEx(wndclass);
 }
+
+/* ----------------------------------------------------------------
+ * PROGRAMMATIC WIN32 RESOURCES
+ *
+ * Replaces the menu, dialog, accelerator, and manifest resources
+ * formerly in media/rarch.rc and media/rarch_ja.rc.
+ *
+ * The icon resource remains in rarch.rc so the executable has
+ * an embedded icon visible in Explorer / taskbar / Alt+Tab.
+ *
+ *   IDR_MENU          → win32_resources_create_menu()
+ *   IDR_ACCELERATOR1  → win32_resources_get_accelerator()
+ *   IDD_PICKCORE      → win32_resources_pick_core_dialog()
+ *   rarch.manifest    → apply_dpi_awareness()  (called from _init)
+ * ---------------------------------------------------------------- */
+
+static HACCEL s_accel_table = NULL;
+
+/* DPI AWARENESS  (replaces media/rarch.manifest)
+ * The manifest contained <dpiAware>true</dpiAware>.
+ * We call the equivalent API at runtime. */
+typedef HRESULT (WINAPI *pfn_SetProcessDpiAwareness)(int);
+
+static void apply_dpi_awareness(void)
+{
+   HMODULE shcore = LoadLibraryW(L"shcore.dll");
+   if (shcore)
+   {
+      union {
+         FARPROC proc;
+         pfn_SetProcessDpiAwareness func;
+      } u;
+      u.proc = GetProcAddress(shcore, "SetProcessDpiAwareness");
+      if (u.func)
+      {
+         u.func(1); /* PROCESS_SYSTEM_DPI_AWARE */
+         FreeLibrary(shcore);
+         return;
+      }
+      FreeLibrary(shcore);
+   }
+   /* Fallback for Vista / Win7 without shcore.
+    * Load dynamically so we still link on XP / MSVC 2005. */
+   {
+      HMODULE user32 = GetModuleHandleW(L"user32.dll");
+      if (user32)
+      {
+         typedef BOOL (WINAPI *pfn_SetProcessDPIAware)(void);
+         union {
+            FARPROC proc;
+            pfn_SetProcessDPIAware func;
+         } u;
+         u.proc = GetProcAddress(user32, "SetProcessDPIAware");
+         if (u.func)
+            u.func();
+      }
+   }
+}
+
+/* ACCELERATOR TABLE  (replaces IDR_ACCELERATOR1)
+ *   Ctrl+O     → ID_M_LOAD_CONTENT
+ *   Alt+Enter  → ID_M_FULL_SCREEN */
+static HACCEL create_accelerator_table(void)
+{
+   ACCEL accel[2];
+   accel[0].fVirt = FCONTROL | FVIRTKEY | FNOINVERT;
+   accel[0].key   = 'O';
+   accel[0].cmd   = ID_M_LOAD_CONTENT;
+   accel[1].fVirt = FALT | FVIRTKEY | FNOINVERT;
+   accel[1].key   = VK_RETURN;
+   accel[1].cmd   = ID_M_FULL_SCREEN;
+   return CreateAcceleratorTableW(accel, 2);
+}
+
+/* MENU BAR  (replaces IDR_MENU from rarch.rc)
+ * Always created with English labels; win32_localize_menu()
+ * re-labels every item for the active language. */
+HMENU win32_resources_create_menu(void)
+{
+   HMENU menu_bar, file_menu, command_menu, window_menu;
+   HMENU audio_menu, disk_menu, savestate_menu, stateindex_menu;
+   HMENU scale_menu;
+
+   menu_bar = CreateMenu();
+   if (!menu_bar)
+      return NULL;
+
+   /* ---- File ---- */
+   file_menu = CreatePopupMenu();
+   AppendMenuA(file_menu, MF_STRING, ID_M_LOAD_CORE,    "Load Core...");
+   AppendMenuA(file_menu, MF_STRING, ID_M_LOAD_CONTENT, "Load Content...");
+   AppendMenuA(file_menu, MF_SEPARATOR, 0, NULL);
+   AppendMenuA(file_menu, MF_STRING, ID_M_QUIT,         "Close");
+   AppendMenuA(menu_bar,  MF_POPUP, (UINT_PTR)file_menu, "File");
+
+   /* ---- Command ---- */
+   command_menu = CreatePopupMenu();
+
+   audio_menu = CreatePopupMenu();
+   AppendMenuA(audio_menu, MF_STRING, ID_M_MUTE_TOGGLE, "Audio Mute Toggle");
+   AppendMenuA(command_menu, MF_POPUP, (UINT_PTR)audio_menu, "Audio Options");
+
+   disk_menu = CreatePopupMenu();
+   AppendMenuA(disk_menu, MF_STRING, ID_M_DISK_CYCLE, "Disk Eject Toggle");
+   AppendMenuA(disk_menu, MF_STRING, ID_M_DISK_PREV,  "Disk Previous");
+   AppendMenuA(disk_menu, MF_STRING, ID_M_DISK_NEXT,  "Disk Next");
+   AppendMenuA(command_menu, MF_POPUP, (UINT_PTR)disk_menu, "Disk Options");
+
+   savestate_menu = CreatePopupMenu();
+
+   stateindex_menu = CreatePopupMenu();
+   AppendMenuA(stateindex_menu, MF_STRING, ID_M_STATE_INDEX_AUTO, "Auto");
+   AppendMenuA(stateindex_menu, MF_STRING, ID_M_STATE_INDEX_0,    "0");
+   AppendMenuA(stateindex_menu, MF_STRING, ID_M_STATE_INDEX_1,    "1");
+   AppendMenuA(stateindex_menu, MF_STRING, ID_M_STATE_INDEX_2,    "2");
+   AppendMenuA(stateindex_menu, MF_STRING, ID_M_STATE_INDEX_3,    "3");
+   AppendMenuA(stateindex_menu, MF_STRING, ID_M_STATE_INDEX_4,    "4");
+   AppendMenuA(stateindex_menu, MF_STRING, ID_M_STATE_INDEX_5,    "5");
+   AppendMenuA(stateindex_menu, MF_STRING, ID_M_STATE_INDEX_6,    "6");
+   AppendMenuA(stateindex_menu, MF_STRING, ID_M_STATE_INDEX_7,    "7");
+   AppendMenuA(stateindex_menu, MF_STRING, ID_M_STATE_INDEX_8,    "8");
+   AppendMenuA(stateindex_menu, MF_STRING, ID_M_STATE_INDEX_9,    "9");
+   AppendMenuA(savestate_menu, MF_POPUP,
+         (UINT_PTR)stateindex_menu, "State Index");
+
+   AppendMenuA(savestate_menu, MF_STRING, ID_M_LOAD_STATE, "Load State");
+   AppendMenuA(savestate_menu, MF_STRING, ID_M_SAVE_STATE, "Save State");
+   AppendMenuA(command_menu, MF_POPUP,
+         (UINT_PTR)savestate_menu, "Save State Options");
+
+   AppendMenuA(command_menu, MF_STRING, ID_M_RESET,           "Reset");
+   AppendMenuA(command_menu, MF_STRING, ID_M_PAUSE_TOGGLE,    "Pause Toggle");
+   AppendMenuA(command_menu, MF_STRING, ID_M_MENU_TOGGLE,     "Menu Toggle");
+   AppendMenuA(command_menu, MF_STRING, ID_M_TAKE_SCREENSHOT, "Take Screenshot");
+   AppendMenuA(command_menu, MF_STRING, ID_M_MOUSE_GRAB,      "Mouse Grab Toggle");
+   AppendMenuA(menu_bar, MF_POPUP, (UINT_PTR)command_menu, "Command");
+
+   /* ---- Window ---- */
+   window_menu = CreatePopupMenu();
+
+   scale_menu = CreatePopupMenu();
+   AppendMenuA(scale_menu, MF_STRING, ID_M_WINDOW_SCALE_1X,  "1x");
+   AppendMenuA(scale_menu, MF_STRING, ID_M_WINDOW_SCALE_2X,  "2x");
+   AppendMenuA(scale_menu, MF_STRING, ID_M_WINDOW_SCALE_3X,  "3x");
+   AppendMenuA(scale_menu, MF_STRING, ID_M_WINDOW_SCALE_4X,  "4x");
+   AppendMenuA(scale_menu, MF_STRING, ID_M_WINDOW_SCALE_5X,  "5x");
+   AppendMenuA(scale_menu, MF_STRING, ID_M_WINDOW_SCALE_6X,  "6x");
+   AppendMenuA(scale_menu, MF_STRING, ID_M_WINDOW_SCALE_7X,  "7x");
+   AppendMenuA(scale_menu, MF_STRING, ID_M_WINDOW_SCALE_8X,  "8x");
+   AppendMenuA(scale_menu, MF_STRING, ID_M_WINDOW_SCALE_9X,  "9x");
+   AppendMenuA(scale_menu, MF_STRING, ID_M_WINDOW_SCALE_10X, "10x");
+   AppendMenuA(window_menu, MF_POPUP, (UINT_PTR)scale_menu, "Windowed Scale");
+
+#ifdef HAVE_QT
+   AppendMenuA(window_menu, MF_STRING, ID_M_TOGGLE_DESKTOP,
+         "Toggle Desktop Menu");
 #endif
+   AppendMenuA(window_menu, MF_STRING, ID_M_FULL_SCREEN,
+         "Toggle Exclusive Full Screen");
+   AppendMenuA(menu_bar, MF_POPUP, (UINT_PTR)window_menu, "Window");
+
+   return menu_bar;
+}
+
+/* "PICK CORE" DIALOG  (replaces IDD_PICKCORE)
+ * Builds DLGTEMPLATE + DLGITEMTEMPLATE in memory. */
+
+static LPWORD align_dword(LPWORD ptr)
+{
+   ULONG_PTR ul = (ULONG_PTR)ptr;
+   ul  = (ul + 3) & ~(ULONG_PTR)3;
+   return (LPWORD)ul;
+}
+
+static LPWORD append_wstr(LPWORD ptr, const WCHAR *str)
+{
+   int len = (int)wcslen(str) + 1;
+   memcpy(ptr, str, len * sizeof(WCHAR));
+   return ptr + len;
+}
+
+int win32_resources_pick_core_dialog(HWND parent, DLGPROC dlg_proc)
+{
+   BYTE buf[2048];
+   DLGTEMPLATE *dlg;
+   LPWORD p;
+   DLGITEMTEMPLATE *item;
+
+   memset(buf, 0, sizeof(buf));
+   dlg = (DLGTEMPLATE *)buf;
+
+   dlg->style = DS_3DLOOK | DS_CENTER | DS_MODALFRAME | DS_SHELLFONT
+              | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU;
+   dlg->dwExtendedStyle = 0;
+   dlg->cdit  = 4;
+   dlg->x     = 0;
+   dlg->y     = 0;
+   dlg->cx    = 225;
+   dlg->cy    = 118;
+
+   p = (LPWORD)(dlg + 1);
+   *p++ = 0;                              /* no menu       */
+   *p++ = 0;                              /* default class */
+   p = append_wstr(p, L"Pick Core");      /* caption       */
+   *p++ = 8;                              /* font size     */
+   p = append_wstr(p, L"Ms Shell Dlg");   /* font name     */
+
+   /* Control 1: LTEXT (static label) */
+   p    = align_dword(p);
+   item = (DLGITEMTEMPLATE *)p;
+   item->style           = WS_CHILD | WS_VISIBLE | SS_LEFT;
+   item->dwExtendedStyle = WS_EX_LEFT;
+   item->x  = 9;   item->y  = 12;
+   item->cx = 160; item->cy = 17;
+   item->id = 0;
+   p = (LPWORD)(item + 1);
+   *p++ = 0xFFFF; *p++ = 0x0082;          /* STATIC class  */
+   p = append_wstr(p,
+         L"Please select a core to use for the content loaded.\n"
+         L"Otherwise, press 'Cancel' to cancel loading.");
+   *p++ = 0;                              /* no creation data */
+
+   /* Control 2: DEFPUSHBUTTON "OK" */
+   p    = align_dword(p);
+   item = (DLGITEMTEMPLATE *)p;
+   item->style           = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON;
+   item->dwExtendedStyle = WS_EX_LEFT;
+   item->x  = 170; item->y  = 15;
+   item->cx = 50;  item->cy = 14;
+   item->id = IDOK;
+   p = (LPWORD)(item + 1);
+   *p++ = 0xFFFF; *p++ = 0x0080;          /* BUTTON class  */
+   p = append_wstr(p, L"OK");
+   *p++ = 0;
+
+   /* Control 3: PUSHBUTTON "Cancel" */
+   p    = align_dword(p);
+   item = (DLGITEMTEMPLATE *)p;
+   item->style           = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON;
+   item->dwExtendedStyle = WS_EX_LEFT;
+   item->x  = 170; item->y  = 32;
+   item->cx = 50;  item->cy = 14;
+   item->id = IDCANCEL;
+   p = (LPWORD)(item + 1);
+   *p++ = 0xFFFF; *p++ = 0x0080;          /* BUTTON class  */
+   p = append_wstr(p, L"Cancel");
+   *p++ = 0;
+
+   /* Control 4: LISTBOX (core list) */
+   p    = align_dword(p);
+   item = (DLGITEMTEMPLATE *)p;
+   item->style           = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
+                         | LBS_NOINTEGRALHEIGHT | LBS_SORT | LBS_NOTIFY;
+   item->dwExtendedStyle = WS_EX_LEFT;
+   item->x  = 5;   item->y  = 55;
+   item->cx = 214; item->cy = 60;
+   item->id = ID_CORELISTBOX;
+   p = (LPWORD)(item + 1);
+   *p++ = 0xFFFF; *p++ = 0x0083;          /* LISTBOX class */
+   *p++ = 0;                              /* empty title   */
+   *p++ = 0;                              /* no creation data */
+
+   return (int)DialogBoxIndirectParamW(
+         GetModuleHandleW(NULL),
+         dlg, parent, dlg_proc, 0);
+}
+
+void win32_resources_init(void)
+{
+   apply_dpi_awareness();
+   s_accel_table = create_accelerator_table();
+}
+
+void win32_resources_free(void)
+{
+   if (s_accel_table)
+   {
+      DestroyAcceleratorTable(s_accel_table);
+      s_accel_table = NULL;
+   }
+}
+
+HACCEL win32_resources_get_accelerator(void)
+{
+   return s_accel_table;
+}
+#endif /* !__WINRT__ */

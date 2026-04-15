@@ -43,12 +43,8 @@
 #include <QProgressDialog>
 #include <QDragEnterEvent>
 #include <QDropEvent>
-#include <QtConcurrentRun>
 
 #include "ui_qt.h"
-#include "qt/gridview.h"
-#include "qt/ui_qt_load_core_window.h"
-#include "qt/qt_dialogs.h"
 
 #ifndef CXX_BUILD
 extern "C" {
@@ -131,8 +127,16 @@ enum core_selection
 static AppHandler *app_handler;
 static ui_application_qt_t ui_application;
 
+static QPixmap pixmapFromPathRA(const QString &path)
+{
+   QImage img = ThumbnailLoader::loadImageRA(path);
+   if (!img.isNull())
+      return QPixmap::fromImage(img);
+   return QPixmap(path);
+}
+
 /* %1 is a placeholder for palette(highlight) or the equivalent chosen by the user */
-static const QString qt_theme_default_stylesheet = QStringLiteral(R"(
+static const QString qt_theme_default_stylesheet = QString(R"(
    QPushButton[flat="true"] {
       min-height:20px;
       min-width:80px;
@@ -166,7 +170,7 @@ static const QString qt_theme_default_stylesheet = QStringLiteral(R"(
    } */
 )");
 
-static const QString qt_theme_dark_stylesheet = QStringLiteral(R"(
+static const QString qt_theme_dark_stylesheet = QString(R"(
    QWidget {
       color:white;
       background-color:rgb(53,53,53);
@@ -1198,20 +1202,12 @@ MainWindow::MainWindow(QWidget *parent) :
 #endif
 #endif
    ,m_coreOptionsDialog(new CoreOptionsDialog())
-   ,m_networkManager(new QNetworkAccessManager(this))
+   ,m_currentHttpTask(NULL)
    ,m_updateProgressDialog(new QProgressDialog())
-   ,m_updateFile()
-   ,m_updateReply()
    ,m_thumbnailDownloadProgressDialog(new QProgressDialog())
-   ,m_thumbnailDownloadFile()
-   ,m_thumbnailDownloadReply()
    ,m_pendingThumbnailDownloadTypes()
    ,m_thumbnailPackDownloadProgressDialog(new QProgressDialog())
-   ,m_thumbnailPackDownloadFile()
-   ,m_thumbnailPackDownloadReply()
    ,m_playlistThumbnailDownloadProgressDialog(new QProgressDialog())
-   ,m_playlistThumbnailDownloadFile()
-   ,m_playlistThumbnailDownloadReply()
    ,m_pendingPlaylistThumbnails()
    ,m_downloadedThumbnails(0)
    ,m_failedThumbnails(0)
@@ -1390,13 +1386,12 @@ MainWindow::MainWindow(QWidget *parent) :
    m_logWidget->setObjectName("logWidget");
 
    m_folderIcon     = QIcon(QString(path_dir_assets) + GENERIC_FOLDER_ICON);
-   m_imageFormats   = QVector<QByteArray>::fromList(QImageReader::supportedImageFormats());
    m_defaultStyle   = QApplication::style();
    m_defaultPalette = QApplication::palette();
 
    /* ViewOptionsDialog needs m_settings set before it's constructed */
    m_settings            = new QSettings(configDir
-         + QStringLiteral("/retroarch_qt.cfg"), QSettings::IniFormat, this);
+         + QString("/retroarch_qt.cfg"), QSettings::IniFormat, this);
    m_viewOptionsDialog   = new ViewOptionsDialog(this, 0);
    m_playlistEntryDialog = new PlaylistEntryDialog(this, 0);
 
@@ -1829,7 +1824,7 @@ void MainWindow::showWelcomeScreen()
    if (!m_settings->value("show_welcome_screen", true).toBool())
       return;
 
-   const QString welcome_txt = QStringLiteral(""
+   const QString welcome_txt = QString(""
       "Welcome to the RetroArch Desktop Menu!<br>\n"
       "<br>\n"
       "Many settings and actions are currently only available in the familiar Big Picture menu, "
@@ -2059,7 +2054,7 @@ void MainWindow::onGotStatusMessage(
             msec_duration   = (duration / screen->refreshRate()) * 1000;
          if (msec_duration <= 0)
             msec_duration   = 1000;
-         msg_duration       = qMax(msec_duration, STATUS_MSG_THROTTLE_MSEC);
+         msg_duration       = ((msec_duration) > (STATUS_MSG_THROTTLE_MSEC) ? (msec_duration) : (STATUS_MSG_THROTTLE_MSEC));
          m_statusMessageElapsedTimer.restart();
          status->showMessage(msg, msg_duration);
       }
@@ -2154,13 +2149,13 @@ void MainWindow::onLaunchWithComboBoxIndexChanged(int)
       if (!value.isEmpty())
       {
          if (!key.isEmpty())
-            core_info_txt                += QStringLiteral(" ");
+            core_info_txt                += QString(" ");
 
          core_info_txt                   += value;
       }
 
       if (i < infoList.count() - 1)
-         core_info_txt                   += QStringLiteral("<br>\n");
+         core_info_txt                   += QString("<br>\n");
    }
 
    m_coreInfoLabel->setText(core_info_txt);
@@ -2188,15 +2183,15 @@ QString MainWindow::getThemeString(Theme theme)
    switch (theme)
    {
       case THEME_SYSTEM_DEFAULT:
-         return QStringLiteral("default");
+         return QString("default");
       case THEME_DARK:
-         return QStringLiteral("dark");
+         return QString("dark");
       case THEME_CUSTOM:
-         return QStringLiteral("custom");
+         return QString("custom");
       default:
          break;
    }
-   return QStringLiteral("default");
+   return QString("default");
 }
 
 MainWindow::Theme MainWindow::theme() { return m_currentTheme; }
@@ -2250,9 +2245,9 @@ QString MainWindow::changeThumbnail(const QImage &image, QString type)
    QHash<QString, QString> hash = getCurrentContentHash();
    QString dirString            = m_playlistModel->getPlaylistThumbnailsDir(
                                       hash["db_name"])
-                                + QStringLiteral("/") + type;
+                                + QString("/") + type;
    QString thumbPath            = m_playlistModel->getSanitizedThumbnailName(
-                                      dirString + QStringLiteral("/"),
+                                      dirString + QString("/"),
                                       hash["label_noext"]);
    QByteArray   dirArray        = QDir::toNativeSeparators(dirString).toUtf8();
    const char   *dirData        = dirArray.constData();
@@ -2312,7 +2307,7 @@ void MainWindow::onThumbnailDropped(const QImage &image,
          if (m_thumbnailPixmap)
             delete m_thumbnailPixmap;
 
-         m_thumbnailPixmap = new QPixmap(path);
+         m_thumbnailPixmap = new QPixmap(pixmapFromPathRA(path));
 
          onResizeThumbnailOne(*m_thumbnailPixmap, true);
          break;
@@ -2328,7 +2323,7 @@ void MainWindow::onThumbnailDropped(const QImage &image,
          if (m_thumbnailPixmap2)
             delete m_thumbnailPixmap2;
 
-         m_thumbnailPixmap2 = new QPixmap(path);
+         m_thumbnailPixmap2 = new QPixmap(pixmapFromPathRA(path));
 
          onResizeThumbnailTwo(*m_thumbnailPixmap2, true);
          break;
@@ -2344,7 +2339,7 @@ void MainWindow::onThumbnailDropped(const QImage &image,
          if (m_thumbnailPixmap3)
             delete m_thumbnailPixmap3;
 
-         m_thumbnailPixmap3 = new QPixmap(path);
+         m_thumbnailPixmap3 = new QPixmap(pixmapFromPathRA(path));
 
          onResizeThumbnailThree(*m_thumbnailPixmap3, true);
          break;
@@ -2360,7 +2355,7 @@ void MainWindow::onThumbnailDropped(const QImage &image,
          if (m_thumbnailPixmap4)
             delete m_thumbnailPixmap4;
 
-         m_thumbnailPixmap4 = new QPixmap(path);
+         m_thumbnailPixmap4 = new QPixmap(pixmapFromPathRA(path));
 
          onResizeThumbnailFour(*m_thumbnailPixmap4, true);
          break;
@@ -2402,7 +2397,7 @@ QVector<QHash<QString, QString> > MainWindow::getCoreInfo()
 
       hash["key"]   = QString(
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFO_CORE_NAME))
-          + QStringLiteral(":");
+          + QString(":");
       hash["value"] = core_info->core_name;
 
       infoList.append(hash);
@@ -2414,7 +2409,7 @@ QVector<QHash<QString, QString> > MainWindow::getCoreInfo()
 
       hash["key"]   = QString(
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_INFO_CORE_LABEL))
-          + QStringLiteral(":");
+          + QString(":");
       hash["value"] = core_info->display_name;
 
       infoList.append(hash);
@@ -2426,7 +2421,7 @@ QVector<QHash<QString, QString> > MainWindow::getCoreInfo()
 
       hash["key"]   = QString(msg_hash_to_str(
                       MENU_ENUM_LABEL_VALUE_CORE_INFO_SYSTEM_NAME))
-                    + QStringLiteral(":");
+                    + QString(":");
       hash["value"] = core_info->systemname;
 
       infoList.append(hash);
@@ -2438,7 +2433,7 @@ QVector<QHash<QString, QString> > MainWindow::getCoreInfo()
 
       hash["key"]   = QString(msg_hash_to_str(
                       MENU_ENUM_LABEL_VALUE_CORE_INFO_SYSTEM_MANUFACTURER))
-                    + QStringLiteral(":");
+                    + QString(":");
       hash["value"] = core_info->system_manufacturer;
 
       infoList.append(hash);
@@ -2453,13 +2448,13 @@ QVector<QHash<QString, QString> > MainWindow::getCoreInfo()
       {
          categories += core_info->categories_list->elems[i].data;
          if (i < core_info->categories_list->size - 1)
-            categories += QStringLiteral(", ");
+            categories += QString(", ");
       }
 
       hash["key"]   = QString(
             msg_hash_to_str(
                MENU_ENUM_LABEL_VALUE_CORE_INFO_CATEGORIES))
-            + QStringLiteral(":");
+            + QString(":");
       hash["value"] = categories;
 
       infoList.append(hash);
@@ -2474,13 +2469,13 @@ QVector<QHash<QString, QString> > MainWindow::getCoreInfo()
       {
          authors += core_info->authors_list->elems[i].data;
          if (i < core_info->authors_list->size - 1)
-            authors += QStringLiteral(", ");
+            authors += QString(", ");
       }
 
       hash["key"]   = QString(
             msg_hash_to_str(
                MENU_ENUM_LABEL_VALUE_CORE_INFO_AUTHORS))
-            + QStringLiteral(":");
+            + QString(":");
       hash["value"] = authors;
 
       infoList.append(hash);
@@ -2495,13 +2490,13 @@ QVector<QHash<QString, QString> > MainWindow::getCoreInfo()
       {
          permissions += core_info->permissions_list->elems[i].data;
          if (i < core_info->permissions_list->size - 1)
-            permissions += QStringLiteral(", ");
+            permissions += QString(", ");
       }
 
       hash["key"]   = QString(
             msg_hash_to_str(
                MENU_ENUM_LABEL_VALUE_CORE_INFO_PERMISSIONS))
-         + QStringLiteral(":");
+         + QString(":");
       hash["value"] = permissions;
 
       infoList.append(hash);
@@ -2516,13 +2511,13 @@ QVector<QHash<QString, QString> > MainWindow::getCoreInfo()
       {
          licenses += core_info->licenses_list->elems[i].data;
          if (i < core_info->licenses_list->size - 1)
-            licenses += QStringLiteral(", ");
+            licenses += QString(", ");
       }
 
       hash["key"]   = QString(
             msg_hash_to_str(
                MENU_ENUM_LABEL_VALUE_CORE_INFO_LICENSES))
-         + QStringLiteral(":");
+         + QString(":");
       hash["value"] = licenses;
 
       infoList.append(hash);
@@ -2537,13 +2532,13 @@ QVector<QHash<QString, QString> > MainWindow::getCoreInfo()
       {
          supported_extensions += core_info->supported_extensions_list->elems[i].data;
          if (i < core_info->supported_extensions_list->size - 1)
-            supported_extensions += QStringLiteral(", ");
+            supported_extensions += QString(", ");
       }
 
       hash["key"]   = QString(
             msg_hash_to_str(
                MENU_ENUM_LABEL_VALUE_CORE_INFO_SUPPORTED_EXTENSIONS))
-         + QStringLiteral(":");
+         + QString(":");
       hash["value"] = supported_extensions;
 
       infoList.append(hash);
@@ -2570,7 +2565,7 @@ QVector<QHash<QString, QString> > MainWindow::getCoreInfo()
                sizeof(tmp_path));
 
          /* If content path is empty, fall back to global system dir path */
-         if (string_is_empty(tmp_path))
+         if (!*tmp_path)
             firmware_info.directory.system = settings->paths.directory_system;
          else
          {
@@ -2598,7 +2593,7 @@ QVector<QHash<QString, QString> > MainWindow::getCoreInfo()
 
          hash["key"]   = QString(msg_hash_to_str(
                   MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE))
-                + QStringLiteral(":");
+                + QString(":");
          hash["value"] = QLatin1String("");
 
          infoList.append(hash);
@@ -2633,7 +2628,7 @@ QVector<QHash<QString, QString> > MainWindow::getCoreInfo()
             {
                QString val_txt;
                QHash<QString, QString> hash;
-               QString lbl_txt        = QStringLiteral("(!) ");
+               QString lbl_txt        = QString("(!) ");
                bool missing           = false;
 
                if (core_info->firmware[i].missing)
@@ -2665,19 +2660,19 @@ QVector<QHash<QString, QString> > MainWindow::getCoreInfo()
 
                if (missing)
                {
-                  QString style       = QStringLiteral("font-weight: bold; color: #ff0000");
+                  QString style       = QString("font-weight: bold; color: #ff0000");
                   hash["label_style"] = style;
                   hash["value_style"] = style;
-                  hash["html_key"]    = "<b><font color=\"#ff0000\">" + hash["key"]   + QStringLiteral("</font></b>");
-                  hash["html_value"]  = "<b><font color=\"#ff0000\">" + hash["value"] + QStringLiteral("</font></b>");
+                  hash["html_key"]    = "<b><font color=\"#ff0000\">" + hash["key"]   + QString("</font></b>");
+                  hash["html_value"]  = "<b><font color=\"#ff0000\">" + hash["value"] + QString("</font></b>");
                }
                else
                {
-                  QString style       = QStringLiteral("font-weight: bold; color: rgb(0, 175, 0)");
+                  QString style       = QString("font-weight: bold; color: rgb(0, 175, 0)");
                   hash["label_style"] = style;
                   hash["value_style"] = style;
-                  hash["html_key"]    = "<b><font color=\"#00af00\">" + hash["key"]   + QStringLiteral("</font></b>");
-                  hash["html_value"]  = "<b><font color=\"#00af00\">" + hash["value"] + QStringLiteral("</font></b>");
+                  hash["html_key"]    = "<b><font color=\"#00af00\">" + hash["key"]   + QString("</font></b>");
+                  hash["html_value"]  = "<b><font color=\"#00af00\">" + hash["value"] + QString("</font></b>");
                }
 
                infoList.append(hash);
@@ -2810,7 +2805,7 @@ QHash<QString, QString> MainWindow::getFileContentHash(const QModelIndex &index)
 
 void MainWindow::onContentItemDoubleClicked(const QModelIndex &index)
 {
-   Q_UNUSED(index);
+   (void)(index);
    onRunClicked();
 }
 
@@ -3019,7 +3014,7 @@ void MainWindow::loadContent(const QHash<QString, QString> &contentHash)
    /* Search for specified core - ensures path
     * is 'sanitised' */
    if (    core_info_find(core_path, &coreInfo)
-       && !string_is_empty(coreInfo->path))
+       && (coreInfo->path && *coreInfo->path))
       core_path = coreInfo->path;
 
    /* If a core is currently running, the following
@@ -3028,11 +3023,11 @@ void MainWindow::loadContent(const QHash<QString, QString> &contentHash)
     * in turn free the pointer referenced by coreInfo->path.
     * This will invalidate core_path, so we have to cache
     * its current value here. */
-   if (!string_is_empty(core_path))
+   if (core_path && *core_path)
       strlcpy(core_path_cached, core_path, sizeof(core_path_cached));
 
    /* Add lpl extension to db_name, if required */
-   if (!string_is_empty(content_db_name))
+   if (content_db_name && *content_db_name)
       fill_pathname(content_db_name_full, content_db_name,
             ".lpl", sizeof(content_db_name_full));
 
@@ -3127,7 +3122,7 @@ void MainWindow::setCoreActions()
          QString coreName = hash["core_name"];
 
          if (coreName.isEmpty())
-            coreName = QStringLiteral("<n/a>");
+            coreName = QString("<n/a>");
          else
          {
             const char *detect_str = "DETECT";
@@ -3274,7 +3269,7 @@ void MainWindow::setCoreActions()
       comboBoxMap["core_selection"] = CORE_SELECTION_LOAD_CORE;
       m_launchWithComboBox->addItem(QString(msg_hash_to_str(
                   MENU_ENUM_LABEL_VALUE_QT_LOAD_CORE))
-                + QStringLiteral("..."),
+                + QString("..."),
             QVariant::fromValue(comboBoxMap));
    }
 }
@@ -3341,22 +3336,22 @@ void MainWindow::onSearchLineEditEdited(const QString &text)
             QRegularExpression::CaseInsensitiveOption);
    else if (found_hiragana && !found_katakana)
       m_searchRegularExpression = QRegularExpression(text
-            + QStringLiteral("|")
+            + QString("|")
             + QString::fromUcs4(textHiraToKata.constData(),
                textHiraToKata.size()),
             QRegularExpression::CaseInsensitiveOption);
    else if (!found_hiragana && found_katakana)
       m_searchRegularExpression = QRegularExpression(text
-            + QStringLiteral("|")
+            + QString("|")
             + QString::fromUcs4(textKataToHira.constData(),
                textKataToHira.size()),
             QRegularExpression::CaseInsensitiveOption);
    else
       m_searchRegularExpression = QRegularExpression(text
-            + QStringLiteral("|")
+            + QString("|")
             + QString::fromUcs4(textHiraToKata.constData(),
                textHiraToKata.size())
-            + QStringLiteral("|")
+            + QString("|")
             + QString::fromUcs4(textKataToHira.constData(),
                textKataToHira.size()),
             QRegularExpression::CaseInsensitiveOption);
@@ -3365,20 +3360,20 @@ void MainWindow::onSearchLineEditEdited(const QString &text)
       m_searchRegExp = QRegExp(text, Qt::CaseInsensitive);
    else if (found_hiragana && !found_katakana)
       m_searchRegExp = QRegExp(text
-            + QStringLiteral("|")
+            + QString("|")
             + QString::fromUcs4(textHiraToKata.constData(),
                textHiraToKata.size()), Qt::CaseInsensitive);
    else if (!found_hiragana && found_katakana)
       m_searchRegExp = QRegExp(text
-            + QStringLiteral("|")
+            + QString("|")
             + QString::fromUcs4(textKataToHira.constData(),
                textKataToHira.size()), Qt::CaseInsensitive);
    else
       m_searchRegExp = QRegExp(text
-            + QStringLiteral("|")
+            + QString("|")
             + QString::fromUcs4(textHiraToKata.constData(),
                textHiraToKata.size())
-            + QStringLiteral("|")
+            + QString("|")
             + QString::fromUcs4(textKataToHira.constData(),
                textKataToHira.size()), Qt::CaseInsensitive);
 #endif
@@ -3560,7 +3555,7 @@ void MainWindow::renamePlaylistItem(QListWidgetItem *item, QString newName)
       /* add trailing slash if the path doesn't have one */
       newPath += '/';
 
-   newPath += newName + QStringLiteral(".") + extension;
+   newPath += newName + QString(".") + extension;
 
    item->setData(Qt::UserRole, newPath);
 
@@ -3603,7 +3598,7 @@ void MainWindow::onCurrentItemChanged(const QHash<QString, QString> &hash)
    if (m_playlistModel->isSupportedImage(path))
    {
       /* use thumbnail widgets to show regular image files */
-      m_thumbnailPixmap = new QPixmap(path);
+      m_thumbnailPixmap = new QPixmap(pixmapFromPathRA(path));
       m_thumbnailPixmap2 = new QPixmap(*m_thumbnailPixmap);
       m_thumbnailPixmap3 = new QPixmap(*m_thumbnailPixmap);
       m_thumbnailPixmap4 = new QPixmap(*m_thumbnailPixmap);
@@ -3613,22 +3608,22 @@ void MainWindow::onCurrentItemChanged(const QHash<QString, QString> &hash)
       QString thumbnailsDir = m_playlistModel->getPlaylistThumbnailsDir(
             hash["db_name"]);
       QString thumbnailName1 = m_playlistModel->getSanitizedThumbnailName(
-            thumbnailsDir + QStringLiteral("/") + THUMBNAIL_BOXART     + QStringLiteral("/"),
+            thumbnailsDir + QString("/") + THUMBNAIL_BOXART     + QString("/"),
             hash["label_noext"]);
       QString thumbnailName2 = m_playlistModel->getSanitizedThumbnailName(
-            thumbnailsDir + QStringLiteral("/") + THUMBNAIL_TITLE      + QStringLiteral("/"),
+            thumbnailsDir + QString("/") + THUMBNAIL_TITLE      + QString("/"),
             hash["label_noext"]);
       QString thumbnailName3 = m_playlistModel->getSanitizedThumbnailName(
-            thumbnailsDir + QStringLiteral("/") + THUMBNAIL_SCREENSHOT + QStringLiteral("/"),
+            thumbnailsDir + QString("/") + THUMBNAIL_SCREENSHOT + QString("/"),
             hash["label_noext"]);
       QString thumbnailName4 = m_playlistModel->getSanitizedThumbnailName(
-            thumbnailsDir + QStringLiteral("/") + THUMBNAIL_LOGO       + QStringLiteral("/"),
+            thumbnailsDir + QString("/") + THUMBNAIL_LOGO       + QString("/"),
             hash["label_noext"]);
 
-      m_thumbnailPixmap     = new QPixmap(thumbnailName1);
-      m_thumbnailPixmap2    = new QPixmap(thumbnailName2);
-      m_thumbnailPixmap3    = new QPixmap(thumbnailName3);
-      m_thumbnailPixmap4    = new QPixmap(thumbnailName4);
+      m_thumbnailPixmap     = new QPixmap(pixmapFromPathRA(thumbnailName1));
+      m_thumbnailPixmap2    = new QPixmap(pixmapFromPathRA(thumbnailName2));
+      m_thumbnailPixmap3    = new QPixmap(pixmapFromPathRA(thumbnailName3));
+      m_thumbnailPixmap4    = new QPixmap(pixmapFromPathRA(thumbnailName4));
 
       if (      m_currentBrowser == BROWSER_TYPE_PLAYLISTS
             && !currentPlaylistIsSpecial())
@@ -3704,8 +3699,8 @@ ThumbnailType MainWindow::getCurrentThumbnailType()   { return m_thumbnailType;}
 void MainWindow::onCurrentListItemChanged(
       QListWidgetItem *current, QListWidgetItem *previous)
 {
-   Q_UNUSED(current)
-   Q_UNUSED(previous)
+   (void)(current);
+   (void)(previous);
 
    initContentTableWidget();
 
@@ -3776,6 +3771,9 @@ void MainWindow::onTimeout()
 {
    uint8_t flags = content_get_flags();
 
+   /* Pump the task queue to process pending HTTP transfers etc. */
+   task_queue_check();
+
    if (flags & CONTENT_ST_FLAG_IS_INITED)
    {
       if (m_runPushButton->isVisible())
@@ -3827,7 +3825,8 @@ void MainWindow::setCurrentCoreLabel()
             && !libraryName.isEmpty())
       {
          m_currentCore        = sysinfo->library_name;
-         m_currentCoreVersion = (string_is_empty(sysinfo->library_version)
+         m_currentCoreVersion = 
+		 ((!sysinfo->library_version || !*sysinfo->library_version)
                ? "" : sysinfo->library_version);
          update = true;
       }
@@ -3837,9 +3836,9 @@ void MainWindow::setCurrentCoreLabel()
    {
       QAction *unloadCoreAction = findChild<QAction*>("unloadCoreAction");
       QString text              = QString(PACKAGE_VERSION)
-         + QStringLiteral(" - ")
+         + QString(" - ")
          + m_currentCore
-         + QStringLiteral(" ")
+         + QString(" ")
          + m_currentCoreVersion;
       m_statusLabel->setText(text);
       m_loadCoreWindow->setStatusLabel(text);
@@ -3992,13 +3991,13 @@ QString MainWindow::getCurrentViewTypeString()
    switch (m_viewType)
    {
       case VIEW_TYPE_ICONS:
-         return QStringLiteral("icons");
+         return QString("icons");
       case VIEW_TYPE_LIST:
       default:
          break;
    }
 
-   return QStringLiteral("list");
+   return QString("list");
 }
 
 QString MainWindow::getCurrentThumbnailTypeString()
@@ -4006,17 +4005,17 @@ QString MainWindow::getCurrentThumbnailTypeString()
    switch (m_thumbnailType)
    {
       case THUMBNAIL_TYPE_SCREENSHOT:
-         return QStringLiteral("screenshot");
+         return QString("screenshot");
       case THUMBNAIL_TYPE_TITLE_SCREEN:
-         return QStringLiteral("title");
+         return QString("title");
       case THUMBNAIL_TYPE_LOGO:
-         return QStringLiteral("logo");
+         return QString("logo");
       case THUMBNAIL_TYPE_BOXART:
       default:
-         return QStringLiteral("boxart");
+         return QString("boxart");
    }
 
-   return QStringLiteral("list");
+   return QString("list");
 }
 
 ThumbnailType MainWindow::getThumbnailTypeFromString(QString thumbnailType)
@@ -4069,7 +4068,7 @@ void MainWindow::onContributorsClicked()
    dialog->layout()->addWidget(buttonBox);
 
    textEdit->setReadOnly(true);
-   textEdit->setHtml(QStringLiteral("<pre>") + retroarch_contributors_list + QStringLiteral("</pre>"));
+   textEdit->setHtml(QString("<pre>") + retroarch_contributors_list + QString("</pre>"));
 
    dialog->resize(480, 640);
    dialog->exec();
@@ -4079,21 +4078,21 @@ void MainWindow::showAbout()
 {
    QScopedPointer<QDialog> dialog(new QDialog());
    QDialogButtonBox *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok);
-   QString text = QStringLiteral("RetroArch ")
-      + QStringLiteral(PACKAGE_VERSION)
-      + QStringLiteral("<br><br>")
+   QString text = QString("RetroArch ")
+      + QString(PACKAGE_VERSION)
+      + QString("<br><br>")
       + "<a href=\"https://www.libretro.com/\">www.libretro.com</a>"
          "<br><br>"
       + "<a href=\"https://www.retroarch.com/\">www.retroarch.com</a>"
 #ifdef HAVE_GIT_VERSION
          "<br><br>"
       + msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_GIT_VERSION)
-      + QStringLiteral(": ")
+      + QString(": ")
       + retroarch_git_version
 #endif
-      + QStringLiteral("<br>")
+      + QString("<br>")
       + msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_BUILD_DATE)
-      + QStringLiteral(": ")
+      + QString(": ")
       + __DATE__;
    QLabel *label = new QLabel(text, dialog.data());
    QPixmap pix = getInvader();
@@ -4218,7 +4217,7 @@ int MainWindow::onExtractArchive(QString path, QString extractionDir,
    m_updateProgressDialog->setAutoReset(true);
    m_updateProgressDialog->setValue(0);
    m_updateProgressDialog->setLabelText(QString(msg_hash_to_str(MSG_EXTRACTING))
-         + QStringLiteral("..."));
+         + QString("..."));
    m_updateProgressDialog->setCancelButtonText(QString());
    m_updateProgressDialog->show();
 
@@ -4753,8 +4752,8 @@ static void* ui_companion_qt_init(void)
    initialPlaylist = qsettings->value("initial_playlist",
          mainwindow->getSpecialPlaylistPath(SPECIAL_PLAYLIST_HISTORY)).toString();
 
-   mainwindow->resize(qMin(desktopRect.width(), INITIAL_WIDTH),
-         qMin(desktopRect.height(), INITIAL_HEIGHT));
+   mainwindow->resize(((desktopRect.width()) < (INITIAL_WIDTH) ? (desktopRect.width()) : (INITIAL_WIDTH)),
+         ((desktopRect.height()) < (INITIAL_HEIGHT) ? (desktopRect.height()) : (INITIAL_HEIGHT)));
    mainwindow->setGeometry(QStyle::alignedRect(Qt::LeftToRight,
             Qt::AlignCenter, mainwindow->size(), desktopRect));
 
@@ -4849,8 +4848,8 @@ static void* ui_companion_qt_init(void)
                mainwindow, SLOT(showDocs()));
    helpMenu->addAction(QString(msg_hash_to_str(
                MENU_ENUM_LABEL_VALUE_QT_MENU_HELP_ABOUT))
-              + QStringLiteral("..."), mainwindow, SLOT(showAbout()));
-   helpMenu->addAction(QStringLiteral("About Qt..."), qApp, SLOT(aboutQt()));
+              + QString("..."), mainwindow, SLOT(showAbout()));
+   helpMenu->addAction(QString("About Qt..."), qApp, SLOT(aboutQt()));
 
    playlistWidget = new QFrame();
    playlistWidget->setLayout(new QVBoxLayout());
@@ -5542,7 +5541,7 @@ void LoadCoreWindow::initCoreList(const QStringList &extensionFilters)
          QTableWidgetItem *version_item = new QTableWidgetItem(core->display_version);
          const char               *name = core->display_name;
 
-         if (string_is_empty(name))
+         if (!name || !*name)
             name                        = path_basename(core->path);
 
          name_item                      = new QTableWidgetItem(name);
@@ -5613,8 +5612,9 @@ void LoadCoreWindow::initCoreList(const QStringList &extensionFilters)
    m_table->selectRow(0);
    m_table->setAlternatingRowColors(true);
 
-   resize(qMin(desktopRect.width(),
-              contentsMargins().left()
+   resize(((desktopRect.width()) < (contentsMargins().left()
             + m_table->horizontalHeader()->length()
-            + contentsMargins().right()), height());
+            + contentsMargins().right()) ? (desktopRect.width()) : (contentsMargins().left()
+            + m_table->horizontalHeader()->length()
+            + contentsMargins().right())), height());
 }

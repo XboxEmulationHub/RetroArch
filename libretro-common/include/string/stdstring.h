@@ -32,6 +32,7 @@
 #include <retro_common_api.h>
 #include <retro_inline.h>
 #include <compat/strl.h>
+#include <compat/posix_string.h>
 
 RETRO_BEGIN_DECLS
 
@@ -59,12 +60,16 @@ RETRO_BEGIN_DECLS
 
 static INLINE bool string_is_empty(const char *data)
 {
-   return !data || (*data == '\0');
+   return !data || !*data;
 }
 
 static INLINE bool string_is_equal(const char *a, const char *b)
 {
-   return (a && b) ? !strcmp(a, b) : false;
+   if (a == b)
+      return true;
+   if (!a || !b)
+      return false;
+   return !strcmp(a, b);
 }
 
 static INLINE bool string_starts_with_size(const char *str, const char *prefix,
@@ -108,7 +113,6 @@ static INLINE size_t strlen_size(const char *str, size_t len)
       while (i < len && str[i]) i++;
    return i;
 }
-
 
 static INLINE bool string_is_equal_case_insensitive(const char *a,
       const char *b)
@@ -263,17 +267,19 @@ size_t word_wrap_wideglyph(
  *        token = NULL;
  *    }
  **/
-char* string_tokenize(char **str, const char *delim);
+char *string_tokenize(char **str, const char *delim);
 
 /**
  * string_remove_all_chars:
- * @str                : input string (must be non-NULL, otherwise UB)
+ * @s                 : input string (must be non-NULL, otherwise UB)
  *
  * Leaf function.
  *
- * Removes every instance of character @c from @str
+ * Removes every instance of character @c from @s
+ *
+ * Returns the length of the resulting string.
  **/
-void string_remove_all_chars(char *str, char c);
+size_t string_remove_all_chars(char *s, char c);
 
 /**
  * string_replace_all_chars:
@@ -345,8 +351,9 @@ void string_replace_multi_space_with_single_space(char *str);
  * Leaf function.
  *
  * Remove all spaces from the given string.
+ * Returns the length of the resulting string.
  **/
-void string_remove_all_whitespace(char *str_trimmed, const char *str);
+size_t string_remove_all_whitespace(char *str_trimmed, const char *str);
 
 /* Retrieve the last occurance of the given character in a string. */
 int string_index_last_occurance(const char *str, char c);
@@ -371,6 +378,48 @@ int string_find_index_substring_string(const char *str, const char *substr);
  * Strips non-ASCII characters from a string.
  **/
 void string_copy_only_ascii(char *str_stripped, const char *str);
+
+/**
+ * string_ext_list_find:
+ * @delim_str : '|'-delimited extension string (e.g. "bin|iso|cue")
+ * @delim_len : length of @delim_str
+ * @ext       : single extension token to look for
+ * @ext_len   : length of @ext
+ *
+ * Checks whether @ext exists as an exact token inside @delim_str.
+ * "bi" will not match "bin".
+ *
+ * Returns: true if found, false otherwise.
+ **/
+bool string_ext_list_find(const char *delim_str, size_t delim_len,
+      const char *ext, size_t ext_len);
+
+/**
+ * string_ext_list_append_dedup:
+ * @dst      : destination '|'-delimited string being built
+ * @dst_len  : pointer to current length of content in @dst (updated in place)
+ * @dst_size : total buffer capacity of @dst
+ * @ext      : a single extension token (no '|') to append if not duplicate
+ * @ext_len  : length of @ext
+ *
+ * Appends a single extension to @dst with a '|' separator,
+ * but only if @ext is not already present in @dst.
+ **/
+void string_ext_list_append_dedup(char *dst, size_t *dst_len,
+      size_t dst_size, const char *ext, size_t ext_len);
+
+/**
+ * string_ext_list_merge_dedup:
+ * @dst      : destination '|'-delimited string being built
+ * @dst_len  : pointer to current length of content in @dst (updated in place)
+ * @dst_size : total buffer capacity of @dst
+ * @src      : source '|'-delimited extension string (may contain many tokens)
+ *
+ * Splits @src on '|' and appends each unique extension to @dst.
+ * Extensions already present in @dst are skipped.
+ **/
+void string_ext_list_merge_dedup(char *dst, size_t *dst_len,
+      size_t dst_size, const char *src);
 
 extern const unsigned char lr_char_props[256];
 

@@ -24,13 +24,16 @@
 #include <math.h>
 
 #include <retro_common_api.h>
+#include <compat/strl.h>
+#include <string/stdstring.h>
+
+#include "gfx_display.h"
 #include "video_crt_switch.h"
 #include "video_display_server.h"
 #include "../core_info.h"
 #include "../verbosity.h"
 #include "../file_path_special.h"
 #include "../paths.h"
-#include "gfx_display.h"
 
 #include "../deps/switchres/switchres_wrapper.h"
 static sr_mode srm;
@@ -247,22 +250,25 @@ static bool crt_sr2_init(videocrt_switch_t *p_switch,
       }
    }
 
-   if (p_switch->rtn >= 0 && !p_switch->kms_ctx)
+   if (p_switch->rtn >= 0)
    {
-      p_switch->sr2_active = true;
-      return true;
-   }
-   else if (p_switch->rtn >= 0 && p_switch->kms_ctx)
-   {
-      p_switch->sr2_active = true;
-      RARCH_LOG("[CRT] KMS context detected, keeping SR alive.\n");
-      return true;
-   }
-   else if (p_switch->rtn >= 0 && p_switch->khr_ctx)
-   {
-      p_switch->sr2_active = true;
-      RARCH_LOG("[CRT] Vulkan context detected, keeping SR alive.\n");
-      return true;
+      if (!p_switch->kms_ctx)
+      {
+         p_switch->sr2_active = true;
+         return true;
+      }
+      else if (p_switch->kms_ctx)
+      {
+         p_switch->sr2_active = true;
+         RARCH_LOG("[CRT] KMS context detected, keeping SR alive.\n");
+         return true;
+      }
+      else if (p_switch->khr_ctx)
+      {
+         p_switch->sr2_active = true;
+         RARCH_LOG("[CRT] Vulkan context detected, keeping SR alive.\n");
+         return true;
+      }
    }
 
    RARCH_ERR("[CRT] Error at init, CRT modeswitching disabled.\n");
@@ -324,7 +330,7 @@ static void switch_res_crt(
 
       /* Check for core and content changes in case we need
          to make any adjustments */
-      if (string_is_empty(_core_name))
+      if (!_core_name || !*_core_name)
          current_core_name[0] = '\0';
       else
          strlcpy(current_core_name, _core_name, sizeof(current_core_name));
@@ -516,25 +522,25 @@ void crt_switch_res_core(
    }
 }
 
-static char* get_game_name(char* full_path)
+static char *get_game_name(char *full_path)
 {
-   int i;
-   int n = strlen(full_path);
-   char* rom_filename = full_path + n;
-   char delimiter = (char)  path_get(RARCH_PATH_BASENAME)[0];
+   unsigned i;
+   size_t _len        = strlen(full_path);
+   char* rom_filename = full_path + _len;
+   char delim         = (char)  path_get(RARCH_PATH_BASENAME)[0];
 
-   for (i = 0; i < n; i++)
+   for (i = 0; i < _len; i++)
    {
       if (full_path[i] == '/' || full_path[i] =='\\')
       {
-         delimiter = full_path[i];
+         delim = full_path[i];
          break;
       }
    }
 
-   while (0 < n && (full_path[--n] != delimiter ));
-   if (full_path[n] == delimiter )
-      rom_filename = full_path + n + 1;
+   while (0 < _len && (full_path[--_len] != delim));
+   if (full_path[_len] == delim)
+      rom_filename = full_path + _len + 1;
    return rom_filename;
 }
 

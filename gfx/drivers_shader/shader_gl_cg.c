@@ -52,6 +52,73 @@
 #include "../../state_manager.h"
 #endif
 
+#if defined(HAVE_OPENGLES)
+#define CG(src)   "" #src
+#define GLSL(src) "#extension GL_OES_standard_derivatives : enable\n" \
+                  "#ifdef GL_ES\n" \
+                  "  #ifdef GL_FRAGMENT_PRECISION_HIGH\n" \
+                  "    precision highp float;\n" \
+                  "  #else\n" \
+                  "    precision mediump float;\n" \
+                  "  #endif\n" \
+                  "#else\n" \
+                  "  precision mediump float;\n" \
+                  "#endif\n" #src
+#define GLSL_STANDARD_DERIVATIVES(src) "#version 130\n" \
+                  "#extension GL_OES_standard_derivatives : enable\n" \
+                  "#ifdef GL_ES\n" \
+                  "  #ifdef GL_FRAGMENT_PRECISION_HIGH\n" \
+                  "    precision highp float;\n" \
+                  "  #else\n" \
+                  "    precision mediump float;\n" \
+                  "  #endif\n" \
+                  "#else\n" \
+                  "  precision mediump float;\n" \
+                  "#endif\n" #src
+#else
+#define CG(src)   "" #src
+#define GLSL(src) "" #src
+#define GLSL_STANDARD_DERIVATIVES(src) "" #src
+#endif
+
+#ifndef GLSL_300
+#define GLSL_300(src)   "#version 300 es\n"   #src
+#endif
+
+static const char *stock_cg_gl_program = CG(
+      struct input
+      {
+        float2 tex_coord;
+        float4 color;
+        float4 vertex_coord;
+        uniform float4x4 mvp_matrix;
+        uniform sampler2D texture;
+      };
+
+      struct vertex_data
+      {
+        float2 tex;
+        float4 color;
+      };
+
+      void main_vertex
+      (
+        out float4 oPosition : POSITION,
+        input IN,
+        out vertex_data vert
+      )
+      {
+        oPosition = mul(IN.mvp_matrix, IN.vertex_coord);
+        vert = vertex_data(IN.tex_coord, IN.color);
+      }
+
+      float4 main_fragment(input IN, vertex_data vert, uniform sampler2D s0 : TEXUNIT0) : COLOR
+      {
+        return vert.color * tex2D(s0, vert.tex);
+      }
+);
+
+
 #define PREV_TEXTURES         (GFX_MAX_TEXTURES - 1)
 
 #define set_param_2f(param, x, y)    if (param) cgGLSetParameter2f(param, x, y)
@@ -137,8 +204,6 @@ struct uniform_cg
       cgGLSetTextureParameter(param, texture); \
       cgGLEnableTextureParameter(param); \
    }
-
-#include "../drivers/gl_shaders/opaque.cg.h"
 
 static void gl_cg_set_uniform_parameter(
       void *data,
@@ -602,13 +667,13 @@ static void gl_cg_set_program_base_attrib(void *data, unsigned i)
       RARCH_LOG("[Cg] Found semantic \"%s\" in prog #%u.\n", semantic, i);
 
       if (
-            string_is_equal(semantic, "TEXCOORD") ||
-            string_is_equal(semantic, "TEXCOORD0")
+               string_is_equal(semantic, "TEXCOORD")
+            || string_is_equal(semantic, "TEXCOORD0")
          )
          cg->prg[i].tex     = param;
       else if (
-            string_is_equal(semantic, "COLOR") ||
-            string_is_equal(semantic, "COLOR0")
+               string_is_equal(semantic, "COLOR")
+            || string_is_equal(semantic, "COLOR0")
             )
             cg->prg[i].color   = param;
       else if (string_is_equal(semantic, "POSITION"))
@@ -660,7 +725,7 @@ static bool gl_cg_load_plain(void *data, const char *path)
 
    cg->shader->passes = 1;
 
-   if (string_is_empty(path))
+   if (!path || !*path)
    {
       RARCH_LOG("[Cg] Loading stock Cg file.\n");
       cg->prg[1] = cg->prg[0];
@@ -1001,13 +1066,13 @@ static void *gl_cg_init(void *data, const char *path)
       enum rarch_shader_type type =
          video_shader_get_type_from_ext(path_get_extension(path), &is_preset);
 
-      if (!string_is_empty(path) && type != RARCH_SHADER_CG)
+      if (path && *path && type != RARCH_SHADER_CG)
       {
          RARCH_ERR("[Cg] Invalid shader type, falling back to stock.\n");
          path = NULL;
       }
 
-      if (!string_is_empty(path) && is_preset)
+      if (path && *path && is_preset)
       {
          if (!gl_cg_load_preset(cg, path))
             goto error;

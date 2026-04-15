@@ -42,7 +42,6 @@
 
 #include <encodings/utf.h>
 #include <compat/strl.h>
-#include <string/stdstring.h>
 
 #ifdef HAVE_DBUS
 #include "dbus_common.h"
@@ -139,6 +138,22 @@ void x11_set_net_wm_fullscreen(Display *dpy, Window win)
    XSendEvent(dpy, DefaultRootWindow(dpy), False,
          SubstructureRedirectMask | SubstructureNotifyMask,
          &xev);
+}
+
+/* Set the fullscreen state on the window before it is shown.
+ * On GNOME + X11 (Mutter), fullscreen works properly when the
+ * window carries the fullscreen hint as it is being mapped */
+void x11_set_net_wm_fullscreen_hint(Display *dpy, Window win)
+{
+   Atom states[1]             = {0};
+
+   XA_NET_WM_STATE            = XInternAtom(dpy, "_NET_WM_STATE", False);
+   XA_NET_WM_STATE_FULLSCREEN = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
+   states[0]                  = XA_NET_WM_STATE_FULLSCREEN;
+
+   XChangeProperty(dpy, win, XA_NET_WM_STATE, XA_ATOM, 32,
+         PropModeReplace, (const unsigned char*)states,
+         sizeof(states) / sizeof(*states));
 }
 
 /* Try to be nice to tiling WMs if possible. */

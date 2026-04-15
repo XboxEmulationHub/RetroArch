@@ -92,6 +92,131 @@
 #define GL_UNSIGNED_INT_8_8_8_8_REV       0x8367
 #endif
 
+#if defined(HAVE_PSGL)
+#define RARCH_GL_FRAMEBUFFER GL_FRAMEBUFFER_OES
+#define RARCH_GL_FRAMEBUFFER_COMPLETE GL_FRAMEBUFFER_COMPLETE_OES
+#define RARCH_GL_COLOR_ATTACHMENT0 GL_COLOR_ATTACHMENT0_EXT
+#elif (defined(__MACH__)  && defined(MAC_OS_X_VERSION_MAX_ALLOWED) && (MAC_OS_X_VERSION_MAX_ALLOWED < 101200))
+#define RARCH_GL_FRAMEBUFFER GL_FRAMEBUFFER_EXT
+#define RARCH_GL_FRAMEBUFFER_COMPLETE GL_FRAMEBUFFER_COMPLETE_EXT
+#define RARCH_GL_COLOR_ATTACHMENT0 GL_COLOR_ATTACHMENT0_EXT
+#else
+#define RARCH_GL_FRAMEBUFFER GL_FRAMEBUFFER
+#define RARCH_GL_FRAMEBUFFER_COMPLETE GL_FRAMEBUFFER_COMPLETE
+#define RARCH_GL_COLOR_ATTACHMENT0 GL_COLOR_ATTACHMENT0
+#endif
+
+#if defined(HAVE_OPENGLES2) || defined(HAVE_OPENGLES3) || defined(HAVE_OPENGLES_3_1) || defined(HAVE_OPENGLES_3_2)
+#define RARCH_GL_RENDERBUFFER GL_RENDERBUFFER
+#if defined(HAVE_OPENGLES2)
+#define RARCH_GL_DEPTH24_STENCIL8 GL_DEPTH24_STENCIL8_OES
+#else
+#define RARCH_GL_DEPTH24_STENCIL8 GL_DEPTH24_STENCIL8
+#endif
+#define RARCH_GL_DEPTH_ATTACHMENT GL_DEPTH_ATTACHMENT
+#define RARCH_GL_STENCIL_ATTACHMENT GL_STENCIL_ATTACHMENT
+#elif (defined(__MACH__) && defined(MAC_OS_X_VERSION_MAX_ALLOWED) && (MAC_OS_X_VERSION_MAX_ALLOWED < 101200))
+#define RARCH_GL_RENDERBUFFER GL_RENDERBUFFER_EXT
+#define RARCH_GL_DEPTH24_STENCIL8 GL_DEPTH24_STENCIL8_EXT
+#define RARCH_GL_DEPTH_ATTACHMENT GL_DEPTH_ATTACHMENT_EXT
+#define RARCH_GL_STENCIL_ATTACHMENT GL_STENCIL_ATTACHMENT_EXT
+#elif defined(HAVE_PSGL)
+#define RARCH_GL_RENDERBUFFER GL_RENDERBUFFER_OES
+#define RARCH_GL_DEPTH24_STENCIL8 GL_DEPTH24_STENCIL8_SCE
+#define RARCH_GL_DEPTH_ATTACHMENT GL_DEPTH_ATTACHMENT_OES
+#define RARCH_GL_STENCIL_ATTACHMENT GL_STENCIL_ATTACHMENT_OES
+#else
+#define RARCH_GL_RENDERBUFFER GL_RENDERBUFFER
+#define RARCH_GL_DEPTH24_STENCIL8 GL_DEPTH24_STENCIL8
+#define RARCH_GL_DEPTH_ATTACHMENT GL_DEPTH_ATTACHMENT
+#define RARCH_GL_STENCIL_ATTACHMENT GL_STENCIL_ATTACHMENT
+#endif
+
+#if (defined(__MACH__) && defined(MAC_OS_X_VERSION_MAX_ALLOWED) && (MAC_OS_X_VERSION_MAX_ALLOWED < 101200))
+#define RARCH_GL_MAX_RENDERBUFFER_SIZE GL_MAX_RENDERBUFFER_SIZE_EXT
+#elif defined(HAVE_PSGL)
+#define RARCH_GL_MAX_RENDERBUFFER_SIZE GL_MAX_RENDERBUFFER_SIZE_OES
+#else
+#define RARCH_GL_MAX_RENDERBUFFER_SIZE GL_MAX_RENDERBUFFER_SIZE
+#endif
+
+#if defined(HAVE_PSGL)
+#define glGenerateMipmap glGenerateMipmapOES
+#endif
+
+#if defined(__APPLE__) || defined(HAVE_PSGL)
+#ifndef GL_RGBA32F
+#define GL_RGBA32F GL_RGBA32F_ARB
+#endif
+#endif
+
+#if defined(HAVE_PSGL)
+#define RARCH_GL_INTERNAL_FORMAT32 GL_ARGB_SCE
+#define RARCH_GL_INTERNAL_FORMAT16 GL_RGB5 /* TODO: Verify if this is really 565 or just 555. */
+#define RARCH_GL_TEXTURE_TYPE32 GL_BGRA
+#define RARCH_GL_TEXTURE_TYPE16 GL_BGRA
+#define RARCH_GL_FORMAT32 GL_UNSIGNED_INT_8_8_8_8_REV
+#define RARCH_GL_FORMAT16 GL_RGB5
+#elif defined(HAVE_OPENGLES)
+/* Imgtec/SGX headers have this missing. */
+#ifndef GL_BGRA_EXT
+#define GL_BGRA_EXT 0x80E1
+#endif
+#ifndef GL_BGRA8_EXT
+#define GL_BGRA8_EXT 0x93A1
+#endif
+#ifdef IOS
+/* Stupid Apple */
+#define RARCH_GL_INTERNAL_FORMAT32 GL_RGBA
+#else
+#define RARCH_GL_INTERNAL_FORMAT32 GL_BGRA_EXT
+#endif
+#define RARCH_GL_INTERNAL_FORMAT16 GL_RGB
+#define RARCH_GL_TEXTURE_TYPE32 GL_BGRA_EXT
+#define RARCH_GL_TEXTURE_TYPE16 GL_RGB
+#define RARCH_GL_FORMAT32 GL_UNSIGNED_BYTE
+#define RARCH_GL_FORMAT16 GL_UNSIGNED_SHORT_5_6_5
+#else
+/* On desktop, we always use 32-bit. */
+#define RARCH_GL_INTERNAL_FORMAT32 GL_RGBA8
+#define RARCH_GL_INTERNAL_FORMAT16 GL_RGBA8
+#define RARCH_GL_TEXTURE_TYPE32 GL_BGRA
+#define RARCH_GL_TEXTURE_TYPE16 GL_BGRA
+#define RARCH_GL_FORMAT32 GL_UNSIGNED_INT_8_8_8_8_REV
+#define RARCH_GL_FORMAT16 GL_UNSIGNED_INT_8_8_8_8_REV
+
+/* GL_RGB565 internal format isn't in desktop GL
+ * until 4.1 core (ARB_ES2_compatibility).
+ * Check for this. */
+#ifndef GL_RGB565
+#define GL_RGB565 0x8D62
+#endif
+#define RARCH_GL_INTERNAL_FORMAT16_565 GL_RGB565
+#define RARCH_GL_TEXTURE_TYPE16_565 GL_RGB
+#define RARCH_GL_FORMAT16_565 GL_UNSIGNED_SHORT_5_6_5
+#endif
+
+#if defined(HAVE_OPENGLES2) /* TODO: Figure out exactly what. */
+#define NO_GL_CLAMP_TO_BORDER
+#endif
+
+#if defined(HAVE_OPENGLES)
+#ifndef GL_UNPACK_ROW_LENGTH
+#define GL_UNPACK_ROW_LENGTH  0x0CF2
+#endif
+
+#ifndef GL_SRGB_ALPHA_EXT
+#define GL_SRGB_ALPHA_EXT 0x8C42
+#endif
+#endif
+
+#define GL2_BIND_TEXTURE(id, wrap_mode, mag_filter, min_filter) \
+   glBindTexture(GL_TEXTURE_2D, id); \
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap_mode); \
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap_mode); \
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag_filter); \
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_filter)
+
 #define SET_TEXTURE_COORDS(coords, xamt, yamt) \
    coords[2] = xamt; \
    coords[6] = xamt; \
@@ -780,6 +905,8 @@ static void *gl2_raster_font_init(void *data,
 static int gl2_raster_font_get_message_width(void *data, const char *msg,
       size_t msg_len, float scale)
 {
+   void *font_data;
+   const struct font_glyph* (*get_glyph)(void*, uint32_t);
    const struct font_glyph* glyph_q = NULL;
    gl2_raster_t *font               = (gl2_raster_t*)data;
    const char* msg_end              = msg + msg_len;
@@ -790,7 +917,9 @@ static int gl2_raster_font_get_message_width(void *data, const char *msg,
          || !font->font_data )
       return 0;
 
-   glyph_q = font->font_driver->get_glyph(font->font_data, '?');
+   get_glyph = font->font_driver->get_glyph;
+   font_data = font->font_data;
+   glyph_q   = get_glyph(font_data, '?');
 
    while (msg < msg_end)
    {
@@ -798,8 +927,7 @@ static int gl2_raster_font_get_message_width(void *data, const char *msg,
       unsigned code                  = utf8_walk(&msg);
 
       /* Do something smarter here ... */
-      if (!(glyph = font->font_driver->get_glyph(
-            font->font_data, code)))
+      if (!(glyph = get_glyph(font_data, code)))
          if (!(glyph = glyph_q))
             continue;
 
@@ -850,18 +978,35 @@ static void gl2_raster_font_render_line(gl2_t *gl,
    float inv_tex_size_y = 1.0f / font->tex_height;
    float inv_win_width  = 1.0f / gl->vp.width;
    float inv_win_height = 1.0f / gl->vp.height;
+   const struct font_glyph* (*get_glyph)(void*, uint32_t) = font->font_driver->get_glyph;
+   void *font_data      = font->font_data;
 
-   switch (text_align)
+   /* For right/center alignment, compute width with a lightweight pass
+    * that only accumulates advance_x — avoids the redundant glyph lookups
+    * and atlas dirty checks that gl2_raster_font_get_message_width 
+    * would repeat. */
+   if (text_align == TEXT_ALIGN_RIGHT || text_align == TEXT_ALIGN_CENTER)
    {
-      case TEXT_ALIGN_RIGHT:
-         x -= gl2_raster_font_get_message_width(font, msg, msg_len, scale);
-         break;
-      case TEXT_ALIGN_CENTER:
-         x -= gl2_raster_font_get_message_width(font, msg, msg_len, scale) / 2.0;
-         break;
+      int width_accum      = 0;
+      const char *scan     = msg;
+      const char *scan_end = msg_end;
+      while (scan < scan_end)
+      {
+         const struct font_glyph *glyph;
+         uint32_t code       = utf8_walk(&scan);
+         if (!(glyph = get_glyph(font_data, code)))
+            if (!(glyph = glyph_q))
+               continue;
+         width_accum += glyph->advance_x;
+      }
+
+      if (text_align == TEXT_ALIGN_RIGHT)
+         x -= (int)(width_accum * scale);
+      else
+         x -= (int)(width_accum * scale) / 2;
    }
 
-   glyph_q = font->font_driver->get_glyph(font->font_data, '?');
+   glyph_q = get_glyph(font_data, '?');
 
    while (msg < msg_end)
    {
@@ -873,8 +1018,7 @@ static void gl2_raster_font_render_line(gl2_t *gl,
          unsigned                  code = utf8_walk(&msg);
 
          /* Do something smarter here ... */
-         if (!(glyph = font->font_driver->get_glyph(
-               font->font_data, code)))
+         if (!(glyph = get_glyph(font_data, code)))
             if (!(glyph = glyph_q))
                continue;
 
@@ -923,21 +1067,18 @@ static void gl2_raster_font_render_message(gl2_t *gl,
    int lines                              = 0;
    font->font_driver->get_line_metrics(font->font_data, &line_metrics);
    line_height = line_metrics->height * scale / gl->vp.height;
-
    for (;;)
    {
-      const char *delim = strchr(msg, '\n');
-      size_t msg_len    = delim ? (size_t)(delim - msg) : strlen(msg);
-
+      const char *end = msg;
+      while (*end && *end != '\n')
+         end++;
       /* Draw the line */
       gl2_raster_font_render_line(gl, font,
-            msg, msg_len, scale, color, pos_x,
+            msg, (size_t)(end - msg), scale, color, pos_x,
             pos_y - (float)lines*line_height, text_align);
-
-      if (!delim)
+      if (!*end)
          break;
-
-      msg += msg_len + 1;
+      msg = end + 1;
       lines++;
    }
 }
@@ -979,7 +1120,7 @@ static void gl2_raster_font_render_msg(
    unsigned height                   = gl->video_height;
    bool video_scale_integer          = config_get_ptr()->bools.video_scale_integer;
 
-   if (!font || string_is_empty(msg) || !gl)
+   if (!font || !msg || !*msg || !gl)
       return;
 
    if (params)
@@ -1034,7 +1175,7 @@ static void gl2_raster_font_render_msg(
       gl2_raster_font_setup_viewport(gl, font, width, height, full_screen,
             video_scale_integer);
 
-   if (    !string_is_empty(msg)
+   if (    (msg && *msg)
          && font->font_data
          && font->font_driver)
    {
@@ -1070,7 +1211,7 @@ static const struct font_glyph *gl2_raster_font_get_glyph(
 {
    gl2_raster_t *font = (gl2_raster_t*)data;
    if (font && font->font_driver)
-      return font->font_driver->get_glyph((void*)font->font_driver, code);
+      return font->font_driver->get_glyph((void*)font->font_data, code);
    return NULL;
 }
 
@@ -1173,9 +1314,9 @@ static void gl2_size_format(GLint* internalFormat)
 #endif
 }
 
+#if !defined(HAVE_PSGL) && !defined(ORBIS) && !defined(VITA) && !defined(IOS)
 static bool gl2_tex_storage_allowed(void)
 {
-#if defined(HAVE_OPENGLES) && defined(ANDROID)
    static int allowed = -1;
 
    if (allowed < 0)
@@ -1210,10 +1351,8 @@ static bool gl2_tex_storage_allowed(void)
    }
 
    return allowed == 1;
-#else
-   return true;
-#endif
 }
+#endif
 
 /* This function should only be used without mipmaps
    and when data == NULL */
@@ -1234,7 +1373,7 @@ static void gl2_load_texture_image(GLenum target,
    enum gl_capability_enum cap = GL_CAPS_TEX_STORAGE;
 #endif
 
-   if (gl2_tex_storage_allowed()
+   if (     gl2_tex_storage_allowed()
          && gl_check_capability(cap)
          && internalFormat != GL_BGRA_EXT)
    {
@@ -2945,7 +3084,7 @@ static bool gl2_shader_init(gl2_t *gl, const gfx_ctx_driver_t *ctx_driver,
 
    if (type != parse_type)
    {
-      if (!string_is_empty(shader_path))
+      if (shader_path && *shader_path)
          RARCH_WARN("[GL] Shader preset %s is using unsupported shader type %s, falling back to stock %s.\n",
             shader_path, video_shader_type_to_str(parse_type), video_shader_type_to_str(type));
 
@@ -3208,7 +3347,7 @@ static void gl2_render_osd_background(gl2_t *gl, bool video_scale_integer, const
    settings_t *settings    = config_get_ptr();
    float video_font_size   = settings->floats.video_font_size;
    int msg_width           =
-      font_driver_get_message_width(NULL, msg, strlen(msg), 1.0f);
+      gl2_raster_font_get_message_width(gl, msg, strlen(msg), 1.0f);
 
    /* shader driver expects vertex coords as 0..1 */
    float x                 = settings->floats.video_msg_pos_x;
@@ -3670,7 +3809,7 @@ static bool gl2_frame(void *data, const void *frame,
       gfx_widgets_frame(video_info);
 #endif
 
-   if (!string_is_empty(msg))
+   if (msg && *msg)
    {
       if (msg_bgcolor_enable)
          gl2_render_osd_background(gl, video_scale_integer, msg);
@@ -4375,30 +4514,33 @@ static void *gl2_init(const video_info_t *video,
    if (string_is_equal(ctx_driver->ident, "null"))
       goto error;
 
-   if (!string_is_empty(version))
+   if (version && *version)
    {
-      if (string_starts_with(version, "OpenGL ES "))
-         sscanf(version, "OpenGL ES %d.%d", &gl->version_major, &gl->version_minor);
-      else if (string_starts_with(version, "OpenGL "))
-         sscanf(version, "OpenGL %d.%d", &gl->version_major, &gl->version_minor);
-      else
-         sscanf(version, "%d.%d", &gl->version_major, &gl->version_minor);
+      const char *v = version;
+      char *end     = NULL;
+      if (string_starts_with(v, "OpenGL ES "))
+         v += STRLEN_CONST("OpenGL ES ");
+      else if (string_starts_with(v, "OpenGL "))
+         v += STRLEN_CONST("OpenGL ");
+      gl->version_major = (int)strtol(v, &end, 10);
+      if (end && *end == '.')
+         gl->version_minor = (int)strtol(end + 1, NULL, 10);
    }
 
    {
       size_t _len = 0;
 
-      if (!string_is_empty(vendor))
+      if (vendor && *vendor)
       {
         _len                   = strlcpy(gl->device_str, vendor, sizeof(gl->device_str));
         gl->device_str[  _len]  = ' ';
         gl->device_str[++_len]  = '\0';
       }
 
-      if (!string_is_empty(renderer))
+      if (renderer && *renderer)
         strlcpy(gl->device_str + _len, renderer, sizeof(gl->device_str) - _len);
 
-      if (!string_is_empty(version))
+      if (version && *version)
         video_driver_set_gpu_api_version_string(version);
    }
 
@@ -5319,7 +5461,7 @@ static const video_poke_interface_t gl2_poke_interface = {
    gl2_get_current_shader,
    NULL, /* get_current_software_framebuffer */
    NULL, /* get_hw_render_interface */
-   NULL, /* set_hdr_max_nits */
+   NULL, /* set_hdr_menu_nits */
    NULL, /* set_hdr_paper_white_nits */
    NULL, /* set_hdr_expand_gamut */
    NULL, /* set_hdr_scanlines */
@@ -5373,6 +5515,8 @@ video_driver_t video_gl2 = {
 #endif
    gl2_get_poke_interface,
    gl2_wrap_type_to_enum,
+   NULL, /* shader_load_begin */
+   NULL, /* shader_load_step */
 #ifdef HAVE_GFX_WIDGETS
    gl2_gfx_widgets_enabled
 #endif

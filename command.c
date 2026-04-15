@@ -436,30 +436,29 @@ bool command_get_config_param(command_t *cmd, const char* arg)
    const char *directory_cache    = settings->paths.directory_cache;
    const char *directory_system   = settings->paths.directory_system;
    const char *path_username      = settings->paths.username;
-
-   if (string_is_equal(arg, "video_fullscreen"))
+   if (memcmp(arg, "video_fullscreen", sizeof("video_fullscreen")) == 0)
    {
       if (video_fullscreen)
          value = "true";
       else
          value = "false";
    }
-   else if (string_is_equal(arg, "savefile_directory"))
+   else if (memcmp(arg, "savefile_directory", sizeof("savefile_directory")) == 0)
       value = dir_get_ptr(RARCH_DIR_SAVEFILE);
-   else if (string_is_equal(arg, "savestate_directory"))
+   else if (memcmp(arg, "savestate_directory", sizeof("savestate_directory")) == 0)
       value = dir_get_ptr(RARCH_DIR_SAVESTATE);
-   else if (string_is_equal(arg, "runtime_log_directory"))
+   else if (memcmp(arg, "runtime_log_directory", sizeof("runtime_log_directory")) == 0)
       value = dir_runtime_log;
-   else if (string_is_equal(arg, "log_dir"))
+   else if (memcmp(arg, "log_dir", sizeof("log_dir")) == 0)
       value = log_dir;
-   else if (string_is_equal(arg, "cache_directory"))
+   else if (memcmp(arg, "cache_directory", sizeof("cache_directory")) == 0)
       value = directory_cache;
-   else if (string_is_equal(arg, "system_directory"))
+   else if (memcmp(arg, "system_directory", sizeof("system_directory")) == 0)
       value = directory_system;
-   else if (string_is_equal(arg, "netplay_nickname"))
+   else if (memcmp(arg, "netplay_nickname", sizeof("netplay_nickname")) == 0)
       value = path_username;
 #ifdef HAVE_BSV_MOVIE
-   else if (string_is_equal(arg, "active_replay"))
+   else if (memcmp(arg, "active_replay", sizeof("active_replay")) == 0)
    {
       input_driver_state_t *input_st = input_state_get_ptr();
       value            = value_dynamic;
@@ -477,7 +476,6 @@ bool command_get_config_param(command_t *cmd, const char* arg)
    }
    #endif
    /* TODO: query any string */
-
    _len  = strlcpy(reply, "GET_CONFIG_PARAM ", sizeof(reply));
    _len += strlcpy(reply + _len, arg, sizeof(reply)  - _len);
    reply[  _len] = ' ';
@@ -691,7 +689,7 @@ static bool udp_send_packet(const char *host, uint16_t port, const char *msg)
 bool command_network_send(const char *cmd_)
 {
    char buf[4096];
-   char *save           = NULL;
+   char *ptr;
    const char *cmd      = NULL;
    const char *host     = NULL;
    const char *port_str = NULL;
@@ -710,13 +708,22 @@ bool command_network_send(const char *cmd_)
 
    memcpy(buf, cmd_, len + 1);
 
-   cmd = strtok_r(buf, ";", &save);
-   if (!cmd)
-      return false;
+   cmd = buf;
+   ptr = strchr(buf, ';');
+   if (ptr)
+   {
+      *ptr++ = '\0';
+      host   = ptr;
+      ptr    = strchr(ptr, ';');
+      if (ptr)
+      {
+         *ptr++   = '\0';
+         port_str = ptr;
+      }
+   }
 
-   host     = strtok_r(NULL, ";", &save);
-   if (host)
-      port_str = strtok_r(NULL, ";", &save);
+   if (!cmd || !*cmd)
+      return false;
 
    if (!host || !*host)
    {
@@ -896,7 +903,12 @@ bool command_read_ram(command_t *cmd, const char *arg)
    unsigned int nbytes        = 0;
    unsigned int addr          = -1;
 
-   if (sscanf(arg, "%x %u", &addr, &nbytes) == 2)
+   char *end          = NULL;
+   addr               = (unsigned int)strtoul(arg, &end, 16);
+   if (end && *end == ' ')
+      nbytes          = (unsigned int)strtoul(end + 1, NULL, 10);
+
+   if (end && *end == ' ' && nbytes > 0)
    {
       size_t _len             = 0;
       char *reply_at          = NULL;
@@ -1132,8 +1144,15 @@ bool command_read_memory(command_t *cmd, const char *arg)
    runloop_state_t *runloop_st        = runloop_state_get_ptr();
    const rarch_system_info_t* sys_info= &runloop_st->system;
 
-   if (sscanf(arg, "%x %u", &address, &nbytes) != 2)
-      return false;
+   {
+      char *end       = NULL;
+      address         = (unsigned int)strtoul(arg, &end, 16);
+      if (!(end && *end == ' '))
+         return false;
+      nbytes          = (unsigned int)strtoul(end + 1, NULL, 10);
+      if (nbytes == 0)
+         return false;
+   }
 
    /* Ensure large enough to return all requested bytes or an error message */
    alloc_size = 64 + nbytes * 3;
@@ -1326,7 +1345,7 @@ static size_t command_event_save_config(const char *config_path,
    char *s, size_t len)
 {
    size_t _len      = 0;
-   bool path_exists = !string_is_empty(config_path);
+   bool path_exists = *config_path;
    const char *str  = path_exists ? config_path :
       path_get(RARCH_PATH_CONFIG);
 
@@ -1351,7 +1370,7 @@ static size_t command_event_save_config(const char *config_path,
       return _len;
    }
 
-   if (!string_is_empty(str))
+   if (str && *str)
    {
       _len = snprintf(s, len, "%s \"%s\".",
             msg_hash_to_str(MSG_FAILED_SAVING_CONFIG_TO),
@@ -1424,10 +1443,12 @@ size_t command_event_save_auto_state(void)
    runloop_state_t *runloop_st = runloop_state_get_ptr();
    const char *name_savestate  = runloop_st->name.savestate;
    char savestate_name_auto[PATH_MAX_LENGTH];
+   const char *a = NULL;
 
    if (!core_info_current_supports_savestate())
       return 0;
-   if (string_is_empty(path_basename(path_get(RARCH_PATH_BASENAME))))
+   a = path_basename(path_get(RARCH_PATH_BASENAME));
+   if (!a || !*a)
       return 0;
    _len = strlcpy(savestate_name_auto, name_savestate,
          sizeof(savestate_name_auto));
@@ -1615,7 +1636,7 @@ static void command_scan_states(
       const char *end      = NULL;
       const char *dir_elem = dir_list->elems[i].data;
 
-      if (string_is_empty(dir_elem))
+      if (!dir_elem || !*dir_elem)
          continue;
 
       _len = strlen(dir_elem);
@@ -1624,7 +1645,7 @@ static void command_scan_states(
       /* Only consider files with a '.state' extension
        * > i.e. Ignore '.state.auto', '.state.bak', etc. */
       ext = path_get_extension(elem_base);
-      if (    string_is_empty(ext)
+      if (    (!ext || !*ext)
           || !string_starts_with_size(ext, "state", STRLEN_CONST("state")))
          continue;
 
@@ -1823,7 +1844,7 @@ static void command_event_set_savestate_garbage_collect(settings_t *settings)
     * > Conservative behaviour, designed to minimise
     *   the risk of deleting multiple incorrect files
     *   in case of accident */
-   if (!string_is_empty(state_to_delete))
+   if (*state_to_delete)
    {
       filestream_delete(state_to_delete);
       RARCH_DBG("[State] Garbage collect, deleting \"%s\".\n",state_to_delete);
@@ -1930,7 +1951,7 @@ void command_event_set_replay_garbage_collect(
       const char *end                 = NULL;
       const char *dir_elem            = dir_list->elems[i].data;
 
-      if (string_is_empty(dir_elem))
+      if (!dir_elem || !*dir_elem)
          continue;
 
       _len = fill_pathname_base(elem_base, dir_elem, sizeof(elem_base));
@@ -1938,7 +1959,7 @@ void command_event_set_replay_garbage_collect(
       /* Only consider files with a '.replayXX' extension
        * > i.e. Ignore '.replay.auto', '.replay.bak', etc. */
       ext = path_get_extension(elem_base);
-      if (    string_is_empty(ext)
+      if (    (!ext || !*ext)
           || !string_starts_with_size(ext, "replay", STRLEN_CONST("REPLAY")))
          continue;
 
@@ -1970,7 +1991,7 @@ void command_event_set_replay_garbage_collect(
     * > Conservative behaviour, designed to minimise
     *   the risk of deleting multiple incorrect files
     *   in case of accident */
-   if (!string_is_empty(oldest_save) && (cnt > max_to_keep))
+   if (oldest_save && *oldest_save && (cnt > max_to_keep))
       filestream_delete(oldest_save);
 
    dir_list_free(dir_list);
@@ -1981,7 +2002,7 @@ bool command_set_shader(command_t *cmd, const char *arg)
 {
    enum  rarch_shader_type type = video_shader_parse_type(arg);
    settings_t  *settings        = config_get_ptr();
-   bool apply_new_shader        = !string_is_empty(arg);
+   bool apply_new_shader        = arg && *arg;
 
    configuration_set_bool(settings, settings->bools.video_shader_enable, apply_new_shader);
    if (apply_new_shader)
@@ -2024,9 +2045,9 @@ bool command_event_save_core_config(
 
    msg[0]                          = '\0';
 
-   if (!string_is_empty(dir_menu_config))
+   if (dir_menu_config && *dir_menu_config)
       _len = strlcpy(config_dir, dir_menu_config, sizeof(config_dir));
-   else if (!string_is_empty(rarch_path_config)) /* Fallback */
+   else if (rarch_path_config && *rarch_path_config) /* Fallback */
       _len = fill_pathname_basedir(config_dir, rarch_path_config,
             sizeof(config_dir));
 

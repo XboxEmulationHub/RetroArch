@@ -1137,7 +1137,7 @@ static bool gdrive_sync_begin(cloud_sync_complete_handler_t cb,
 {
    settings_t *settings = config_get_ptr();
 
-   if (!string_is_empty(settings->arrays.google_drive_refresh_token))
+   if (*settings->arrays.google_drive_refresh_token)
    {
       /* Have a refresh token - use it to get an access token */
       char post_data[4096];
@@ -1356,7 +1356,7 @@ static void gdrive_do_patch(gdrive_cb_state_t *cb_st)
          cb_st->path, (long long)len);
    task_push_http_transfer_with_content(url, "PATCH",
          buf, (size_t)len, "application/octet-stream",
-         true, headers, gdrive_upload_cb, cb_st);
+         true, false, headers, gdrive_upload_cb, cb_st);
    free(buf);
    free(headers);
 }

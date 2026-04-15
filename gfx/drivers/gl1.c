@@ -526,6 +526,8 @@ static void *gl1_raster_font_init(void *data,
 static int gl1_raster_font_get_message_width(void *data, const char *msg,
       size_t msg_len, float scale)
 {
+   void *font_data;
+   const struct font_glyph* (*get_glyph)(void*, uint32_t);
    const struct font_glyph* glyph_q = NULL;
    gl1_raster_t *font  = (gl1_raster_t*)data;
    const char* msg_end = msg + msg_len;
@@ -536,16 +538,17 @@ static int gl1_raster_font_get_message_width(void *data, const char *msg,
          || !font->font_data )
       return 0;
 
-   glyph_q = font->font_driver->get_glyph(font->font_data, '?');
+   get_glyph = font->font_driver->get_glyph;
+   font_data = font->font_data;
+   glyph_q   = get_glyph(font_data, '?');
 
    while (msg < msg_end)
    {
       const struct font_glyph *glyph;
-      unsigned code                  = utf8_walk(&msg);
+      unsigned code = utf8_walk(&msg);
 
       /* Do something smarter here ... */
-      if (!(glyph = font->font_driver->get_glyph(
-            font->font_data, code)))
+      if (!(glyph = get_glyph(font_data, code)))
          if (!(glyph = glyph_q))
             continue;
 
@@ -641,15 +644,32 @@ static void gl1_raster_font_render_line(gl1_t *gl,
    int y                = roundf(pos_y * gl->vp.height);
    int delta_x          = 0;
    int delta_y          = 0;
+   const struct font_glyph* (*get_glyph)(void*, uint32_t) = font->font_driver->get_glyph;
+   void *font_data      = font->font_data;
 
-   switch (text_align)
+   /* For right/center alignment, compute width with a lightweight pass
+    * that only accumulates advance_x — avoids the redundant glyph lookups
+    * and atlas dirty checks that gl1_raster_font_get_message_width 
+    * would repeat. */
+   if (text_align == TEXT_ALIGN_RIGHT || text_align == TEXT_ALIGN_CENTER)
    {
-      case TEXT_ALIGN_RIGHT:
-         x -= gl1_raster_font_get_message_width(font, msg, msg_len, scale);
-         break;
-      case TEXT_ALIGN_CENTER:
-         x -= gl1_raster_font_get_message_width(font, msg, msg_len, scale) / 2.0;
-         break;
+      int width_accum      = 0;
+      const char *scan     = msg;
+      const char *scan_end = msg_end;
+      while (scan < scan_end)
+      {
+         const struct font_glyph *glyph;
+         uint32_t code       = utf8_walk(&scan);
+         if (!(glyph = get_glyph(font_data, code)))
+            if (!(glyph = glyph_q))
+               continue;
+         width_accum += glyph->advance_x;
+      }
+
+      if (text_align == TEXT_ALIGN_RIGHT)
+         x -= (int)(width_accum * scale);
+      else
+         x -= (int)(width_accum * scale) / 2;
    }
 
    while (msg < msg_end)
@@ -662,8 +682,7 @@ static void gl1_raster_font_render_line(gl1_t *gl,
          unsigned                  code = utf8_walk(&msg);
 
          /* Do something smarter here ... */
-         if (!(glyph = font->font_driver->get_glyph(
-               font->font_data, code)))
+         if (!(glyph = get_glyph(font_data, code)))
             if (!(glyph = glyph_q))
                continue;
 
@@ -717,12 +736,13 @@ static void gl1_raster_font_render_message(gl1_t *gl,
    int x                                  = roundf(pos_x * gl->vp.width);
    font->font_driver->get_line_metrics(font->font_data, &line_metrics);
    line_height = line_metrics->height * scale / gl->vp.height;
-
    for (;;)
    {
-      const char *delim = strchr(msg, '\n');
-      size_t msg_len    = delim ? (size_t)(delim - msg) : strlen(msg);
-
+      size_t msg_len;
+      const char *p = msg;
+      while (*p && *p != '\n')
+         p++;
+      msg_len = p - msg;
       /* Draw the line */
       gl1_raster_font_render_line(gl, font, glyph_q,
             msg, msg_len, scale, color, pos_x,
@@ -733,11 +753,9 @@ static void gl1_raster_font_render_message(gl1_t *gl,
             inv_win_width,
             inv_win_height,
             text_align);
-
-      if (!delim)
+      if (!*p)
          break;
-
-      msg += msg_len + 1;
+      msg = p + 1;
       lines++;
    }
 }
@@ -768,7 +786,7 @@ static void gl1_raster_font_render_msg(
    gl1_raster_t               *font = (gl1_raster_t*)data;
    gl1_t *gl                        = (gl1_t*)userdata;
 
-   if (!font || string_is_empty(msg) || !gl)
+   if (!font || !msg || !*msg || !gl)
       return;
 
    if (params)
@@ -830,7 +848,7 @@ static void gl1_raster_font_render_msg(
       if (!font->block)
          gl1_raster_font_setup_viewport(gl, width, height, font, full_screen);
 
-      if (!string_is_empty(msg)
+      if (msg && *msg
             && font->font_data  && font->font_driver)
       {
          if (drop_x || drop_y)
@@ -878,7 +896,7 @@ static const struct font_glyph *gl1_raster_font_get_glyph(
 {
    gl1_raster_t *font = (gl1_raster_t*)data;
    if (font && font->font_driver)
-      return font->font_driver->get_glyph((void*)font->font_driver, code);
+      return font->font_driver->get_glyph((void*)font->font_data, code);
    return NULL;
 }
 
@@ -1196,17 +1214,22 @@ static void *gl1_init(const video_info_t *video,
    version  = (const char*)glGetString(GL_VERSION);
    extensions = (const char*)glGetString(GL_EXTENSIONS);
 
-   if (!string_is_empty(version))
-      sscanf(version, "%d.%d", &gl1->version_major, &gl1->version_minor);
+   if (version && *version)
+   {
+      char *end           = NULL;
+      gl1->version_major  = (int)strtol(version, &end, 10);
+      if (end && *end == '.')
+         gl1->version_minor = (int)strtol(end + 1, NULL, 10);
+   }
 
-   if (!string_is_empty(extensions))
+   if (extensions && *extensions)
       gl1->extensions = string_split(extensions, " ");
 
    RARCH_LOG("[GL1] Vendor: %s, Renderer: %s.\n", vendor, renderer);
    RARCH_LOG("[GL1] Version: %s.\n", version);
    RARCH_LOG("[GL1] Extensions: %s.\n", extensions);
 
-   if (!string_is_empty(version))
+   if (version && *version)
       video_driver_set_gpu_api_version_string(version);
 
    if (gl1->ctx_driver->input_driver)
@@ -2284,7 +2307,7 @@ static const video_poke_interface_t gl1_poke_interface = {
    NULL, /* get_current_shader */
    NULL, /* get_current_software_framebuffer */
    NULL, /* get_hw_render_interface */
-   NULL, /* set_hdr_max_nits */
+   NULL, /* set_hdr_menu_nits */
    NULL, /* set_hdr_paper_white_nits */
    NULL, /* set_hdr_expand_gamut */
    NULL, /* set_hdr_scanlines */
@@ -2462,6 +2485,8 @@ video_driver_t video_gl1 = {
 #endif
    gl1_get_poke_interface,
    gl1_wrap_type_to_enum,
+   NULL, /* shader_load_begin */
+   NULL, /* shader_load_step */
 #ifdef HAVE_GFX_WIDGETS
    gl1_widgets_enabled
 #endif
