@@ -689,7 +689,14 @@ static void gfx_display_gl2_draw_pipeline(
          gl->shader->use(gl, gl->shader_data, draw->pipeline_id,
                true);
 
-         t += 0.01;
+         t += 0.01f;
+         /* Wrap at 65536 to keep fp32 increments precise. 0.01 stays
+          * exactly representable up to t ~ 167772 (where 0.5*ulp first
+          * exceeds 0.01), so 65536 has wide margin and wraps roughly
+          * every 30 h of cumulative menu time, making the discontinuity
+          * effectively unobservable. */
+         if (t > 65536.0f)
+            t -= 65536.0f;
 
          uniform_param.type              = UNIFORM_1F;
          uniform_param.enabled           = true;

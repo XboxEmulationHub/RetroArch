@@ -331,6 +331,11 @@ static void command_stdin_poll(command_t *handle)
    {
       char *last_newline = NULL;
       stdincmd->stdin_buf_ptr                      += ret;
+      
+      /* Ensure we don't write past buffer bounds */
+      if (stdincmd->stdin_buf_ptr >= CMD_BUF_SIZE)
+         stdincmd->stdin_buf_ptr = CMD_BUF_SIZE - 1;
+         
       stdincmd->stdin_buf[stdincmd->stdin_buf_ptr]  = '\0';
 
       last_newline = strrchr(stdincmd->stdin_buf, '\n');
@@ -990,6 +995,13 @@ bool command_read_ram(command_t *cmd, const char *arg)
       /* We allocate more than needed, saving 20 bytes is not really relevant */
       unsigned int alloc_size = 40 + nbytes * 3;
       char *reply             = (char*)malloc(alloc_size);
+      
+      if (!reply)
+      {
+         cmd->replier(cmd, "READ_CORE_RAM ERROR: OUT OF MEMORY\n", 34);
+         return true;
+      }
+      
       reply[0]                = '\0';
       reply_at                = reply + snprintf(
             reply, alloc_size - 1, "READ_CORE_RAM" " %x", addr);
@@ -1231,6 +1243,13 @@ bool command_read_memory(command_t *cmd, const char *arg)
    /* Ensure large enough to return all requested bytes or an error message */
    alloc_size = 64 + nbytes * 3;
    reply      = (char*)malloc(alloc_size);
+   
+   if (!reply)
+   {
+      cmd->replier(cmd, "READ_CORE_MEMORY ERROR: OUT OF MEMORY\n", 37);
+      return true;
+   }
+   
    reply_at   = reply + snprintf(reply, alloc_size - 1, "READ_CORE_MEMORY %x", address);
 
    if ((data = command_memory_get_pointer(

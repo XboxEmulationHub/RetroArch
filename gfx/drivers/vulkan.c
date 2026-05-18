@@ -1868,11 +1868,13 @@ static void gfx_display_vk_draw_pipeline(
    }
 
    t += 0.01f;
-   /* Wrap to maintain float precision over long sessions.
-    * Period of 2*pi*100 ensures trig-based shader animations
-    * (sin(t), cos(t)) cycle seamlessly. */
-   if (t > 628.0f)
-      t = fmodf(t, 628.318530f);
+   /* Wrap at 65536 to keep fp32 increments precise. 0.01 stays
+    * exactly representable up to t ~ 167772 (where 0.5*ulp first
+    * exceeds 0.01), so 65536 has wide margin and wraps roughly
+    * every 30 h of cumulative menu time, making the discontinuity
+    * effectively unobservable. */
+   if (t > 65536.0f)
+      t -= 65536.0f;
 }
 #endif
 

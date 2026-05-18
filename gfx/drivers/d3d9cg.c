@@ -713,6 +713,13 @@ static void gfx_display_d3d9_cg_draw(gfx_display_ctx_draw_t *draw,
                static float t = 0.0f;
                CGparameter param;
                t += 0.01f;
+               /* Wrap at 65536 to keep fp32 increments precise. 0.01 stays
+                * exactly representable up to t ~ 167772 (where 0.5*ulp first
+                * exceeds 0.01), so 65536 has wide margin and wraps roughly
+                * every 30 h of cumulative menu time, making the discontinuity
+                * effectively unobservable. */
+               if (t > 65536.0f)
+                  t -= 65536.0f;
 
                param = cgGetNamedParameter(
                      (CGprogram)_chain->pipeline_vprg[idx], "time");
@@ -2981,11 +2988,17 @@ static void d3d9_cg_renderchain_render_pass(
       output_size[0]       = vp_width;
       output_size[1]       = vp_height;
 
-      frame_cnt            = chain->frame_count;
-
       if (pass->info.pass->frame_count_mod)
          frame_cnt         = chain->frame_count
             % pass->info.pass->frame_count_mod;
+      else
+         /* SM2/SM3 has no uint registers, so frame_count is bound
+          * via a float uniform here. fp32 mantissa is 23 bits, so
+          * integers above 2^24 cannot be represented exactly. Mask
+          * to 24 bits when the shader pass has not declared its own
+          * modulo, to keep the implicit cast bit-exact in long
+          * sessions. */
+         frame_cnt         = chain->frame_count & 0xFFFFFFu;
 
       if (vp_video_size)
          cgD3D9SetUniform(vp_video_size, &video_size);

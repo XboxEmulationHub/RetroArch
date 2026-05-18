@@ -26,7 +26,6 @@
 #include <string/stdstring.h>
 #include <encodings/utf.h>
 #include <clamping.h>
-#include <retro_endianness.h>
 
 #ifdef HAVE_CONFIG_H
 #include "../config.h"
@@ -7013,13 +7012,29 @@ void input_driver_poll(void)
    /* Cache sensor values so shader backends on the video thread
     * read a consistent per-frame snapshot instead of calling into
     * the input subsystem directly.
-    * Uses the internal variant to avoid 6 redundant config_get_ptr() calls. */
-   input_st->sensor_gyroscope_cache[0]     = input_get_sensor_state_internal(settings, 0, RETRO_SENSOR_GYROSCOPE_X);
-   input_st->sensor_gyroscope_cache[1]     = input_get_sensor_state_internal(settings, 0, RETRO_SENSOR_GYROSCOPE_Y);
-   input_st->sensor_gyroscope_cache[2]     = input_get_sensor_state_internal(settings, 0, RETRO_SENSOR_GYROSCOPE_Z);
-   input_st->sensor_accelerometer_cache[0] = input_get_sensor_state_internal(settings, 0, RETRO_SENSOR_ACCELEROMETER_X);
-   input_st->sensor_accelerometer_cache[1] = input_get_sensor_state_internal(settings, 0, RETRO_SENSOR_ACCELEROMETER_Y);
-   input_st->sensor_accelerometer_cache[2] = input_get_sensor_state_internal(settings, 0, RETRO_SENSOR_ACCELEROMETER_Z);
+    * Uses the internal variant to avoid 6 redundant config_get_ptr() calls.
+    *
+    * When the master input_sensors_enable toggle is off (the common
+    * default), input_get_sensor_state_internal would return 0.0 for
+    * every call after two settings reads and a couple of branches per
+    * call. Short-circuit that to a single memset since the result is
+    * the same. */
+   if (!settings->bools.input_sensors_enable)
+   {
+      memset(input_st->sensor_gyroscope_cache,     0,
+            sizeof(input_st->sensor_gyroscope_cache));
+      memset(input_st->sensor_accelerometer_cache, 0,
+            sizeof(input_st->sensor_accelerometer_cache));
+   }
+   else
+   {
+      input_st->sensor_gyroscope_cache[0]     = input_get_sensor_state_internal(settings, 0, RETRO_SENSOR_GYROSCOPE_X);
+      input_st->sensor_gyroscope_cache[1]     = input_get_sensor_state_internal(settings, 0, RETRO_SENSOR_GYROSCOPE_Y);
+      input_st->sensor_gyroscope_cache[2]     = input_get_sensor_state_internal(settings, 0, RETRO_SENSOR_GYROSCOPE_Z);
+      input_st->sensor_accelerometer_cache[0] = input_get_sensor_state_internal(settings, 0, RETRO_SENSOR_ACCELEROMETER_X);
+      input_st->sensor_accelerometer_cache[1] = input_get_sensor_state_internal(settings, 0, RETRO_SENSOR_ACCELEROMETER_Y);
+      input_st->sensor_accelerometer_cache[2] = input_get_sensor_state_internal(settings, 0, RETRO_SENSOR_ACCELEROMETER_Z);
+   }
 
 #ifdef HAVE_OVERLAY
    if (      input_st->overlay_ptr

@@ -597,7 +597,16 @@ static void gfx_display_wiiu_draw_pipeline(
       wiiu->menu_shader_ubo->time = 0.0f;
    }
    else
+   {
       wiiu->menu_shader_ubo->time += 0.01f;
+      /* Wrap at 65536 to keep fp32 increments precise. 0.01 stays
+       * exactly representable up to t ~ 167772 (where 0.5*ulp first
+       * exceeds 0.01), so 65536 has wide margin and wraps roughly
+       * every 30 h of cumulative menu time, making the discontinuity
+       * effectively unobservable. */
+      if (wiiu->menu_shader_ubo->time > 65536.0f)
+         wiiu->menu_shader_ubo->time -= 65536.0f;
+   }
 
    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_UNIFORM_BLOCK, wiiu->menu_shader_ubo, sizeof(*wiiu->menu_shader_ubo));
    GX2SetVertexUniformBlock(1, sizeof(*wiiu->menu_shader_ubo), wiiu->menu_shader_ubo);

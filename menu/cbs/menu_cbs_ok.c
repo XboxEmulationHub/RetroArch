@@ -3706,6 +3706,7 @@ static int action_ok_shader_preset_remove_game(const char *path,
 static int action_ok_video_filter_remove(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
+#ifdef HAVE_VIDEO_FILTER
    struct menu_state *menu_st = menu_state_get_ptr();
    settings_t *settings       = config_get_ptr();
    if (!settings)
@@ -3714,11 +3715,12 @@ static int action_ok_video_filter_remove(const char *path,
    {
       /* Unload video filter */
       settings->paths.path_softfilter_plugin[0] = '\0';
-      command_event(CMD_EVENT_REINIT, NULL);
+      video_driver_filter_free();
       /* Refresh menu */
       menu_st->flags         |=  MENU_ST_FLAG_ENTRIES_NEED_REFRESH
                              |  MENU_ST_FLAG_PREVENT_POPULATE;
    }
+#endif
    return 0;
 }
 
@@ -8047,7 +8049,6 @@ static int action_ok_contentless_core_run(const char *path,
 static int action_ok_state_slot_run(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
-   settings_t *settings       = config_get_ptr();
    struct menu_state *menu_st = menu_state_get_ptr();
    int slot                   = idx - 1;
    size_t new_selection_ptr   = 0;

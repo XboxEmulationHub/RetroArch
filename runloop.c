@@ -4825,7 +4825,30 @@ bool runloop_event_init_core(
    input_remapping_cache_global_config();
 #ifdef HAVE_CONFIGFILE
    if (auto_remaps_enable)
+   {
+      /* Reset the in-memory remap state before searching for
+       * tier files. The unload paths in runloop_event_deinit_core
+       * and CMD_EVENT_UNLOAD_CORE only call set_defaults when a
+       * REMAPS_*_ACTIVE flag is set or a remapfile name is cached;
+       * unsaved per-port edits made via the Quick Menu set neither,
+       * so the per-port input_remap_ids arrays survive content
+       * close. Without this reset, those stale edits leak into the
+       * next session even when no remap file is present.
+       *
+       * Placed at the content-load call site rather than inside
+       * config_load_remap itself, so the menu remap-file deletion
+       * path (menu_cbs_ok.c) is unaffected: deleting a non-active
+       * tier file while a higher-priority tier is active continues
+       * to leave the active tier in place, and deleting the active
+       * tier still falls back to the next-priority tier as before.
+       *
+       * If a tier file is found below, input_remapping_load_file()
+       * calls set_defaults() itself before applying the file's
+       * bindings, so this reset is harmless on the found-file
+       * path. */
+      input_remapping_set_defaults(false);
       config_load_remap(dir_input_remapping, &runloop_st->system);
+   }
 #endif
 
    video_st->frame_cache_data              = NULL;
@@ -6296,6 +6319,96 @@ static enum runloop_state_enum runloop_check_state(
          menu_st->flags &= ~MENU_ST_FLAG_PENDING_STARTUP_PAGE;
          return RUNLOOP_STATE_POLLED_AND_SLEEP;
       }
+      else if ((menu_st->flags & MENU_ST_FLAG_PENDING_CLOSE_CONTENT)
+            || (menu_st->flags & MENU_ST_FLAG_PENDING_ENV_SHUTDOWN_FLUSH))
+      {
+         menu_list_t *menu_list    = menu_st->entries.list;
+         file_list_t *menu_stack   = menu_list ? MENU_LIST_GET(menu_list, (unsigned)0) : NULL;
+         const char *deferred_path = menu ? menu->deferred_path : NULL;
+         const char *flush_target  = MENU_ENUM_LABEL_MAIN_MENU_STR;
+         size_t stack_offset       = 1;
+         unsigned i                = 0;
+         bool reset_navigation     = true;
+
+         /* Loop backwards through the menu stack to
+          * find a known reference point */
+         while (menu_stack && (menu_stack->size >= stack_offset))
+         {
+            const char *parent_label = menu_stack->list[
+               menu_stack->size - stack_offset].label;
+
+            if (!parent_label || !*parent_label)
+               continue;
+
+            /* If core was launched via a playlist or Explore, flush
+             * to playlist entry menu */
+            if (     (  string_is_equal(parent_label, MENU_ENUM_LABEL_DEFERRED_RPL_ENTRY_ACTIONS_STR)
+                     || string_is_equal(parent_label, MENU_ENUM_LABEL_EXPLORE_TAB_STR))
+                  && deferred_path && *deferred_path
+               )
+            {
+               if (string_is_equal(parent_label, MENU_ENUM_LABEL_EXPLORE_TAB_STR))
+                  flush_target = MENU_ENUM_LABEL_EXPLORE_TAB_STR;
+               else
+                  flush_target = MENU_ENUM_LABEL_DEFERRED_RPL_ENTRY_ACTIONS_STR;
+               break;
+            }
+            /* If core was launched via 'Contentless Cores' menu,
+             * flush to 'Contentless Cores' menu */
+            else if (   string_is_equal(parent_label,
+                           MENU_ENUM_LABEL_CONTENTLESS_CORES_TAB_STR)
+                     || string_is_equal(parent_label,
+                           MENU_ENUM_LABEL_DEFERRED_CONTENTLESS_CORES_LIST_STR))
+            {
+               flush_target     = parent_label;
+               reset_navigation = false;
+               break;
+            }
+
+            stack_offset++;
+         }
+
+         if (!(menu_st->flags & MENU_ST_FLAG_PENDING_ENV_SHUTDOWN_FLUSH))
+            command_event(CMD_EVENT_UNLOAD_CORE, NULL);
+
+         menu_entries_flush_stack(flush_target, 0);
+         /* An annoyance - some menu drivers (Ozone...) set
+          * MENU_ST_FLAG_PREVENT_POPULATE in awkward
+          * places, which can cause breakage here when flushing
+          * the menu stack. We therefore have to unset
+          * MENU_ST_FLAG_PREVENT_POPULATE */
+         menu_st->flags &= ~MENU_ST_FLAG_PREVENT_POPULATE;
+
+         /* Single-click playlist return */
+         if (settings->bools.input_menu_singleclick_playlists && reset_navigation)
+         {
+            size_t new_selection = menu_st->selection_ptr;
+            menu_entries_pop_stack(&new_selection, 0, 0);
+            menu_st->selection_ptr = new_selection;
+            reset_navigation = false;
+         }
+
+         /* Ozone requires thumbnail refreshing */
+         if (menu_st->driver_ctx && menu_st->driver_ctx->refresh_thumbnail_image)
+            menu_st->driver_ctx->refresh_thumbnail_image(
+                  menu_st->userdata, i);
+
+         if (reset_navigation)
+            menu_st->selection_ptr = 0;
+
+         menu_st->flags &= ~(MENU_ST_FLAG_PENDING_CLOSE_CONTENT
+                           | MENU_ST_FLAG_PENDING_ENV_SHUTDOWN_FLUSH);
+         menu_st->pending_env_shutdown_content_path[0] = '\0';
+
+         /* Reload core on launch failure if manually loaded */
+         if (     !path_is_empty(RARCH_PATH_CORE_LAST)
+               && !(menu_st->flags & MENU_ST_FLAG_PENDING_RELOAD_CORE))
+         {
+            menu_st->flags |= MENU_ST_FLAG_PENDING_RELOAD_CORE;
+            menu_st->flags |= MENU_ST_FLAG_PENDING_ENV_SHUTDOWN_FLUSH;
+         }
+         return RUNLOOP_STATE_POLLED_AND_SLEEP;
+      }
       else if (!menu_driver_iterate(menu_st, p_disp, anim_get_ptr(),
                settings, action, current_time))
       {
@@ -6306,6 +6419,32 @@ static enum runloop_state_enum runloop_check_state(
          }
          else
             retroarch_menu_running_finished(false);
+      }
+
+      /* Handle pending core reload separately after menu driver iterate */
+      if (menu_st->flags & MENU_ST_FLAG_PENDING_RELOAD_CORE)
+      {
+#ifdef HAVE_DYNAMIC
+         const char *a = path_get(RARCH_PATH_CORE_LAST);
+#endif
+         menu_st->flags &= ~MENU_ST_FLAG_PENDING_RELOAD_CORE;
+
+#ifdef HAVE_DYNAMIC
+         if (a && *a)
+         {
+            content_ctx_info_t content_info = {0};
+            if (task_push_load_new_core(a,
+                        NULL,
+                        &content_info,
+                        CORE_TYPE_PLAIN,
+                        NULL, NULL))
+            {
+               menu_st->flags |=  MENU_ST_FLAG_ENTRIES_NEED_REFRESH
+                               |  MENU_ST_FLAG_PREVENT_POPULATE;
+            }
+         }
+#endif
+         return RUNLOOP_STATE_POLLED_AND_SLEEP;
       }
 
       if (focused || !(runloop_st->flags & RUNLOOP_FLAG_IDLE))
@@ -7108,6 +7247,11 @@ static enum runloop_state_enum runloop_check_state(
          RARCH_CHEAT_INDEX_PLUS,  CMD_EVENT_CHEAT_INDEX_PLUS,
          RARCH_CHEAT_INDEX_MINUS, CMD_EVENT_CHEAT_INDEX_MINUS,
          RARCH_CHEAT_TOGGLE,      CMD_EVENT_CHEAT_TOGGLE);
+
+#ifdef HAVE_VIDEO_FILTER
+   /* Check Video Filter hotkey */
+   HOTKEY_CHECK(RARCH_VIDEO_FILTER_TOGGLE, CMD_VIDEO_FILTER_TOGGLE, true, NULL);
+#endif
 
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
    /* Check shader hotkeys */
@@ -8151,16 +8295,27 @@ void core_run(void)
 #ifdef HAVE_GAME_AI
    {
       settings_t *settings           = config_get_ptr();
-      video_driver_state_t *video_st = video_state_get_ptr();
-      game_ai_think(
-            settings->bools.game_ai_override_p1,
-            settings->bools.game_ai_override_p2,
-            settings->bools.game_ai_show_debug,
-            video_st->frame_cache_data,
-            video_st->frame_cache_width,
-            video_st->frame_cache_height,
-            video_st->frame_cache_pitch,
-            video_st->pix_fmt);
+      bool override_p1               = settings->bools.game_ai_override_p1;
+      bool override_p2               = settings->bools.game_ai_override_p2;
+      bool show_debug                = settings->bools.game_ai_show_debug;
+
+      /* Skip the call entirely when no GameAI feature is active for this
+       * frame. Avoids per-frame indirect dispatch into the loaded GameAI
+       * library (game_ai_lib_set_show_debug) that game_ai_think runs
+       * unconditionally when an AI has been instantiated. */
+      if (override_p1 || override_p2 || show_debug)
+      {
+         video_driver_state_t *video_st = video_state_get_ptr();
+         game_ai_think(
+               override_p1,
+               override_p2,
+               show_debug,
+               video_st->frame_cache_data,
+               video_st->frame_cache_width,
+               video_st->frame_cache_height,
+               video_st->frame_cache_pitch,
+               video_st->pix_fmt);
+      }
    }
 #endif
 

@@ -2041,6 +2041,11 @@ bool driver_ctl(enum driver_ctl_state state, void *data)
             (double)audio_output_sample_rate / audio_st->input;
 
             driver_adjust_system_rates(runloop_st, video_st, settings);
+
+            /* driver_adjust_system_rates may have updated audio_st->input
+             * for the new refresh rate; recompute the DRC threshold so
+             * it tracks one frame's worth of samples at the new rate. */
+            audio_driver_update_drc_threshold(audio_st);
          }
          break;
       case RARCH_DRIVER_CTL_FIND_FIRST:
@@ -3178,7 +3183,17 @@ bool command_event(enum event_command cmd, void *data)
 #ifdef HAVE_OVERLAY
          input_overlay_init();
 #endif
+	 break;
+      case CMD_EVENT_VIDEO_FILTER_INIT:
+      {
+#ifdef HAVE_VIDEO_FILTER
+         const enum retro_pixel_format
+            video_driver_pix_fmt       = video_st->pix_fmt;
+         settings_t  *settings      = config_get_ptr();
+         video_driver_init_filter(video_driver_pix_fmt, settings);
+#endif
          break;
+      }
       case CMD_EVENT_CHEAT_INDEX_PLUS:
 #ifdef HAVE_CHEATS
          cheat_manager_index_next();
@@ -3548,6 +3563,24 @@ bool command_event(enum event_command cmd, void *data)
              (settings,
               runloop_st->pending_windowed_scale))
             return false;
+         break;
+      case CMD_VIDEO_FILTER_TOGGLE:
+         {
+#ifdef HAVE_VIDEO_FILTER
+            const char *_msg;
+            /* Allow video filter toggle only when there is an active core. */
+            if (!(runloop_st->flags & RUNLOOP_FLAG_CORE_RUNNING))
+               break;
+            settings->bools.video_filter_enable = !(settings->bools.video_filter_enable);
+            _msg =
+               settings->bools.video_filter_enable ?
+               msg_hash_to_str(MSG_VIDEO_FILTER_ENABLE_ON) :
+               msg_hash_to_str(MSG_VIDEO_FILTER_ENABLE_OFF);
+
+            runloop_msg_queue_push(_msg, strlen(_msg), 1, 60, true, NULL,
+                  MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+#endif
+         }
          break;
       case CMD_EVENT_MENU_TOGGLE:
 #ifdef HAVE_MENU

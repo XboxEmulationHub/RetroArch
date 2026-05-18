@@ -4026,7 +4026,7 @@ static void ozone_update_savestate_thumbnail_image(void *data)
             &ozone->thumbnails.savestate,
             thumbnail_upscale_threshold);
 
-   ozone->thumbnails.savestate.flags |= GFX_THUMB_FLAG_CORE_ASPECT;
+   ozone->thumbnails.savestate.flags |= GFX_THUMB_FLAG_CORE_ASPECT | GFX_THUMB_FLAG_BG_ONLY;
 }
 
 static void ozone_entries_update_thumbnail_bar(ozone_handle_t *ozone,
@@ -4092,6 +4092,7 @@ static void ozone_entries_update_thumbnail_bar(ozone_handle_t *ozone,
    else if ((ozone->flags & OZONE_FLAG_CURSOR_IN_SIDEBAR)
          || ((ozone->show_thumbnail_bar)
             && (!(ozone->flags & OZONE_FLAG_WANT_THUMBNAIL_BAR))
+            && (!((ozone->flags2 & OZONE_FLAG2_IS_QUICK_MENU) && !menu_is_running_quick_menu()))
             && (!(ozone->flags & OZONE_FLAG_IS_STATE_SLOT))))
    {
       if (allow_animation)
@@ -4293,8 +4294,6 @@ end:
 static void ozone_go_to_sidebar(ozone_handle_t *ozone,
       bool ozone_collapse_sidebar, uintptr_t tag)
 {
-   struct gfx_animation_ctx_entry entry;
-
    ozone->selection_old           = ozone->selection;
 
    if (!ozone->show_sidebar)
@@ -4566,7 +4565,6 @@ static void ozone_leave_sidebar(ozone_handle_t *ozone,
       bool ozone_collapse_sidebar, uintptr_t tag,
       unsigned remember_selection_type)
 {
-   struct gfx_animation_ctx_entry entry;
    bool ozone_main_tab_selected     = false;
 
    ozone_update_content_metadata(ozone);
@@ -5226,9 +5224,10 @@ static void ozone_context_reset_horizontal_list(ozone_handle_t *ozone)
                   texturepath, ozone->icons_path, "default.png",
                   sizeof(texturepath));
 
-         gfx_display_load_icon(texturepath, supports_rgba,
-               &node->icon, ozone_icon_load_gen,
-               &ozone_icon_load_gen);
+         /* Load sidebar playlist icons at once */
+         gfx_display_reset_icon_texture(
+               texturepath, &node->icon,
+               TEXTURE_FILTER_LINEAR, NULL, NULL);
 
          strlcpy(sysname + syslen, "-content.png", sizeof(sysname) - syslen);
          fill_pathname_join_special(
@@ -5680,14 +5679,18 @@ static void ozone_update_scroll(ozone_handle_t *ozone,
 static int ozone_get_sublabel_max_width(ozone_handle_t *ozone,
       unsigned video_info_width, unsigned entry_padding)
 {
+   int max_width          = video_info_width / 2;
    int sublabel_max_width = video_info_width
          - (entry_padding * 2)
-         - (ozone->dimensions.entry_icon_padding * 2);
+         - (ozone->dimensions.entry_icon_padding * 3);
 
    if (ozone->depth == 1)
       sublabel_max_width -= (int)ozone->dimensions_sidebar_width;
    if (ozone->show_thumbnail_bar)
       sublabel_max_width -= ozone->dimensions.thumbnail_bar_width;
+
+   if (sublabel_max_width > max_width)
+      sublabel_max_width = max_width;
 
    return sublabel_max_width;
 }
@@ -6466,6 +6469,7 @@ static void ozone_draw_thumbnail_bar(
    int bottom_row_y_position         = 0;
    bool show_right_thumbnail         = false;
    bool show_left_thumbnail          = false;
+   bool show_bg_only                 = false;
    bool thumbnail_background         = settings->bools.menu_thumbnail_background_enable;
    unsigned sidebar_height           = video_height
          - ozone->dimensions.header_height
@@ -6543,6 +6547,7 @@ static void ozone_draw_thumbnail_bar(
          || (ozone->flags & OZONE_FLAG_IS_STATE_SLOT))
    {
       ozone->flags2                  |= OZONE_FLAG2_SELECTION_CORE_IS_VIEWER;
+      show_bg_only                    = ozone->thumbnails.savestate.flags & GFX_THUMB_FLAG_BG_ONLY;
       show_left_thumbnail             = false;
       show_right_thumbnail            =
                ozone->thumbnails.savestate.status == GFX_THUMBNAIL_STATUS_AVAILABLE
@@ -6599,11 +6604,11 @@ static void ozone_draw_thumbnail_bar(
    if (     (ozone->flags2 & OZONE_FLAG2_SELECTION_CORE_IS_VIEWER)
          && (!show_right_thumbnail && !show_left_thumbnail))
    {
-      float background_color[16]        = {
-            0.05f, 0.05f, 0.05f, 1.0f,
-            0.05f, 0.05f, 0.05f, 1.0f,
-            0.05f, 0.05f, 0.05f, 1.0f,
-            0.05f, 0.05f, 0.05f, 1.0f,
+      float background_color[16] = {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
       };
 
       /* Darken background */
@@ -6620,6 +6625,9 @@ static void ozone_draw_thumbnail_bar(
             video_height,
             background_color,
             NULL);
+
+      if (show_bg_only)
+         return;
 
       ozone_draw_no_thumbnail_available(
             ozone,
