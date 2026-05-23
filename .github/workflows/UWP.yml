@@ -15,13 +15,14 @@ jobs:
         with:
           ref: master
           fetch-depth: 0
+          token: ${{ secrets.WORKFLOW_PAT }}
 
       - name: Sync with Upstream
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
         with:
           target_sync_branch: master
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+          target_repo_token: ${{ secrets.WORKFLOW_PAT }}
           upstream_sync_branch: master
           upstream_sync_repo: libretro/RetroArch
           test_mode: false
@@ -180,27 +181,51 @@ jobs:
   Publish-release:
     needs: [XboxOne, SeriesConsoles, XboxOneAllCores, SeriesConsolesAllCores]
     name: Publish Release
-    if: github.ref == 'refs/heads/master'
-    permissions: write-all
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 
+
       - name: Get current date
-        id: date
-        run: echo "::set-output name=date::$(date +'%m-%d-%Y')"
+        id: date_step
+        run: echo "date_tag=$(date +'%m-%d-%Y')" >> $GITHUB_OUTPUT
         
       - name: Download Artifacts
         uses: actions/download-artifact@v6
         with:
           path: ./artifacts/
           
+      - name: Generate Upstream Release Notes
+        run: |
+          git remote add upstream https://github.com/libretro/RetroArch.git 2>/dev/null || true
+          git fetch upstream master
+
+          PREV_TAG=$(git describe --tags --match="??-??-20??" --abbrev=0 2>/dev/null || echo "")
+
+          echo "## Upstream Changes" > release_notes.md
+
+          if [ -z "$PREV_TAG" ]; then
+            git log upstream/master -n 50 --no-merges \
+              --pretty=format:"* %s (%h)" \
+              -- ':!.github' >> release_notes.md
+          else
+            MERGE_COMMIT=$(git log --merges --ancestry-path $PREV_TAG..HEAD -1 --format="%H")
+            UPSTREAM_BASE=$(git log -1 $MERGE_COMMIT --format="%P" | awk '{print $2}')
+            git log $UPSTREAM_BASE..upstream/master --no-merges \
+              --pretty=format:"* %s (%h)" \
+              -- ':!.github' >> release_notes.md
+          fi
+
       - name: Create a new release
-        uses: marvinpinto/action-automatic-releases@latest
+        uses: softprops/action-gh-release@v2
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          automatic_release_tag: ${{ steps.date.outputs.date }}
+          tag_name: "${{ steps.date_step.outputs.date_tag }}"
+          name: "Xbox Builds [${{ steps.date_step.outputs.date_tag }}]"
+          body_path: release_notes.md   # Tells the action to use the file we just made
           prerelease: false
-          title: Xbox Builds [${{ steps.date.outputs.date }}]
           files: | 
             ./artifacts/RetroArch-XboxOne/RetroArch-XboxOne.appx
             ./artifacts/RetroArch-SeriesConsoles/RetroArch-SeriesConsoles.appx
