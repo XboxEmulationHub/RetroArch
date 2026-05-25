@@ -5102,30 +5102,6 @@ MSG_HASH(
 
 /* Settings > Frame Throttle > Frame Time Counter */
 
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_RESET_AFTER_FASTFORWARDING,
-   "빨리 감기 후 초기화"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_FRAME_TIME_COUNTER_RESET_AFTER_FASTFORWARDING,
-   "빨리 감기 후 프레임 타임 카운터를 초기화합니다."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_RESET_AFTER_LOAD_STATE,
-   "상태저장 불러오기 후 초기화"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_FRAME_TIME_COUNTER_RESET_AFTER_LOAD_STATE,
-   "상태저장 불러오기 후 프레임 타임 카운터를 초기화합니다."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_RESET_AFTER_SAVE_STATE,
-   "상태저장 후 초기화"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_FRAME_TIME_COUNTER_RESET_AFTER_SAVE_STATE,
-   "상태저장 후 프레임 타임 카운터를 초기화합니다."
-   )
 
 /* Settings > Recording */
 
@@ -8152,6 +8128,9 @@ MSG_HASH(
    MENU_ENUM_LABEL_VALUE_FACEBOOK_STREAM_KEY,
    "Facebook Gaming 스트림 키"
    )
+
+/* Settings > User > Accounts > Kick */
+
 
 /* Settings > Directory */
 

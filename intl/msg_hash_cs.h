@@ -4478,30 +4478,6 @@ MSG_HASH(
 
 /* Settings > Frame Throttle > Frame Time Counter */
 
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_RESET_AFTER_FASTFORWARDING,
-   "Obnovení po rychlém přetočení"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_FRAME_TIME_COUNTER_RESET_AFTER_FASTFORWARDING,
-   "Vynulování počítadla času snímku po rychlém převíjení vpřed."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_RESET_AFTER_LOAD_STATE,
-   "Obnovení po načtení pozice"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_FRAME_TIME_COUNTER_RESET_AFTER_LOAD_STATE,
-   "Vynulování čítače času snímku po načtení pozice."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_RESET_AFTER_SAVE_STATE,
-   "Obnovení po uložení pozice"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_FRAME_TIME_COUNTER_RESET_AFTER_SAVE_STATE,
-   "Resetování čítače času snímku po uložení pozice."
-   )
 
 /* Settings > Recording */
 
@@ -7412,6 +7388,9 @@ MSG_HASH(
    MENU_ENUM_LABEL_VALUE_FACEBOOK_STREAM_KEY,
    "Klíč k hernímu streamu na Facebooku"
    )
+
+/* Settings > User > Accounts > Kick */
+
 
 /* Settings > Directory */
 

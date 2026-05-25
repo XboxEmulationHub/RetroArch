@@ -2274,18 +2274,6 @@ MSG_HASH(
 
 /* Settings > Frame Throttle > Frame Time Counter */
 
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_RESET_AFTER_FASTFORWARDING,
-   "Reiniciar després d'usar l'avançament ràpid"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_RESET_AFTER_LOAD_STATE,
-   "Reiniciar després de carregar un guardat ràpid"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_RESET_AFTER_SAVE_STATE,
-   "Reiniciar després de generar un guardat ràpid"
-   )
 
 /* Settings > Recording */
 
@@ -2531,6 +2519,9 @@ MSG_HASH(
 
 
 /* Settings > User > Accounts > Facebook Gaming */
+
+
+/* Settings > User > Accounts > Kick */
 
 
 /* Settings > Directory */
