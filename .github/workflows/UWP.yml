@@ -3,6 +3,9 @@ name: UWP
   schedule:
     - cron: '0 0 * * 1'
   workflow_dispatch:
+
+env:
+  CL: /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
   
 jobs:
   SyncUpstream:
