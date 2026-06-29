@@ -2403,6 +2403,9 @@ static unsigned menu_displaylist_parse_system_info(file_list_t *list)
 #ifdef HAVE_SDL2
          {SUPPORTS_SDL2, "SDL 2"},
 #endif
+#ifdef HAVE_SDL3
+         {SUPPORTS_SDL3, "SDL 3"},
+#endif
 #ifdef HAVE_X11
          {SUPPORTS_X11, "X11"},
 #endif
@@ -2883,7 +2886,7 @@ static int menu_displaylist_parse_database_entry(menu_handle_t *menu,
                if (crc_len < sizeof(entry_crc32_buf))
                {
                   const char *elem0     = entry_crc32_buf;
-                  const char *hash_type = NULL;
+                  char       *hash_type = NULL;
                   char *delim           = strchr(entry_crc32_buf, '|');
 
                   if (delim)
@@ -12113,8 +12116,8 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_MATERIALUI_ICONS_ENABLE,                      PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_MATERIALUI_PLAYLIST_ICONS_ENABLE,             PARSE_ONLY_BOOL,   false},
                {MENU_ENUM_LABEL_XMB_ENTRY_ICONS,                              PARSE_ONLY_BOOL,   true},
-               {MENU_ENUM_LABEL_XMB_CURRENT_MENU_ICON,                        PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_XMB_SWITCH_ICONS,                             PARSE_ONLY_BOOL,   true},
+               {MENU_ENUM_LABEL_XMB_CURRENT_MENU_ICON,                        PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_MENU_RGUI_SWITCH_ICONS,                       PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_MATERIALUI_SWITCH_ICONS,                      PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_OZONE_HEADER_ICON,                            PARSE_ONLY_UINT,   true},
