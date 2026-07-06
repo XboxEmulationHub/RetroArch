@@ -440,6 +440,9 @@ VIDEO IMAGE
 #ifdef HAVE_RWEBP
 #include "../libretro-common/formats/webp/rwebp.c"
 #endif
+#ifdef HAVE_RDDS
+#include "../libretro-common/formats/dds/rdds.c"
+#endif
 
 #include "../libretro-common/formats/bmp/rbmp_encode.c"
 #ifdef HAVE_RWAV
@@ -573,11 +576,6 @@ VIDEO DRIVER
 #elif defined(PS2)
 #include "../gfx/drivers/ps2_gfx.c"
 #elif defined(HAVE_VITA2D)
-#include "../deps/libvita2d/source/vita2d.c"
-#include "../deps/libvita2d/source/vita2d_texture.c"
-#include "../deps/libvita2d/source/vita2d_draw.c"
-#include "../deps/libvita2d/source/utils.c"
-
 #include "../gfx/drivers/vita2d_gfx.c"
 #elif defined(_3DS)
 #include "../gfx/drivers/ctr_gfx.c"
@@ -822,11 +820,14 @@ AUDIO RESAMPLER
 ============================================================ */
 #include "../libretro-common/audio/resampler/audio_resampler.c"
 #include "../libretro-common/audio/resampler/drivers/sinc_resampler.c"
+#include "../libretro-common/audio/resampler/drivers/sinc_resampler_int16.c"
 #ifdef HAVE_NEAREST_RESAMPLER
 #include "../libretro-common/audio/resampler/drivers/nearest_resampler.c"
+#include "../libretro-common/audio/resampler/drivers/nearest_resampler_int16.c"
 #endif
 #ifdef HAVE_CC_RESAMPLER
 #include "../audio/drivers_resampler/cc_resampler.c"
+#include "../audio/drivers_resampler/cc_resampler_int16.c"
 #endif
 
 /*============================================================
@@ -992,7 +993,22 @@ DRIVERS
 #include "../gfx/gfx_animation.c"
 #include "../gfx/gfx_display.c"
 #include "../gfx/gfx_thumbnail.c"
+/* rflac is used by the audio mixer (HAVE_RFLAC) and by the CHD FLAC
+ * decoder in libchdr (HAVE_CHD). Include its implementation once, ahead
+ * of both consumers, whenever either of them is present. */
+#if defined(HAVE_RFLAC) || defined(HAVE_CHD)
+#include "../libretro-common/formats/flac/rflac.c"
+#endif
 #ifdef HAVE_AUDIOMIXER
+#if defined(HAVE_RVORBIS)
+#include "../libretro-common/formats/vorbis/rvorbis.c"
+#endif
+#if defined(HAVE_RMP3)
+#include "../libretro-common/formats/mp3/rmp3.c"
+#endif
+#if defined(HAVE_RFLAC) || defined(HAVE_RVORBIS) || defined(HAVE_RMP3)
+#include "../libretro-common/formats/audio_transfer.c"
+#endif
 #include "../libretro-common/audio/audio_mixer.c"
 #endif
 

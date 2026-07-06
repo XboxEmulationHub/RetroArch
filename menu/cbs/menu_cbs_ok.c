@@ -1084,7 +1084,7 @@ int generic_action_ok_displaylist_push(
       case ACTION_OK_DL_AUDIO_DSP_PLUGIN:
          filebrowser_clear_type();
          info.directory_ptr = idx;
-         info_label         = MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN_STR;
+         info_label         = msg_hash_to_str(MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN);
          info.enum_idx      = MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN;
          dl_type            = DISPLAYLIST_FILE_BROWSER_SELECT_FILE;
 
@@ -1098,7 +1098,7 @@ int generic_action_ok_displaylist_push(
       case ACTION_OK_DL_VIDEO_FILTER:
          filebrowser_clear_type();
          info.directory_ptr = idx;
-         info_label         = MENU_ENUM_LABEL_VIDEO_FILTER_STR;
+         info_label         = msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_FILTER);
          info.enum_idx      = MENU_ENUM_LABEL_VIDEO_FILTER;
          dl_type            = DISPLAYLIST_FILE_BROWSER_SELECT_FILE;
 
@@ -1112,7 +1112,7 @@ int generic_action_ok_displaylist_push(
       case ACTION_OK_DL_OVERLAY_PRESET:
          filebrowser_set_type(FILEBROWSER_SELECT_OVERLAY);
          info.directory_ptr = idx;
-         info_label         = MENU_ENUM_LABEL_OVERLAY_PRESET_STR;
+         info_label         = msg_hash_to_str(MENU_ENUM_LABEL_OVERLAY_PRESET);
          info.enum_idx      = MENU_ENUM_LABEL_OVERLAY_PRESET;
          dl_type            = DISPLAYLIST_FILE_BROWSER_SELECT_FILE;
 
@@ -1155,7 +1155,7 @@ int generic_action_ok_displaylist_push(
       case ACTION_OK_DL_VIDEO_FONT:
          filebrowser_set_type(FILEBROWSER_SELECT_VIDEO_FONT);
          info.directory_ptr = idx;
-         info_label         = MENU_ENUM_LABEL_VIDEO_FONT_PATH_STR;
+         info_label         = msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_FONT_PATH);
          info.enum_idx      = MENU_ENUM_LABEL_VIDEO_FONT_PATH;
          dl_type            = DISPLAYLIST_FILE_BROWSER_SELECT_FILE;
 
@@ -2449,7 +2449,11 @@ static int generic_action_ok(const char *path,
          }
          break;
       case ACTION_OK_SUBSYSTEM_ADD:
-         flush_type = MENU_SETTINGS;
+         /* Return to the subsystem list (which rebuilds to offer the
+          * next required ROM, or the Load entry once all are set)
+          * instead of flushing all the way back to the main menu. */
+         flush_char = msg_hash_to_str(
+               MENU_ENUM_LABEL_DEFERRED_SUBSYSTEM_SETTINGS_LIST);
          content_add_subsystem(action_path);
          break;
       case ACTION_OK_SET_DIRECTORY:
@@ -2695,7 +2699,8 @@ static int action_ok_file_load(const char *path,
       }
 
       content_add_subsystem(full_path_new);
-      menu_entries_flush_stack(NULL, MENU_SETTINGS);
+      menu_entries_flush_stack(msg_hash_to_str(
+            MENU_ENUM_LABEL_DEFERRED_SUBSYSTEM_SETTINGS_LIST), 0);
       return 0;
    }
 
@@ -6956,7 +6961,7 @@ static void netplay_refresh_rooms_cb(retro_task_t *task, void *task_data,
 
    /* Don't push the results if we left the netplay menu */
    if (     !string_is_equal(label, MENU_ENUM_LABEL_NETPLAY_TAB_STR)
-         && !string_is_equal(label, MENU_ENUM_LABEL_NETPLAY_STR))
+         && !string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_NETPLAY)))
       return;
 
    if (err)
@@ -7037,7 +7042,7 @@ static void netplay_refresh_lan_cb(const void *data)
 
    /* Don't push the results if we left the netplay menu */
    if (     !string_is_equal(label, MENU_ENUM_LABEL_NETPLAY_TAB_STR)
-         && !string_is_equal(label, MENU_ENUM_LABEL_NETPLAY_STR))
+         && !string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_NETPLAY)))
       return;
 
    if (!hosts || !hosts->size)
@@ -9088,7 +9093,7 @@ static int action_ok_playlist_refresh(const char *path,
             settings->bools.playlist_portable_paths ?
             settings->paths.directory_menu_content : NULL);
 
-      task_push_manual_content_scan(true);
+      task_push_manual_content_scan(false);
    }
    return 0;
 }
@@ -9976,15 +9981,15 @@ static int menu_cbs_init_bind_ok_compare_type(menu_file_list_cbs_t *cbs,
                   || string_is_equal(menu_label,
                      MENU_ENUM_LABEL_SUBSYSTEM_ADD_STR)
                   || string_is_equal(menu_label,
-                     MENU_ENUM_LABEL_VIDEO_FONT_PATH_STR)
+                     msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_FONT_PATH))
                   || string_is_equal(menu_label,
-                     MENU_ENUM_LABEL_XMB_FONT_STR)
+                     msg_hash_to_str(MENU_ENUM_LABEL_XMB_FONT))
                   || string_is_equal(menu_label,
-                     MENU_ENUM_LABEL_OZONE_FONT_STR)
+                     msg_hash_to_str(MENU_ENUM_LABEL_OZONE_FONT))
                   || string_is_equal(menu_label,
-                     MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN_STR)
+                     msg_hash_to_str(MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN))
                   || string_is_equal(menu_label,
-                     MENU_ENUM_LABEL_VIDEO_FILTER_STR))
+                     msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_FILTER)))
                BIND_ACTION_OK(cbs, action_ok_directory_push);
             else
                BIND_ACTION_OK(cbs, action_ok_push_random_dir);

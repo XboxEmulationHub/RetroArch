@@ -3817,6 +3817,15 @@ static bool materialui_render_process_entry_playlist_thumb_list(
    gfx_animation_t *p_anim = anim_get_ptr();
    bool on_screen          = first_entry_found && !last_entry_found;
 
+   /* Advance animated thumbnails for on-screen entries (no-op for
+    * still images) */
+   if (on_screen)
+   {
+      gfx_thumbnail_animate(&node->thumbnails.primary);
+      if (mui->flags & MUI_FLAG_SECONDARY_THUMBNAIL_ENABLED)
+         gfx_thumbnail_animate(&node->thumbnails.secondary);
+   }
+
    /* Load thumbnails for all on-screen entries
     * and free thumbnails for all off-screen entries */
    if (mui->flags & MUI_FLAG_SECONDARY_THUMBNAIL_ENABLED)
@@ -3859,6 +3868,14 @@ static bool materialui_render_process_entry_playlist_dual_icon(
 {
    gfx_animation_t *p_anim = anim_get_ptr();
    bool on_screen          = first_entry_found && !last_entry_found;
+
+   /* Advance animated thumbnails for on-screen entries (no-op for
+    * still images) */
+   if (on_screen)
+   {
+      gfx_thumbnail_animate(&node->thumbnails.primary);
+      gfx_thumbnail_animate(&node->thumbnails.secondary);
+   }
 
    /* Load thumbnails for all on-screen entries
     * and free thumbnails for all off-screen entries
@@ -3908,6 +3925,14 @@ static bool materialui_render_process_entry_playlist_desktop(
     * smoother fullscreen thumbnail browsing */
    bool is_on_screen = is_selected
          || (entry_idx == mui->desktop_thumbnail_last_selection);
+
+   /* Advance animated thumbnails for on-screen entries (no-op for
+    * still images) */
+   if (is_on_screen)
+   {
+      gfx_thumbnail_animate(&node->thumbnails.primary);
+      gfx_thumbnail_animate(&node->thumbnails.secondary);
+   }
 
    /* Load thumbnails for selected (and last
     * selected) entry and free thumbnails for
@@ -10042,7 +10067,7 @@ static void materialui_populate_entries(void *data, const char *path,
                            | MUI_FLAG_IS_DROPDOWN_LIST);
 
    if (     string_is_equal(label, MENU_ENUM_LABEL_DEFERRED_PLAYLIST_LIST_STR)
-         || string_is_equal(label, MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY_STR)
+         || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY))
          || string_is_equal(label, MENU_ENUM_LABEL_DEFERRED_FAVORITES_LIST_STR)
          || string_is_equal(label, MENU_ENUM_LABEL_DEFERRED_IMAGES_LIST_STR)
          || string_is_equal(label, MENU_ENUM_LABEL_DEFERRED_MUSIC_LIST_STR)
@@ -10074,7 +10099,7 @@ static void materialui_populate_entries(void *data, const char *path,
                || string_is_equal(label, MENU_ENUM_LABEL_SCAN_FILE_STR)
                || string_is_equal(label, MENU_ENUM_LABEL_DEFERRED_IMAGES_LIST_STR)
                || string_is_equal(label, MENU_ENUM_LABEL_DEFERRED_MUSIC_LIST_STR)
-               || string_is_equal(label, MENU_ENUM_LABEL_LOAD_CONTENT_LIST_STR)
+               || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_LOAD_CONTENT_LIST))
                || string_is_equal(label, MENU_ENUM_LABEL_FAVORITES_STR)
                || string_is_equal(label, MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_STR)
                || string_is_equal(label, MENU_ENUM_LABEL_VIDEO_SHADER_PASS_STR)
@@ -10154,7 +10179,7 @@ static void materialui_populate_entries(void *data, const char *path,
 #endif
 
    if (     mui->flags & MUI_FLAG_IS_PLAYLIST
-         && !string_is_equal(label, MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY_STR))
+         && !string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY)))
    {
       if (     (remember_selection == MENU_REMEMBER_SELECTION_ALWAYS
             || remember_selection == MENU_REMEMBER_SELECTION_PLAYLISTS)
@@ -11651,23 +11676,15 @@ static void materialui_list_insert(void *userdata,
       node->x                                = 0.0f;
       node->y                                = 0.0f;
 
-      node->thumbnails.primary.status        = GFX_THUMBNAIL_STATUS_UNKNOWN;
-      node->thumbnails.primary.texture       = 0;
-      node->thumbnails.primary.width         = 0;
-      node->thumbnails.primary.height        = 0;
-      node->thumbnails.primary.alpha         = 0.0f;
-      node->thumbnails.primary.delay_timer   = 0.0f;
-      node->thumbnails.primary.flags         = 0;
-      node->thumbnails.primary.flags        &= ~GFX_THUMB_FLAG_FADE_ACTIVE;
-
-      node->thumbnails.secondary.status      = GFX_THUMBNAIL_STATUS_UNKNOWN;
-      node->thumbnails.secondary.texture     = 0;
-      node->thumbnails.secondary.width       = 0;
-      node->thumbnails.secondary.height      = 0;
-      node->thumbnails.secondary.alpha       = 0.0f;
-      node->thumbnails.secondary.delay_timer = 0.0f;
-      node->thumbnails.secondary.flags       = 0;
-      node->thumbnails.secondary.flags      &= ~GFX_THUMB_FLAG_FADE_ACTIVE;
+      /* Full blank init: the manual field list predated the
+       * animation state and left 'anim'/'anim_buf' as malloc
+       * garbage, which gfx_thumbnail_reset later freed on the
+       * node-reuse path - the Android startup abort in scudo.
+       * gfx_thumbnail_init_blank covers every field, including
+       * the atomically-typed status, and stays correct when
+       * fields are added. */
+      gfx_thumbnail_init_blank(&node->thumbnails.primary);
+      gfx_thumbnail_init_blank(&node->thumbnails.secondary);
    }
    else
    {
@@ -11907,7 +11924,7 @@ static void materialui_list_insert(void *userdata,
             else
 #endif
             if (
-                     string_is_equal(label, MENU_ENUM_LABEL_INFORMATION_LIST_STR)
+                     string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_INFORMATION_LIST))
                   || string_is_equal(label, MENU_ENUM_LABEL_SYSTEM_INFORMATION_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_NO_CORE_INFORMATION_AVAILABLE_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_NO_ITEMS_STR)
@@ -11957,7 +11974,7 @@ static void materialui_list_insert(void *userdata,
                node->icon_texture_index = MUI_TEXTURE_SCAN;
                node->icon_type          = MUI_ICON_TYPE_INTERNAL;
             }
-            else if (string_is_equal(label, MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY_STR))
+            else if (string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY)))
             {
                node->icon_texture_index = MUI_TEXTURE_HISTORY;
                node->icon_type          = MUI_ICON_TYPE_INTERNAL;
@@ -11991,7 +12008,7 @@ static void materialui_list_insert(void *userdata,
                node->icon_type          = MUI_ICON_TYPE_INTERNAL;
             }
             else if (string_is_equal(label, MENU_ENUM_LABEL_CORE_INPUT_REMAPPING_OPTIONS_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_INPUT_RETROPAD_BINDS_STR))
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_INPUT_RETROPAD_BINDS)))
             {
                node->icon_texture_index = MUI_TEXTURE_CONTROLS;
                node->icon_type          = MUI_ICON_TYPE_INTERNAL;
@@ -12079,16 +12096,16 @@ static void materialui_list_insert(void *userdata,
             }
             else if (string_is_equal(label, MENU_ENUM_LABEL_DISK_TRAY_EJECT_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_DISK_TRAY_INSERT_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_CORE_LIST_UNLOAD_STR)
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_CORE_LIST_UNLOAD))
                   )
             {
                node->icon_texture_index = MUI_TEXTURE_EJECT;
                node->icon_type          = MUI_ICON_TYPE_INTERNAL;
             }
-            else if (string_is_equal(label, MENU_ENUM_LABEL_LOAD_DISC_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_DUMP_DISC_STR)
+            else if (string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_LOAD_DISC))
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_DUMP_DISC))
 #ifdef HAVE_LAKKA
-                  || string_is_equal(label, MENU_ENUM_LABEL_EJECT_DISC_STR)
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_EJECT_DISC))
 #endif
                   || string_is_equal(label, MENU_ENUM_LABEL_DISC_INFORMATION_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_DISK_OPTIONS_STR)
@@ -12128,7 +12145,7 @@ static void materialui_list_insert(void *userdata,
                   || string_is_equal(label, MENU_ENUM_LABEL_SAVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_SAVE_CURRENT_CONFIG_OVERRIDE_GAME_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_QUICK_MENU_OVERRIDE_OPTIONS_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_NETWORK_ON_DEMAND_THUMBNAILS_STR)
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_NETWORK_ON_DEMAND_THUMBNAILS))
                   )
             {
                node->icon_texture_index = MUI_TEXTURE_SAVE_STATE;
@@ -12176,8 +12193,8 @@ static void materialui_list_insert(void *userdata,
                node->icon_type          = MUI_ICON_TYPE_INTERNAL;
             }
             else if (
-                     string_is_equal(label, MENU_ENUM_LABEL_LOAD_CONTENT_LIST_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_SUBSYSTEM_SETTINGS_STR)
+                     string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_LOAD_CONTENT_LIST))
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_SUBSYSTEM_SETTINGS))
                   || string_is_equal(label, MENU_ENUM_LABEL_SUBSYSTEM_ADD_STR)
                   )
             {
@@ -12202,7 +12219,7 @@ static void materialui_list_insert(void *userdata,
                node->icon_type          = MUI_ICON_TYPE_INTERNAL;
             }
             else if (
-                     string_is_equal(label, MENU_ENUM_LABEL_NETPLAY_STR)
+                     string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_NETPLAY))
                   || string_is_equal(label, MENU_ENUM_LABEL_NETWORK_HOSTING_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_NETWORK_INFORMATION_STR)
                   )
@@ -12216,7 +12233,7 @@ static void materialui_list_insert(void *userdata,
                node->icon_type          = MUI_ICON_TYPE_INTERNAL;
             }
             else if (
-                     string_is_equal(label, MENU_ENUM_LABEL_ONLINE_UPDATER_STR)
+                     string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_ONLINE_UPDATER))
                   || string_is_equal(label, MENU_ENUM_LABEL_UPDATE_CORE_INFO_FILES_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_UPDATE_INSTALLED_CORES_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_UPDATE_AUTOCONFIG_PROFILES_STR)
@@ -12236,7 +12253,7 @@ static void materialui_list_insert(void *userdata,
             else if (   string_is_equal(label, MENU_ENUM_LABEL_SCAN_DIRECTORY_STR)
                      || string_is_equal(label, MENU_ENUM_LABEL_SCAN_FILE_STR)
                      || string_is_equal(label, MENU_ENUM_LABEL_MANUAL_CONTENT_SCAN_LIST_STR)
-                     || string_is_equal(label, MENU_ENUM_LABEL_ADD_CONTENT_LIST_STR)
+                     || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_ADD_CONTENT_LIST))
                      || string_is_equal(label, MENU_ENUM_LABEL_CREATE_NEW_PLAYLIST_STR)
                      || string_is_equal(label, MENU_ENUM_LABEL_CHEAT_ADD_NEW_TOP_STR)
                      || string_is_equal(label, MENU_ENUM_LABEL_CHEAT_ADD_NEW_BOTTOM_STR)
@@ -12252,7 +12269,7 @@ static void materialui_list_insert(void *userdata,
                node->icon_texture_index = MUI_TEXTURE_ADD;
                node->icon_type          = MUI_ICON_TYPE_INTERNAL;
             }
-            else if (   string_is_equal(label, MENU_ENUM_LABEL_QUIT_RETROARCH_STR)
+            else if (   string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_QUIT_RETROARCH))
                      || string_is_equal(label, MENU_ENUM_LABEL_RESTART_RETROARCH_STR)
                      || string_is_equal(label, MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_NOW_STR)
                   )
@@ -12273,11 +12290,11 @@ static void materialui_list_insert(void *userdata,
                   || string_is_equal(label, MENU_ENUM_LABEL_DRIVER_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_VIDEO_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_VIDEO_OUTPUT_SETTINGS_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_VIDEO_SYNCHRONIZATION_SETTINGS_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_VIDEO_FULLSCREEN_MODE_SETTINGS_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_VIDEO_WINDOWED_MODE_SETTINGS_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_VIDEO_SCALING_SETTINGS_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_VIDEO_HDR_SETTINGS_STR)
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_SYNCHRONIZATION_SETTINGS))
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_FULLSCREEN_MODE_SETTINGS))
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_WINDOWED_MODE_SETTINGS))
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_SCALING_SETTINGS))
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_VIDEO_HDR_SETTINGS))
                   || string_is_equal(label, MENU_ENUM_LABEL_AUDIO_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_AUDIO_OUTPUT_SETTINGS_STR)
 #ifdef HAVE_MICROPHONE
@@ -12290,15 +12307,15 @@ static void materialui_list_insert(void *userdata,
                   || string_is_equal(label, MENU_ENUM_LABEL_INPUT_MENU_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_INPUT_SENSOR_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_INPUT_TURBO_FIRE_SETTINGS_STR)
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_INPUT_TURBO_FIRE_SETTINGS))
                   || string_is_equal(label, MENU_ENUM_LABEL_LATENCY_SETTINGS_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_INPUT_HOTKEY_BINDS_STR)
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_INPUT_HOTKEY_BINDS))
                   || string_is_equal(label, MENU_ENUM_LABEL_CORE_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_CONFIGURATION_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_SIDELOAD_CORE_LIST_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_CRT_SWITCHRES_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_SAVING_SETTINGS_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_CLOUD_SYNC_SETTINGS_STR)
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_CLOUD_SYNC_SETTINGS))
                   || string_is_equal(label, MENU_ENUM_LABEL_LOGGING_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_FRAME_THROTTLE_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_RECORDING_SETTINGS_STR)
@@ -12306,19 +12323,19 @@ static void materialui_list_insert(void *userdata,
                   || string_is_equal(label, MENU_ENUM_LABEL_USER_INTERFACE_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_AI_SERVICE_SETTINGS_STR)
 #ifdef HAVE_SMBCLIENT
-                  || string_is_equal(label, MENU_ENUM_LABEL_SMB_CLIENT_SETTINGS_STR)
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_SMB_CLIENT_SETTINGS))
 #endif
                   || string_is_equal(label, MENU_ENUM_LABEL_ACCESSIBILITY_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_POWER_MANAGEMENT_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_ACHIEVEMENT_LIST_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_RETRO_ACHIEVEMENTS_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_SETTINGS_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_ACCOUNTS_YOUTUBE_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_ACCOUNTS_TWITCH_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_ACCOUNTS_FACEBOOK_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_ACCOUNTS_KICK_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_BLUETOOTH_SETTINGS_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_WIFI_SETTINGS_STR)
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_ACCOUNTS_YOUTUBE))
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_ACCOUNTS_TWITCH))
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_ACCOUNTS_FACEBOOK))
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_ACCOUNTS_KICK))
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_BLUETOOTH_SETTINGS))
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_WIFI_SETTINGS))
                   || string_is_equal(label, MENU_ENUM_LABEL_NETWORK_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_LAKKA_SERVICES_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_PLAYLIST_SETTINGS_STR)
@@ -12339,7 +12356,7 @@ static void materialui_list_insert(void *userdata,
                   || string_is_equal(label, MENU_ENUM_LABEL_ACCOUNTS_LIST_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_REWIND_SETTINGS_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_FRAME_TIME_COUNTER_SETTINGS_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_ACCOUNTS_RETRO_ACHIEVEMENTS_STR)
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_ACCOUNTS_RETRO_ACHIEVEMENTS))
                   || string_is_equal(label, MENU_ENUM_LABEL_CORE_UPDATER_LIST_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_PL_THUMBNAILS_UPDATER_LIST_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_UPDATER_SETTINGS_STR)
@@ -12361,7 +12378,7 @@ static void materialui_list_insert(void *userdata,
                   || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_LEFT_THUMBNAILS_MATERIALUI))
                   || string_is_equal(label, MENU_ENUM_LABEL_PLAYLIST_MANAGER_LIST_STR)
                   || string_is_equal(label, MENU_ENUM_LABEL_CORE_MANAGER_LIST_STR)
-                  || string_is_equal(label, MENU_ENUM_LABEL_SETTINGS_STR)
+                  || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS))
                   )
                   {
                      node->icon_texture_index = MUI_TEXTURE_SETTINGS;

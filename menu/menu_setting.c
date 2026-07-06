@@ -21,6 +21,9 @@
 #else
 #include <unistd.h>
 #endif
+#include <stdlib.h>
+#include <string.h>
+
 #include <libretro.h>
 #include <lists/file_list.h>
 #include <file/file_path.h>
@@ -6920,6 +6923,24 @@ static size_t setting_get_string_representation_uint_audio_resampler_quality(
    return 0;
 }
 
+static size_t setting_get_string_representation_uint_audio_format_negotiation(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (setting)
+   {
+      switch (*setting->value.target.unsigned_integer)
+      {
+         case AUDIO_FORMAT_NEGOTIATION_INT16:
+            return strlcpy(s, msg_hash_to_str(
+                  MENU_ENUM_LABEL_VALUE_AUDIO_FORMAT_NEGOTIATION_INT16), len);
+         case AUDIO_FORMAT_NEGOTIATION_FLOAT:
+            return strlcpy(s, msg_hash_to_str(
+                  MENU_ENUM_LABEL_VALUE_AUDIO_FORMAT_NEGOTIATION_FLOAT), len);
+      }
+   }
+   return 0;
+}
+
 static size_t setting_get_string_representation_uint_libretro_device(
       rarch_setting_t *setting,
       char *s, size_t len)
@@ -7705,7 +7726,7 @@ int menu_action_handle_setting(rarch_setting_t *setting,
 
             /* Menu background image */
             if (  string_is_equal(info.label,
-                  MENU_ENUM_LABEL_MENU_WALLPAPER_STR)
+                  msg_hash_to_str(MENU_ENUM_LABEL_MENU_WALLPAPER))
                && settings->paths.path_menu_wallpaper[0] != '\0')
             {
                free(info.path);
@@ -7788,6 +7809,146 @@ int menu_action_handle_setting(rarch_setting_t *setting,
    return -1;
 }
 
+/* Sorted lookup indices over the settings list.
+ *
+ * menu_setting_find() and menu_setting_find_enum() were linear
+ * scans over the entire settings array (roughly a thousand entries
+ * of 224 bytes each), and menu_displaylist builds call them once
+ * per displayed entry.  Keep two position indices, sorted by
+ * (enum_idx, position) and (name, position) respectively, and
+ * binary-search the leftmost match so that the first-in-list-order
+ * semantics of the previous linear scan are preserved exactly.
+ *
+ * The settings list is a singleton (menu_st->entries.list_settings)
+ * created by menu_setting_new() and released by menu_setting_free(),
+ * so the indices live alongside it here.  If the indices are
+ * unavailable for any reason, the find functions fall back to the
+ * old linear scan. */
+static rarch_setting_t *settings_index_list      = NULL;
+/* Direct enum index: one uint16 slot per msg_hash enum value holding
+ * (list position + 1), 0 = no setting for that enum.  Lookup is one
+ * bounds check plus one load - cheaper than the linear scan this
+ * replaced and cheaper than a binary search.  ~17KB (MSG_LAST * 2).
+ * Slots are only written for the first list entry with a given enum,
+ * preserving the first-in-list-order semantics of the old scan. */
+static uint16_t        *settings_index_by_enum   = NULL;
+static uint32_t        *settings_index_by_name   = NULL;
+static uint32_t         settings_index_name_size = 0;
+
+static int settings_index_name_compare(const void *a, const void *b)
+{
+   uint32_t pa = *(const uint32_t*)a;
+   uint32_t pb = *(const uint32_t*)b;
+   int       c = strcmp(settings_index_list[pa].name,
+         settings_index_list[pb].name);
+   if (c != 0)
+      return c;
+   if (pa != pb)
+      return (pa < pb) ? -1 : 1;
+   return 0;
+}
+
+static void menu_setting_index_free(void)
+{
+   if (settings_index_by_enum)
+      free(settings_index_by_enum);
+   if (settings_index_by_name)
+      free(settings_index_by_name);
+   settings_index_by_enum   = NULL;
+   settings_index_by_name   = NULL;
+   settings_index_name_size = 0;
+   settings_index_list      = NULL;
+}
+
+static void menu_setting_index_build(rarch_setting_t *list)
+{
+   uint32_t i;
+   uint32_t count = 0;
+
+   menu_setting_index_free();
+
+   if (!list)
+      return;
+
+   while (list[count].type != ST_NONE)
+      count++;
+
+   if (count == 0)
+      return;
+
+   if (count >= 0xFFFF)
+      return; /* positions must fit uint16; fall back to linear scan */
+
+   settings_index_by_enum = (uint16_t*)calloc(MSG_LAST, sizeof(uint16_t));
+   settings_index_by_name = (uint32_t*)malloc(count * sizeof(uint32_t));
+
+   if (!settings_index_by_enum || !settings_index_by_name)
+   {
+      menu_setting_index_free();
+      return;
+   }
+
+   settings_index_list = list;
+
+   for (i = 0; i < count; i++)
+   {
+      /* Only entries the find functions can return are indexed;
+       * the old linear scans skipped everything past ST_GROUP. */
+      if (list[i].type > ST_GROUP)
+         continue;
+      if (     list[i].enum_idx != MSG_UNKNOWN
+            && (uint32_t)list[i].enum_idx < (uint32_t)MSG_LAST
+            && !settings_index_by_enum[list[i].enum_idx])
+         settings_index_by_enum[list[i].enum_idx] = (uint16_t)(i + 1);
+      if (list[i].name)
+         settings_index_by_name[settings_index_name_size++] = i;
+   }
+
+   qsort(settings_index_by_name, settings_index_name_size,
+         sizeof(uint32_t), settings_index_name_compare);
+}
+
+static rarch_setting_t *menu_setting_index_find_enum(
+      enum msg_hash_enums enum_idx)
+{
+   uint16_t pos;
+
+   if ((uint32_t)enum_idx >= (uint32_t)MSG_LAST)
+      return NULL;
+
+   pos = settings_index_by_enum[enum_idx];
+   if (!pos)
+      return NULL;
+
+   return &settings_index_list[pos - 1];
+}
+
+static rarch_setting_t *menu_setting_index_find_name(const char *label)
+{
+   uint32_t lo = 0;
+   uint32_t hi = settings_index_name_size;
+
+   while (lo < hi)
+   {
+      uint32_t mid = lo + ((hi - lo) >> 1);
+      if (strcmp(settings_index_list[settings_index_by_name[mid]].name,
+            label) < 0)
+         lo = mid + 1;
+      else
+         hi = mid;
+   }
+
+   if (lo < settings_index_name_size)
+   {
+      rarch_setting_t *setting =
+            &settings_index_list[settings_index_by_name[lo]];
+      if (string_is_equal(setting->name, label))
+         return setting;
+   }
+
+   return NULL;
+}
+
 /**
  * menu_setting_find:
  * @label              : name of setting to search for
@@ -7809,6 +7970,20 @@ rarch_setting_t *menu_setting_find(const char *label)
 
    if (!setting)
       return NULL;
+
+   if (settings_index_list == setting && settings_index_by_name)
+   {
+      if (!(setting = menu_setting_index_find_name(label)))
+         return NULL;
+
+      if (!setting->short_description || !*setting->short_description)
+         return NULL;
+
+      if (setting->read_handler)
+         setting->read_handler(setting);
+
+      return setting;
+   }
 
    for (; setting->type != ST_NONE; setting++)
    {
@@ -7843,6 +8018,24 @@ rarch_setting_t *menu_setting_find_enum(enum msg_hash_enums enum_idx)
 
    if (!setting)
       return NULL;
+
+   if (settings_index_list == setting && settings_index_by_enum)
+   {
+      const char *short_description;
+
+      if (!(setting = menu_setting_index_find_enum(enum_idx)))
+         return NULL;
+
+      short_description = setting->short_description;
+      if (!short_description || !*short_description)
+         return NULL;
+
+      if (setting->read_handler)
+         setting->read_handler(setting);
+
+      return setting;
+   }
+
    for (; setting->type != ST_NONE; (*list = *list + 1))
    {
       if (
@@ -8449,7 +8642,6 @@ static void general_read_handler(rarch_setting_t *setting)
          *setting->value.target.fraction = settings->floats.audio_max_timing_skew;
          break;
       case MENU_ENUM_LABEL_AUDIO_RATE_CONTROL_DELTA:
-         *setting->value.target.fraction = *(audio_get_float_ptr(AUDIO_ACTION_RATE_CONTROL_DELTA));
          if (*setting->value.target.fraction < 0.0005)
          {
             configuration_set_bool(settings, settings->bools.audio_rate_control, false);
@@ -9031,9 +9223,9 @@ static void general_write_handler(rarch_setting_t *setting)
       case MENU_ENUM_LABEL_AUDIO_OUTPUT_RATE:
       case MENU_ENUM_LABEL_AUDIO_RESAMPLER_DRIVER:
       case MENU_ENUM_LABEL_AUDIO_RESAMPLER_QUALITY:
+      case MENU_ENUM_LABEL_AUDIO_FORMAT_NEGOTIATION:
 #ifdef HAVE_WASAPI
       case MENU_ENUM_LABEL_AUDIO_WASAPI_EXCLUSIVE_MODE:
-      case MENU_ENUM_LABEL_AUDIO_WASAPI_FLOAT_FORMAT:
       case MENU_ENUM_LABEL_AUDIO_WASAPI_SH_BUFFER_LENGTH:
 #endif
          rarch_cmd = CMD_EVENT_AUDIO_REINIT;
@@ -9866,6 +10058,435 @@ static void new3ds_speedup_change_handler(rarch_setting_t *setting)
 }
 #endif
 
+/* Descriptor-driven setting registration.
+ *
+ * setting_append_list() registers most settings through long runs of
+ * near-identical CONFIG_* macro invocations followed by direct pokes
+ * into the entry just appended.  Every such block compiles to real
+ * instructions (roughly 150-200 bytes per setting), which is why the
+ * function body alone is ~145KB of machine code.
+ *
+ * A setting_desc_t row captures the same information as constant
+ * data instead: one shared instantiation loop walks a rodata table
+ * and calls the existing config_* helpers, so downstream behaviour
+ * (allocation, flags, free semantics, special callbacks) is
+ * unchanged.  Value targets are stored as byte offsets into
+ * settings_t rather than pointers, keeping rows constant and
+ * relocation-free.
+ *
+ * Rows are applied strictly in table order and tables may only
+ * replace *contiguous* registration runs: list order is user-visible
+ * through the PARSE_GROUP display path, so a table must never be
+ * merged across an intervening registration of a different kind or a
+ * runtime conditional.
+ *
+ * Settings that need anything not expressible here (runtime default
+ * values, runtime target pointers, custom change handlers, values
+ * non OFF/ON boolean labels) simply stay imperative.
+ *
+ * Holdout taxonomy (each site annotated in place): value targets
+ * outside settings_t; non-general read/write handlers; runtime
+ * default values; loop-parametric registrations; dynamic runtime
+ * labels through the ALT macros; the BIND/HEX/SIZE classes; poke
+ * tails outside the descriptor grammar, chiefly change_handler,
+ * whose slot is deferred until rows are generated from a single
+ * source and raw initializers make per-slot macro growth free. */
+
+enum setting_desc_class
+{
+   SDESC_BOOL = 0,
+   SDESC_INT,
+   SDESC_UINT,
+   SDESC_FLOAT,
+   SDESC_STRING,
+   SDESC_PATH,
+   SDESC_DIR,
+   SDESC_ACTION
+};
+
+/* setting_desc_t.desc_flags */
+#define SDESC_FLG_HAS_RANGE    (1 << 0)
+#define SDESC_FLG_ENFORCE_MIN  (1 << 1)
+#define SDESC_FLG_ENFORCE_MAX  (1 << 2)
+/* Boolean ok/left/right become the *_with_refresh handlers.  Note
+ * that the imperative blocks assign the *left* handler to action_ok
+ * as well; that quirk is reproduced faithfully. */
+#define SDESC_FLG_REFRESH      (1 << 3)
+#define SDESC_FLG_DEF_SETTINGS (1 << 4) /* default string is a settings_t
+                                           field at def_offset, resolved at
+                                           list-build time */
+
+typedef struct setting_desc
+{
+   uint32_t                    value_offset;   /* offsetof into settings_t */
+   uint32_t                    flags;          /* SD_FLAG_*               */
+   enum msg_hash_enums         name_enum;
+   enum msg_hash_enums         short_enum;
+   float                       min;
+   float                       max;
+   float                       step;
+   const char                 *rounding;      /* float rows: printf rounding
+                                                 string rows: default value  */
+   get_string_representation_t repr;           /* NULL = class default    */
+   action_ok_handler_t         action_ok;      /* NULL = class default    */
+   int32_t                     def_i;          /* bool/int/uint default   */
+   float                       def_f;          /* float default           */
+   action_start_handler_t      action_start;   /* NULL = class default    */
+   action_select_handler_t     action_select;  /* NULL = class default    */
+   action_left_handler_t       action_left;    /* NULL = class default    */
+   action_right_handler_t      action_right;   /* NULL = class default    */
+   uint16_t                    cmd_trigger;    /* enum event_command      */
+   int16_t                     offset_by;
+   uint8_t                     type;           /* enum setting_desc_class */
+   uint8_t                     desc_flags;     /* SDESC_FLG_*             */
+   uint8_t                     ui_type;        /* 0 = class default       */
+   uint8_t                     pad;
+   /* Fields below are absent from older row macros and zero-initialize
+    * under C89 partial aggregate initialization. */
+   const char                 *values;         /* browser extension filter */
+   uint32_t                    def_offset;     /* with SDESC_FLG_DEF_SETTINGS:
+                                                  offsetof of the settings_t
+                                                  field holding the default */
+} setting_desc_t;
+
+/* Row builders.  Field order must match setting_desc_t. */
+#define SDESC_BOOL_ROW(field, label, def, sd_flags, dflags, cmd) \
+   { (uint32_t)offsetof(settings_t, bools.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     0.0f, 0.0f, 0.0f, NULL, NULL, NULL, \
+     (int32_t)(def), 0.0f, NULL, NULL, NULL, NULL, (uint16_t)(cmd), 0, SDESC_BOOL, (dflags), 0, 0 }
+#define SDESC_BOOL_ROW_EX(field, label, def, sd_flags, dflags, cmd, ok, _repr, _start, _select, _left, _right, _uitype) \
+   { (uint32_t)offsetof(settings_t, bools.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     0.0f, 0.0f, 0.0f, NULL, (_repr), (ok), \
+     (int32_t)(def), 0.0f, (_start), (_select), (_left), (_right), \
+     (uint16_t)(cmd), 0, SDESC_BOOL, (dflags), (uint8_t)(_uitype), 0 }
+
+/* _LV variants take the label and value enums as separate tokens for
+ * the few registrations whose pair is mismatched. */
+#define SDESC_BOOL_ROW_LV(field, label, value, def, sd_flags, dflags, cmd) \
+   { (uint32_t)offsetof(settings_t, bools.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##value, \
+     0.0f, 0.0f, 0.0f, NULL, NULL, NULL, \
+     (int32_t)(def), 0.0f, NULL, NULL, NULL, NULL, \
+     (uint16_t)(cmd), 0, SDESC_BOOL, (dflags), 0, 0 }
+#define SDESC_FLOAT_ROW_LV(field, label, value, def, _rounding, sd_flags, dflags, cmd) \
+   { (uint32_t)offsetof(settings_t, floats.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##value, \
+     0.0f, 0.0f, 0.0f, (_rounding), NULL, NULL, \
+     0, (float)(def), NULL, NULL, NULL, NULL, \
+     (uint16_t)(cmd), 0, SDESC_FLOAT, (dflags), 0, 0 }
+#define SDESC_STRING_ROW_LV(field, label, value, def, sd_flags, cmd, ok, _repr, _start, _select, _left, _right, _uitype) \
+   { (uint32_t)offsetof(settings_t, arrays.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##value, \
+     0.0f, 0.0f, 0.0f, (def), (_repr), (ok), \
+     (int32_t)sizeof(((settings_t*)0)->arrays.field), 0.0f, \
+     (_start), (_select), (_left), (_right), (uint16_t)(cmd), 0, SDESC_STRING, 0, (uint8_t)(_uitype), 0 }
+#define SDESC_ACTION_ROW_LV(label, value, sd_flags, ok, _repr, cmd) \
+   { 0, (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##value, \
+     0.0f, 0.0f, 0.0f, NULL, (_repr), (ok), \
+     0, 0.0f, NULL, NULL, NULL, NULL, (uint16_t)(cmd), 0, SDESC_ACTION, 0, 0, 0 }
+
+/* String rows whose value target lives in settings_t.paths rather
+ * than settings_t.arrays (streaming title/url and friends). */
+#define SDESC_STRING_ROW_P(field, label, def, sd_flags, cmd, ok, _repr, _start, _select, _left, _right, _uitype) \
+   { (uint32_t)offsetof(settings_t, paths.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     0.0f, 0.0f, 0.0f, (def), (_repr), (ok), \
+     (int32_t)sizeof(((settings_t*)0)->paths.field), 0.0f, \
+     (_start), (_select), (_left), (_right), (uint16_t)(cmd), 0, SDESC_STRING, 0, (uint8_t)(_uitype), 0 }
+
+#define SDESC_UINT_ROW(field, label, def, sd_flags, dflags, cmd, _min, _max, _step, offby, ok, _repr) \
+   { (uint32_t)offsetof(settings_t, uints.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     (float)(_min), (float)(_max), (float)(_step), NULL, (_repr), (ok), \
+     (int32_t)(def), 0.0f, NULL, NULL, NULL, NULL, (uint16_t)(cmd), (int16_t)(offby), SDESC_UINT, (dflags), 0, 0 }
+
+#define SDESC_INT_ROW(field, label, def, sd_flags, dflags, cmd, _min, _max, _step, offby, ok, _repr) \
+   { (uint32_t)offsetof(settings_t, ints.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     (float)(_min), (float)(_max), (float)(_step), NULL, (_repr), (ok), \
+     (int32_t)(def), 0.0f, NULL, NULL, NULL, NULL, (uint16_t)(cmd), (int16_t)(offby), SDESC_INT, (dflags), 0, 0 }
+
+#define SDESC_FLOAT_ROW(field, label, def, _rounding, sd_flags, dflags, cmd, _min, _max, _step, ok, _repr) \
+   { (uint32_t)offsetof(settings_t, floats.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     (float)(_min), (float)(_max), (float)(_step), (_rounding), (_repr), (ok), \
+     0, (float)(def), NULL, NULL, NULL, NULL, (uint16_t)(cmd), 0, SDESC_FLOAT, (dflags), 0, 0 }
+
+#define SDESC_ACTION_ROW(label) \
+   { 0, 0, \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     0.0f, 0.0f, 0.0f, NULL, NULL, NULL, \
+     0, 0.0f, NULL, NULL, NULL, NULL, 0, 0, SDESC_ACTION, 0, 0, 0 }
+#define SDESC_ACTION_ROW_EX(label, sd_flags, ok, _repr, cmd) \
+   { 0, (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     0.0f, 0.0f, 0.0f, NULL, (_repr), (ok), \
+     0, 0.0f, NULL, NULL, NULL, NULL, (uint16_t)(cmd), 0, SDESC_ACTION, 0, 0, 0 }
+
+/* _EX variants add action_start / action_select / ui_type overrides
+ * (0 / NULL keeps the class default). */
+#define SDESC_UINT_ROW_EX(field, label, def, sd_flags, dflags, cmd, _min, _max, _step, offby, ok, _repr, _start, _select, _left, _right, _uitype) \
+   SDESC_UINT_ROW_AT_EX(offsetof(settings_t, uints.field), label, def, sd_flags, dflags, cmd, _min, _max, _step, offby, ok, _repr, _start, _select, _left, _right, _uitype)
+#define SDESC_INT_ROW_EX(field, label, def, sd_flags, dflags, cmd, _min, _max, _step, offby, ok, _repr, _start, _select, _left, _right, _uitype) \
+   { (uint32_t)offsetof(settings_t, ints.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     (float)(_min), (float)(_max), (float)(_step), NULL, (_repr), (ok), \
+     (int32_t)(def), 0.0f, (_start), (_select), (_left), (_right), \
+     (uint16_t)(cmd), (int16_t)(offby), SDESC_INT, (dflags), (uint8_t)(_uitype), 0 }
+
+/* _AT variants take the settings_t offset expression directly, for
+ * value targets that are inside settings_t but not under the plain
+ * bools/ints/uints/floats structs (e.g. video_vp_custom members). */
+#define SDESC_UINT_ROW_AT_EX(offs, label, def, sd_flags, dflags, cmd, _min, _max, _step, offby, ok, _repr, _start, _select, _left, _right, _uitype) \
+   { (uint32_t)(offs), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     (float)(_min), (float)(_max), (float)(_step), NULL, (_repr), (ok), \
+     (int32_t)(def), 0.0f, (_start), (_select), (_left), (_right), (uint16_t)(cmd), (int16_t)(offby), SDESC_UINT, (dflags), (uint8_t)(_uitype), 0 }
+
+#define SDESC_INT_ROW_AT(offs, label, def, sd_flags, dflags, cmd, _min, _max, _step, offby, ok, _repr) \
+   { (uint32_t)(offs), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     (float)(_min), (float)(_max), (float)(_step), NULL, (_repr), (ok), \
+     (int32_t)(def), 0.0f, NULL, NULL, NULL, NULL, (uint16_t)(cmd), (int16_t)(offby), SDESC_INT, (dflags), 0, 0 }
+
+#define SDESC_FLOAT_ROW_EX(field, label, def, _rounding, sd_flags, dflags, cmd, _min, _max, _step, ok, _repr, _start, _select, _left, _right, _uitype) \
+   { (uint32_t)offsetof(settings_t, floats.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     (float)(_min), (float)(_max), (float)(_step), (_rounding), (_repr), (ok), \
+     0, (float)(def), (_start), (_select), (_left), (_right), (uint16_t)(cmd), 0, SDESC_FLOAT, (dflags), (uint8_t)(_uitype), 0 }
+
+/* String rows: value target is a char array inside settings_t;
+ * def_i carries the buffer size and the rounding slot carries the
+ * default string (see the field comment). */
+#define SDESC_STRING_ROW(field, label, def, sd_flags, cmd, ok, _repr, _start, _select, _left, _right, _uitype) \
+   { (uint32_t)offsetof(settings_t, arrays.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     0.0f, 0.0f, 0.0f, (def), (_repr), (ok), \
+     (int32_t)sizeof(((settings_t*)0)->arrays.field), 0.0f, \
+     (_start), (_select), (_left), (_right), (uint16_t)(cmd), 0, SDESC_STRING, 0, (uint8_t)(_uitype), 0 }
+
+/* Path rows: value target lives in settings_t.paths; def is a static
+ * default string.  The _DS variant takes another settings_t.paths field
+ * as the runtime default (the dominant pattern: filter/asset dirs). */
+#define SDESC_PATH_ROW(field, label, def, sd_flags, cmd, vals, _repr, _uitype) \
+   { (uint32_t)offsetof(settings_t, paths.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     0.0f, 0.0f, 0.0f, (def), (_repr), NULL, \
+     (int32_t)sizeof(((settings_t*)0)->paths.field), 0.0f, \
+     NULL, NULL, NULL, NULL, (uint16_t)(cmd), 0, SDESC_PATH, 0, (uint8_t)(_uitype), 0, \
+     (vals), 0 }
+#define SDESC_PATH_ROW_DS(field, label, def_field, sd_flags, cmd, vals, _repr, _uitype) \
+   { (uint32_t)offsetof(settings_t, paths.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     0.0f, 0.0f, 0.0f, NULL, (_repr), NULL, \
+     (int32_t)sizeof(((settings_t*)0)->paths.field), 0.0f, \
+     NULL, NULL, NULL, NULL, (uint16_t)(cmd), 0, SDESC_PATH, \
+     SDESC_FLG_DEF_SETTINGS, (uint8_t)(_uitype), 0, \
+     (vals), (uint32_t)offsetof(settings_t, paths.def_field) }
+
+/* Directory rows: like path rows, but with the ST_DIR empty-value
+ * label carried in the otherwise unused offset_by slot (documented
+ * dual use; msg_hash enums fit int16).  Defaults are address
+ * constants such as g_defaults.dirs[x], legal in static
+ * initializers, carried in the rounding slot. */
+#define SDESC_DIR_ROW(field, label, def, empty_label, sd_flags, cmd, _start) \
+   { (uint32_t)offsetof(settings_t, paths.field), (sd_flags), \
+     MENU_ENUM_LABEL_##label, MENU_ENUM_LABEL_VALUE_##label, \
+     0.0f, 0.0f, 0.0f, (def), NULL, NULL, \
+     (int32_t)sizeof(((settings_t*)0)->paths.field), 0.0f, \
+     (_start), NULL, NULL, NULL, (uint16_t)(cmd), \
+     (int16_t)MENU_ENUM_LABEL_VALUE_##empty_label, SDESC_DIR, 0, 0, 0 }
+
+#define SDESC_RANGE_MINMAX \
+   (SDESC_FLG_HAS_RANGE | SDESC_FLG_ENFORCE_MIN | SDESC_FLG_ENFORCE_MAX)
+
+static void settings_list_add_desc(
+      rarch_setting_t **list,
+      rarch_setting_info_t *list_info,
+      settings_t *settings,
+      const setting_desc_t *desc,
+      unsigned count,
+      rarch_setting_group_info_t *group_info,
+      rarch_setting_group_info_t *subgroup_info,
+      const char *parent_group)
+{
+   unsigned i;
+
+   for (i = 0; i < count; i++)
+   {
+      const setting_desc_t *d = &desc[i];
+      void *target            = (void*)((uint8_t*)settings + d->value_offset);
+
+      switch (d->type)
+      {
+         case SDESC_BOOL:
+            /* Descriptor holdout: value target outside settings_t. */
+            CONFIG_BOOL(
+                  list, list_info,
+                  (bool*)target,
+                  d->name_enum,
+                  d->short_enum,
+                  (d->def_i != 0),
+                  MENU_ENUM_LABEL_VALUE_OFF,
+                  MENU_ENUM_LABEL_VALUE_ON,
+                  group_info,
+                  subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler,
+                  d->flags);
+            if (d->desc_flags & SDESC_FLG_REFRESH)
+            {
+               (*list)[list_info->index - 1].action_ok    = setting_bool_action_left_with_refresh;
+               (*list)[list_info->index - 1].action_left  = setting_bool_action_left_with_refresh;
+               (*list)[list_info->index - 1].action_right = setting_bool_action_right_with_refresh;
+            }
+            break;
+         case SDESC_INT:
+            CONFIG_INT(
+                  list, list_info,
+                  (int*)target,
+                  d->name_enum,
+                  d->short_enum,
+                  d->def_i,
+                  group_info,
+                  subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            if (d->flags != SD_FLAG_NONE)
+               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, d->flags);
+            break;
+         case SDESC_UINT:
+            CONFIG_UINT(
+                  list, list_info,
+                  (unsigned int*)target,
+                  d->name_enum,
+                  d->short_enum,
+                  (unsigned int)d->def_i,
+                  group_info,
+                  subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            if (d->flags != SD_FLAG_NONE)
+               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, d->flags);
+            break;
+         case SDESC_FLOAT:
+            CONFIG_FLOAT(
+                  list, list_info,
+                  (float*)target,
+                  d->name_enum,
+                  d->short_enum,
+                  d->def_f,
+                  d->rounding,
+                  group_info,
+                  subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            if (d->flags != SD_FLAG_NONE)
+               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, d->flags);
+            break;
+         case SDESC_STRING:
+            CONFIG_STRING(
+                  list, list_info,
+                  (char*)settings + d->value_offset,
+                  (size_t)d->def_i,
+                  d->name_enum,
+                  d->short_enum,
+                  d->rounding,
+                  group_info,
+                  subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            if (d->flags != SD_FLAG_NONE)
+               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, d->flags);
+            break;
+         case SDESC_PATH:
+            CONFIG_PATH(
+                  list, list_info,
+                  (char*)settings + d->value_offset,
+                  (size_t)d->def_i,
+                  d->name_enum,
+                  d->short_enum,
+                  (d->desc_flags & SDESC_FLG_DEF_SETTINGS)
+                        ? (const char*)settings + d->def_offset
+                        : d->rounding,
+                  group_info,
+                  subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            if (d->flags != SD_FLAG_NONE)
+               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, d->flags);
+            break;
+         case SDESC_DIR:
+            CONFIG_DIR(
+                  list, list_info,
+                  (char*)settings + d->value_offset,
+                  (size_t)d->def_i,
+                  d->name_enum,
+                  d->short_enum,
+                  d->rounding,
+                  (enum msg_hash_enums)(uint16_t)d->offset_by,
+                  group_info,
+                  subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            if (d->flags != SD_FLAG_NONE)
+               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, d->flags);
+            break;
+         case SDESC_ACTION:
+            CONFIG_ACTION(
+                  list, list_info,
+                  d->name_enum,
+                  d->short_enum,
+                  group_info,
+                  subgroup_info,
+                  parent_group);
+            if (d->flags != SD_FLAG_NONE)
+               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, d->flags);
+            break;
+         default:
+            break;
+      }
+
+      if (d->action_ok)
+         (*list)[list_info->index - 1].action_ok = d->action_ok;
+      if (d->action_start)
+         (*list)[list_info->index - 1].action_start = d->action_start;
+      if (d->action_select)
+         (*list)[list_info->index - 1].action_select = d->action_select;
+      if (d->action_left)
+         (*list)[list_info->index - 1].action_left = d->action_left;
+      if (d->action_right)
+         (*list)[list_info->index - 1].action_right = d->action_right;
+      if (d->repr)
+         (*list)[list_info->index - 1].get_string_representation = d->repr;
+      if (d->offset_by != 0 && d->type != SDESC_DIR)
+         (*list)[list_info->index - 1].offset_by = d->offset_by;
+      if (d->desc_flags & SDESC_FLG_HAS_RANGE)
+         menu_settings_list_current_add_range(list, list_info,
+               d->min, d->max, d->step,
+               (d->desc_flags & SDESC_FLG_ENFORCE_MIN) ? true : false,
+               (d->desc_flags & SDESC_FLG_ENFORCE_MAX) ? true : false);
+      if (d->cmd_trigger != CMD_EVENT_NONE)
+         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info,
+               (enum event_command)d->cmd_trigger);
+      if (d->ui_type)
+         (*list)[list_info->index - 1].ui_type =
+               (enum ui_setting_type)d->ui_type;
+      if (d->values)
+         MENU_SETTINGS_LIST_CURRENT_ADD_VALUES(list, list_info, d->values);
+   }
+}
+
 static bool setting_append_list_input_player_options(
       rarch_setting_t **list,
       rarch_setting_info_t *list_info,
@@ -9887,7 +10508,7 @@ static bool setting_append_list_input_player_options(
 
    START_GROUP(list, list_info, &group_info, binds_group_label, parent_group);
 
-   parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+   parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
    START_SUB_GROUP(
          list,
@@ -9937,6 +10558,7 @@ static bool setting_append_list_input_player_options(
             msg_hash_to_str(MENU_ENUM_LABEL_INPUT_BIND_DEFAULTS_INDEX),
             user + 1);
 
+      /* Descriptor holdout: dynamic runtime label through the ALT macro. */
       CONFIG_UINT_ALT(
             list, list_info,
             &settings->uints.input_joypad_index[user],
@@ -10224,7 +10846,7 @@ static bool setting_append_list_input_libretro_device_options(
    START_GROUP(list, list_info, &group_info,
          "Libretro Device Type", parent_group);
 
-   parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+   parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
    START_SUB_GROUP(list, list_info, "State", &group_info,
          &subgroup_info, parent_group);
@@ -10242,6 +10864,7 @@ static bool setting_append_list_input_libretro_device_options(
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_DEVICE_TYPE),
             sizeof(label_device_type));
 
+      /* Descriptor holdout: dynamic runtime label through the ALT macro. */
       CONFIG_UINT_ALT(
             list, list_info,
             input_config_get_device_ptr(user),
@@ -10290,7 +10913,7 @@ static bool setting_append_list_input_remap_port_options(
    START_GROUP(list, list_info, &group_info,
          "Mapped Ports", parent_group);
 
-   parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+   parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
    START_SUB_GROUP(list, list_info, "State", &group_info,
          &subgroup_info, parent_group);
@@ -10308,6 +10931,7 @@ static bool setting_append_list_input_remap_port_options(
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_REMAP_PORT),
             sizeof(label_port));
 
+      /* Descriptor holdout: dynamic runtime label through the ALT macro. */
       CONFIG_UINT_ALT(
             list, list_info,
             &settings->uints.input_remap_ports[user],
@@ -10405,93 +11029,37 @@ static bool setting_append_list(
          MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info, MENU_ENUM_LABEL_MAIN_MENU);
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_INT(
-               list, list_info,
-               &settings->ints.state_slot,
-               MENU_ENUM_LABEL_STATE_SLOT,
-               MENU_ENUM_LABEL_VALUE_STATE_SLOT,
-               0,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].offset_by     = -1;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_state_slot;
-         menu_settings_list_current_add_range(list, list_info, -1, 999, 1, true, true);
-
+         {
+            static const setting_desc_t mm_desc_0[] = {
+               SDESC_INT_ROW_EX(state_slot, STATE_SLOT,
+                     0,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     -1, 999, 1, -1,
+                     setting_action_ok_uint, setting_get_string_representation_state_slot,
+                     NULL, NULL, NULL, NULL, 0),
 #ifdef HAVE_BSV_MOVIE
-         CONFIG_INT(
-               list, list_info,
-               &settings->ints.replay_slot,
-               MENU_ENUM_LABEL_REPLAY_SLOT,
-               MENU_ENUM_LABEL_VALUE_REPLAY_SLOT,
-               0,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].offset_by     = -1;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_state_slot;
-         menu_settings_list_current_add_range(list, list_info, -1, 999, 1, true, true);
+               SDESC_INT_ROW_EX(replay_slot, REPLAY_SLOT,
+                     0,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     -1, 999, 1, -1,
+                     setting_action_ok_uint, setting_get_string_representation_state_slot,
+                     NULL, NULL, NULL, NULL, 0),
 #endif
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_START_CORE,
-               MENU_ENUM_LABEL_VALUE_START_CORE,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
+               SDESC_ACTION_ROW(START_CORE),
 #if defined(HAVE_VIDEOPROCESSOR)
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_START_VIDEO_PROCESSOR,
-               MENU_ENUM_LABEL_VALUE_START_VIDEO_PROCESSOR,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(START_VIDEO_PROCESSOR),
 #endif
-
 #if defined(HAVE_NETWORKING) && defined(HAVE_NETWORKGAMEPAD)
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_START_NET_RETROPAD,
-               MENU_ENUM_LABEL_VALUE_START_NET_RETROPAD,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(START_NET_RETROPAD),
 #endif
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CONTENT_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_CONTENT_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_XMB_MAIN_MENU_ENABLE_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_XMB_MAIN_MENU_ENABLE_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_MENU_DISABLE_KIOSK_MODE,
-               MENU_ENUM_LABEL_VALUE_MENU_DISABLE_KIOSK_MODE,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(CONTENT_SETTINGS),
+               SDESC_ACTION_ROW(XMB_MAIN_MENU_ENABLE_SETTINGS),
+               SDESC_ACTION_ROW(MENU_DISABLE_KIOSK_MODE),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_0, ARRAY_SIZE(mm_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifndef HAVE_DYNAMIC
          if (frontend_driver_has_fork())
@@ -10500,6 +11068,7 @@ static bool setting_append_list(
             char ext_name[16];
             if (frontend_driver_get_core_extension(ext_name, sizeof(ext_name)))
             {
+               /* Descriptor holdout: value target outside settings_t. */
                CONFIG_ACTION(
                      list, list_info,
                      MENU_ENUM_LABEL_CORE_LIST,
@@ -10513,41 +11082,98 @@ static bool setting_append_list(
                MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_LOAD_CORE);
                SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_BROWSER_ACTION);
 
-               CONFIG_ACTION(
-                     list, list_info,
-                     MENU_ENUM_LABEL_CORE_LIST_UNLOAD,
-                     MENU_ENUM_LABEL_VALUE_CORE_LIST_UNLOAD,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group);
+         {
+            static const setting_desc_t mm_desc_1[] = {
+/* GENERATED: rows come from settings_def_menu_main_actions_1.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_ACTION(T, n, us, sub) \
+                  SDESC_ACTION_ROW(T),
+#define S_ACTION_NS(T, n, us) \
+                  SDESC_ACTION_ROW(T),
+#include "../settings/settings_def_menu_main_actions_1.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+#undef S_ACTION
+#undef S_ACTION_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_1, ARRAY_SIZE(mm_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
             }
          }
 
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_LOAD_CONTENT_LIST,
-               MENU_ENUM_LABEL_VALUE_LOAD_CONTENT_LIST,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_SUBSYSTEM_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_SUBSYSTEM_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+         {
+            static const setting_desc_t mm_desc_2[] = {
+               SDESC_ACTION_ROW(LOAD_CONTENT_LIST),
+               SDESC_ACTION_ROW(SUBSYSTEM_SETTINGS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_2, ARRAY_SIZE(mm_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          if (settings->bools.history_list_enable)
          {
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY,
-                  MENU_ENUM_LABEL_VALUE_LOAD_CONTENT_HISTORY,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
+         {
+            static const setting_desc_t mm_desc_3[] = {
+               SDESC_ACTION_ROW(LOAD_CONTENT_HISTORY),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_3, ARRAY_SIZE(mm_desc_3),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
 #ifdef HAVE_CDROM
@@ -10560,31 +11186,18 @@ static bool setting_append_list(
             {
                if (drive_list->size)
                {
-                  CONFIG_ACTION(
-                        list, list_info,
-                        MENU_ENUM_LABEL_LOAD_DISC,
-                        MENU_ENUM_LABEL_VALUE_LOAD_DISC,
-                        &group_info,
-                        &subgroup_info,
-                        parent_group);
-
-                  CONFIG_ACTION(
-                        list, list_info,
-                        MENU_ENUM_LABEL_DUMP_DISC,
-                        MENU_ENUM_LABEL_VALUE_DUMP_DISC,
-                        &group_info,
-                        &subgroup_info,
-                        parent_group);
-
+         {
+            static const setting_desc_t mm_desc_4[] = {
+               SDESC_ACTION_ROW(LOAD_DISC),
+               SDESC_ACTION_ROW(DUMP_DISC),
 #ifdef HAVE_LAKKA
-                  CONFIG_ACTION(
-                        list, list_info,
-                        MENU_ENUM_LABEL_EJECT_DISC,
-                        MENU_ENUM_LABEL_VALUE_EJECT_DISC,
-                        &group_info,
-                        &subgroup_info,
-                        parent_group);
+               SDESC_ACTION_ROW(EJECT_DISC),
 #endif
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_4, ARRAY_SIZE(mm_desc_4),
+                  &group_info, &subgroup_info, parent_group);
+         }
                }
 
                string_list_free(drive_list);
@@ -10597,628 +11210,218 @@ static bool setting_append_list(
                && string_is_not_equal(settings->arrays.menu_driver, "ozone"))
 #endif
          {
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_ADD_CONTENT_LIST,
-                  MENU_ENUM_LABEL_VALUE_ADD_CONTENT_LIST,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
+         {
+            static const setting_desc_t mm_desc_5[] = {
+               SDESC_ACTION_ROW(ADD_CONTENT_LIST),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_5, ARRAY_SIZE(mm_desc_5),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
+         {
+            static const setting_desc_t mm_desc_6[] = {
 #if defined(HAVE_NETWORKING)
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_NETPLAY,
-               MENU_ENUM_LABEL_VALUE_NETPLAY,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_ONLINE_UPDATER,
-               MENU_ENUM_LABEL_VALUE_ONLINE_UPDATER,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(NETPLAY),
+               SDESC_ACTION_ROW(ONLINE_UPDATER),
 #endif
-
 #ifdef HAVE_MIST
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CORE_MANAGER_STEAM_LIST,
-               MENU_ENUM_LABEL_VALUE_CORE_MANAGER_STEAM_LIST,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(CORE_MANAGER_STEAM_LIST),
 #endif
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_INFORMATION_LIST,
-               MENU_ENUM_LABEL_VALUE_INFORMATION_LIST,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(SETTINGS),
+               SDESC_ACTION_ROW(INFORMATION_LIST),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_6, ARRAY_SIZE(mm_desc_6),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #if !defined(IOS) && !defined(HAVE_LAKKA)
          if (frontend_driver_has_fork())
          {
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_RESTART_RETROARCH,
-                  MENU_ENUM_LABEL_VALUE_RESTART_RETROARCH,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_RESTART_RETROARCH);
+         {
+            static const setting_desc_t mm_desc_7[] = {
+               SDESC_ACTION_ROW_EX(RESTART_RETROARCH, SD_FLAG_NONE,
+                     NULL, NULL, CMD_EVENT_RESTART_RETROARCH),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_7, ARRAY_SIZE(mm_desc_7),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 #endif
 
+         {
+            static const setting_desc_t mm_desc_8[] = {
 #ifdef HAVE_CLOUDSYNC
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_NOW,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_CLOUD_SYNC);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CLOUD_SYNC_RESOLVE_KEEP_LOCAL,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_RESOLVE_KEEP_LOCAL,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_CLOUD_SYNC_RESOLVE_KEEP_LOCAL);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CLOUD_SYNC_RESOLVE_KEEP_SERVER,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_RESOLVE_KEEP_SERVER,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_CLOUD_SYNC_RESOLVE_KEEP_SERVER);
+               SDESC_ACTION_ROW_EX(CLOUD_SYNC_SYNC_NOW, SD_FLAG_NONE,
+                     NULL, NULL, CMD_EVENT_CLOUD_SYNC),
+               SDESC_ACTION_ROW_EX(CLOUD_SYNC_RESOLVE_KEEP_LOCAL, SD_FLAG_NONE,
+                     NULL, NULL, CMD_EVENT_CLOUD_SYNC_RESOLVE_KEEP_LOCAL),
+               SDESC_ACTION_ROW_EX(CLOUD_SYNC_RESOLVE_KEEP_SERVER, SD_FLAG_NONE,
+                     NULL, NULL, CMD_EVENT_CLOUD_SYNC_RESOLVE_KEEP_SERVER),
 #endif
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CONFIGURATIONS_LIST,
-               MENU_ENUM_LABEL_VALUE_CONFIGURATIONS_LIST,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CONFIGURATIONS,
-               MENU_ENUM_LABEL_VALUE_CONFIGURATIONS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_SAVE_CURRENT_CONFIG,
-               MENU_ENUM_LABEL_VALUE_SAVE_CURRENT_CONFIG,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_MENU_SAVE_CURRENT_CONFIG);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_SAVE_NEW_CONFIG,
-               MENU_ENUM_LABEL_VALUE_SAVE_NEW_CONFIG,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_MENU_SAVE_CONFIG);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_RESET_TO_DEFAULT_CONFIG,
-               MENU_ENUM_LABEL_VALUE_RESET_TO_DEFAULT_CONFIG,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_MENU_RESET_TO_DEFAULT_CONFIG);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_SAVE_CURRENT_CONFIG_OVERRIDE_CORE,
-               MENU_ENUM_LABEL_VALUE_SAVE_CURRENT_CONFIG_OVERRIDE_CORE,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_MENU_SAVE_CURRENT_CONFIG_OVERRIDE_CORE);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_SAVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR,
-               MENU_ENUM_LABEL_VALUE_SAVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_MENU_SAVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_SAVE_CURRENT_CONFIG_OVERRIDE_GAME,
-               MENU_ENUM_LABEL_VALUE_SAVE_CURRENT_CONFIG_OVERRIDE_GAME,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_MENU_SAVE_CURRENT_CONFIG_OVERRIDE_GAME);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_REMOVE_CURRENT_CONFIG_OVERRIDE_CORE,
-               MENU_ENUM_LABEL_VALUE_REMOVE_CURRENT_CONFIG_OVERRIDE_CORE,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_MENU_REMOVE_CURRENT_CONFIG_OVERRIDE_CORE);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_REMOVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR,
-               MENU_ENUM_LABEL_VALUE_REMOVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_MENU_REMOVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_REMOVE_CURRENT_CONFIG_OVERRIDE_GAME,
-               MENU_ENUM_LABEL_VALUE_REMOVE_CURRENT_CONFIG_OVERRIDE_GAME,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_MENU_REMOVE_CURRENT_CONFIG_OVERRIDE_GAME);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_HELP_LIST,
-               MENU_ENUM_LABEL_VALUE_HELP_LIST,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+               SDESC_ACTION_ROW_EX(CONFIGURATIONS_LIST, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+               SDESC_ACTION_ROW_EX(CONFIGURATIONS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+               SDESC_ACTION_ROW_EX(SAVE_CURRENT_CONFIG, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, CMD_EVENT_MENU_SAVE_CURRENT_CONFIG),
+               SDESC_ACTION_ROW_EX(SAVE_NEW_CONFIG, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, CMD_EVENT_MENU_SAVE_CONFIG),
+               SDESC_ACTION_ROW_EX(RESET_TO_DEFAULT_CONFIG, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, CMD_EVENT_MENU_RESET_TO_DEFAULT_CONFIG),
+               SDESC_ACTION_ROW_EX(SAVE_CURRENT_CONFIG_OVERRIDE_CORE, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, CMD_EVENT_MENU_SAVE_CURRENT_CONFIG_OVERRIDE_CORE),
+               SDESC_ACTION_ROW_EX(SAVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, CMD_EVENT_MENU_SAVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR),
+               SDESC_ACTION_ROW_EX(SAVE_CURRENT_CONFIG_OVERRIDE_GAME, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, CMD_EVENT_MENU_SAVE_CURRENT_CONFIG_OVERRIDE_GAME),
+               SDESC_ACTION_ROW_EX(REMOVE_CURRENT_CONFIG_OVERRIDE_CORE, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, CMD_EVENT_MENU_REMOVE_CURRENT_CONFIG_OVERRIDE_CORE),
+               SDESC_ACTION_ROW_EX(REMOVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, CMD_EVENT_MENU_REMOVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR),
+               SDESC_ACTION_ROW_EX(REMOVE_CURRENT_CONFIG_OVERRIDE_GAME, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, CMD_EVENT_MENU_REMOVE_CURRENT_CONFIG_OVERRIDE_GAME),
+               SDESC_ACTION_ROW_EX(HELP_LIST, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
 #ifdef HAVE_QT
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_SHOW_WIMP,
-               MENU_ENUM_LABEL_VALUE_SHOW_WIMP,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_UI_COMPANION_TOGGLE);
+               SDESC_ACTION_ROW_EX(SHOW_WIMP, SD_FLAG_NONE,
+                     NULL, NULL, CMD_EVENT_UI_COMPANION_TOGGLE),
 #endif
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_8, ARRAY_SIZE(mm_desc_8),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #if !defined(IOS)
          /* Apple rejects iOS apps that let you forcibly quit them. */
 #ifdef HAVE_LAKKA
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_QUIT_RETROARCH,
-               MENU_ENUM_LABEL_VALUE_RESTART_RETROARCH,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+         {
+            static const setting_desc_t quit_lakka_desc[] = {
+               SDESC_ACTION_ROW_LV(QUIT_RETROARCH, RESTART_RETROARCH,
+                     SD_FLAG_NONE, NULL, NULL, 0)
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  quit_lakka_desc, ARRAY_SIZE(quit_lakka_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #else
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_QUIT_RETROARCH,
-               MENU_ENUM_LABEL_VALUE_QUIT_RETROARCH,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+         {
+            static const setting_desc_t mm_desc_9[] = {
+               SDESC_ACTION_ROW(QUIT_RETROARCH),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_9, ARRAY_SIZE(mm_desc_9),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
          MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_QUIT);
 #endif
 
+         {
+            static const setting_desc_t mm_desc_10[] = {
 #ifdef HAVE_LIBNX
-        CONFIG_ACTION(
-              list, list_info,
-              MENU_ENUM_LABEL_SWITCH_CPU_PROFILE,
-              MENU_ENUM_LABEL_VALUE_SWITCH_CPU_PROFILE,
-              &group_info,
-              &subgroup_info,
-              parent_group);
+               SDESC_ACTION_ROW(SWITCH_CPU_PROFILE),
 #endif
-
 #if defined(HAVE_LAKKA)
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_REBOOT,
-               MENU_ENUM_LABEL_VALUE_REBOOT,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REBOOT);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_SHUTDOWN,
-               MENU_ENUM_LABEL_VALUE_SHUTDOWN,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_SHUTDOWN);
+               SDESC_ACTION_ROW_EX(REBOOT, SD_FLAG_NONE,
+                     NULL, NULL, CMD_EVENT_REBOOT),
+               SDESC_ACTION_ROW_EX(SHUTDOWN, SD_FLAG_NONE,
+                     NULL, NULL, CMD_EVENT_SHUTDOWN),
 #endif
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_DRIVER_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_DRIVER_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_VIDEO_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_VIDEO_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CRT_SWITCHRES_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_CRT_SWITCHRES_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_VIDEO_OUTPUT_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_VIDEO_OUTPUT_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_AUDIO_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_AUDIO_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
+               SDESC_ACTION_ROW_EX(DRIVER_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+               SDESC_ACTION_ROW(VIDEO_SETTINGS),
+               SDESC_ACTION_ROW(CRT_SWITCHRES_SETTINGS),
+               SDESC_ACTION_ROW(VIDEO_OUTPUT_SETTINGS),
+               SDESC_ACTION_ROW(AUDIO_SETTINGS),
 #ifdef HAVE_AUDIOMIXER
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_AUDIO_MIXER_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_AUDIO_MIXER_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+               SDESC_ACTION_ROW_EX(AUDIO_MIXER_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
 #endif
-
 #ifdef HAVE_AUDIOMIXER
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_MENU_SOUNDS,
-               MENU_ENUM_LABEL_VALUE_MENU_SOUNDS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(MENU_SOUNDS),
 #endif
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_INPUT_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_INPUT_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_LATENCY_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_LATENCY_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CORE_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_CORE_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CONFIGURATION_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_CONFIGURATION_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_SAVING_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_SAVING_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_LOGGING_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_LOGGING_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_FRAME_THROTTLE_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_FRAME_THROTTLE_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_REWIND_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_REWIND_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_FRAME_TIME_COUNTER_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CHEAT_DETAILS_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_CHEAT_DETAILS_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CHEAT_SEARCH_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_CHEAT_SEARCH_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(INPUT_SETTINGS),
+               SDESC_ACTION_ROW_EX(LATENCY_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+               SDESC_ACTION_ROW(CORE_SETTINGS),
+               SDESC_ACTION_ROW_EX(CONFIGURATION_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+               SDESC_ACTION_ROW_EX(SAVING_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+               SDESC_ACTION_ROW(LOGGING_SETTINGS),
+               SDESC_ACTION_ROW_EX(FRAME_THROTTLE_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+               SDESC_ACTION_ROW(REWIND_SETTINGS),
+               SDESC_ACTION_ROW_EX(FRAME_TIME_COUNTER_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+               SDESC_ACTION_ROW(CHEAT_DETAILS_SETTINGS),
+               SDESC_ACTION_ROW(CHEAT_SEARCH_SETTINGS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_10, ARRAY_SIZE(mm_desc_10),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          if (string_is_not_equal(settings->arrays.record_driver, "null"))
          {
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_RECORDING_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_RECORDING_SETTINGS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+         {
+            static const setting_desc_t mm_desc_11[] = {
+               SDESC_ACTION_ROW_EX(RECORDING_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_11, ARRAY_SIZE(mm_desc_11),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_ONSCREEN_DISPLAY_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_ONSCREEN_DISPLAY_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
+         {
+            static const setting_desc_t mm_desc_12[] = {
+               SDESC_ACTION_ROW_EX(ONSCREEN_DISPLAY_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
 #ifdef HAVE_OVERLAY
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_ONSCREEN_OVERLAY_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_ONSCREEN_OVERLAY_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_OVERLAY_LIGHTGUN_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_LIGHTGUN_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_OVERLAY_MOUSE_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_MOUSE_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_OSK_OVERLAY_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_OSK_OVERLAY_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+               SDESC_ACTION_ROW_EX(ONSCREEN_OVERLAY_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+               SDESC_ACTION_ROW_EX(OVERLAY_LIGHTGUN_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+               SDESC_ACTION_ROW_EX(OVERLAY_MOUSE_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+               SDESC_ACTION_ROW_EX(OSK_OVERLAY_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
 #endif
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_ONSCREEN_NOTIFICATIONS_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_ONSCREEN_NOTIFICATIONS_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_ONSCREEN_NOTIFICATIONS_VIEWS_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_ONSCREEN_NOTIFICATIONS_VIEWS_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_MENU_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_MENU_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW_EX(ONSCREEN_NOTIFICATIONS_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+               SDESC_ACTION_ROW(ONSCREEN_NOTIFICATIONS_VIEWS_SETTINGS),
+               SDESC_ACTION_ROW(MENU_SETTINGS),
 #ifdef _3DS
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_MENU_BOTTOM_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_MENU_BOTTOM_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(MENU_BOTTOM_SETTINGS),
 #endif
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_MENU_VIEWS_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_MENU_VIEWS_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_QUICK_MENU_VIEWS_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_VIEWS_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_SETTINGS_VIEWS_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_VIEWS_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_USER_INTERFACE_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_USER_INTERFACE_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_AI_SERVICE_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_AI_SERVICE_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
+               SDESC_ACTION_ROW(MENU_VIEWS_SETTINGS),
+               SDESC_ACTION_ROW(QUICK_MENU_VIEWS_SETTINGS),
+               SDESC_ACTION_ROW(SETTINGS_VIEWS_SETTINGS),
+               SDESC_ACTION_ROW(USER_INTERFACE_SETTINGS),
+               SDESC_ACTION_ROW(AI_SERVICE_SETTINGS),
 #ifdef HAVE_ACCESSIBILITY
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_ACCESSIBILITY_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_ACCESSIBILITY_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(ACCESSIBILITY_SETTINGS),
 #endif
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_POWER_MANAGEMENT_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_POWER_MANAGEMENT_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_MENU_FILE_BROWSER_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_MENU_FILE_BROWSER_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
+               SDESC_ACTION_ROW(POWER_MANAGEMENT_SETTINGS),
+               SDESC_ACTION_ROW_EX(MENU_FILE_BROWSER_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
 #ifdef HAVE_CHEEVOS
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_RETRO_ACHIEVEMENTS_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_RETRO_ACHIEVEMENTS_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_CHEEVOS_APPEARANCE_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CHEEVOS_VISIBILITY_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_CHEEVOS_VISIBILITY_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(RETRO_ACHIEVEMENTS_SETTINGS),
+               SDESC_ACTION_ROW(CHEEVOS_APPEARANCE_SETTINGS),
+               SDESC_ACTION_ROW(CHEEVOS_VISIBILITY_SETTINGS),
 #endif
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_UPDATER_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_UPDATER_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(UPDATER_SETTINGS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_12, ARRAY_SIZE(mm_desc_12),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #ifdef HAVE_LAKKA
          SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
 #endif
@@ -11227,135 +11430,70 @@ static bool setting_append_list(
          if (string_is_not_equal(
                   settings->arrays.bluetooth_driver, "null"))
          {
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_BLUETOOTH_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_BLUETOOTH_SETTINGS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
+         {
+            static const setting_desc_t mm_desc_13[] = {
+               SDESC_ACTION_ROW(BLUETOOTH_SETTINGS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_13, ARRAY_SIZE(mm_desc_13),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 #endif
 
 #if defined(HAVE_LAKKA) || defined(HAVE_WIFI)
          if (string_is_not_equal(settings->arrays.wifi_driver, "null"))
          {
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_WIFI_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_WIFI_SETTINGS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
+         {
+            static const setting_desc_t mm_desc_14[] = {
+               SDESC_ACTION_ROW(WIFI_SETTINGS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_14, ARRAY_SIZE(mm_desc_14),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 #endif
 
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_NETWORK_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_NETWORK_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
+         {
+            static const setting_desc_t mm_desc_15[] = {
+               SDESC_ACTION_ROW_EX(NETWORK_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
 #ifdef HAVE_LAKKA
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_LAKKA_SERVICES,
-               MENU_ENUM_LABEL_VALUE_LAKKA_SERVICES,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(LAKKA_SERVICES),
 #endif
 #ifdef HAVE_LAKKA_SWITCH
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_LAKKA_SWITCH_OPTIONS,
-               MENU_ENUM_LABEL_VALUE_LAKKA_SWITCH_OPTIONS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(LAKKA_SWITCH_OPTIONS),
 #endif
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_PLAYLIST_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_USER_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_USER_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_DIRECTORY_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_PRIVACY_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_PRIVACY_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_AUDIO_OUTPUT_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_AUDIO_OUTPUT_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
+               SDESC_ACTION_ROW_EX(PLAYLIST_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+               SDESC_ACTION_ROW(USER_SETTINGS),
+               SDESC_ACTION_ROW(DIRECTORY_SETTINGS),
+               SDESC_ACTION_ROW(PRIVACY_SETTINGS),
+               SDESC_ACTION_ROW(AUDIO_OUTPUT_SETTINGS),
 #ifdef HAVE_MICROPHONE
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_MICROPHONE_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_MICROPHONE_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(MICROPHONE_SETTINGS),
 #endif
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_AUDIO_SYNCHRONIZATION_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_AUDIO_SYNCHRONIZATION_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
+               SDESC_ACTION_ROW(AUDIO_SYNCHRONIZATION_SETTINGS),
 #ifdef HAVE_MIST
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_STEAM_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_STEAM_SETTINGS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+               SDESC_ACTION_ROW(STEAM_SETTINGS),
 #endif
-
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_15, ARRAY_SIZE(mm_desc_15),
+                  &group_info, &subgroup_info, parent_group);
+         }
          if (string_is_not_equal(settings->arrays.midi_driver, "null"))
          {
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_MIDI_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_MIDI_SETTINGS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+         {
+            static const setting_desc_t mm_desc_16[] = {
+               SDESC_ACTION_ROW_EX(MIDI_SETTINGS, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mm_desc_16, ARRAY_SIZE(mm_desc_16),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
          for (user = 0; user < MAX_USERS; user++)
@@ -11375,7 +11513,7 @@ static bool setting_append_list(
             START_GROUP(list, list_info, &group_info, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_DRIVER_SETTINGS), parent_group);
             MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info, MENU_ENUM_LABEL_DRIVER_SETTINGS);
 
-            parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+            parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
             START_SUB_GROUP(list, list_info, "State", &group_info,
                   &subgroup_info, parent_group);
@@ -11574,7 +11712,7 @@ static bool setting_append_list(
                   msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CORE_SETTINGS), parent_group);
             MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info, MENU_ENUM_LABEL_CORE_SETTINGS);
 
-            parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+            parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
             START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info,
                   parent_group);
@@ -11659,13 +11797,19 @@ static bool setting_append_list(
                bool_entries[listing].flags      |= SD_FLAG_DEFAULT_VALUE;
             listing++;
 #endif
-            for (i = 0; i < ARRAY_SIZE(bool_entries); i++)
+            /* Iterate the filled count, not the array capacity:
+             * the capacities above are upper bounds and iterating
+             * ARRAY_SIZE registered one setting from uninitialized
+             * stack memory (garbage label/flags/default and, worst,
+             * a garbage value target pointer). */
+            for (i = 0; i < listing; i++)
             {
 #if !defined(HAVE_CORE_INFO_CACHE)
                if (bool_entries[i].name_enum_idx ==
                      MENU_ENUM_LABEL_CORE_INFO_CACHE_ENABLE)
                   continue;
 #endif
+               /* Descriptor holdout: value target outside settings_t. */
                CONFIG_BOOL(
                      list, list_info,
                      bool_entries[i].target,
@@ -11780,6 +11924,7 @@ static bool setting_append_list(
 
             for (i = 0; i < ARRAY_SIZE(bool_entries); i++)
             {
+               /* Descriptor holdout: value target outside settings_t. */
                CONFIG_BOOL(
                      list, list_info,
                      bool_entries[i].target,
@@ -11796,35 +11941,39 @@ static bool setting_append_list(
                      bool_entries[i].flags);
             }
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_shader_enable,
-                  MENU_ENUM_LABEL_VIDEO_SHADERS_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_SHADERS_ENABLE,
-                  DEFAULT_SHADER_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_shader_preset_save_reference_enable,
-                  MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_SAVE_REFERENCE,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_PRESET_SAVE_REFERENCE,
-                  DEFAULT_VIDEO_SHADER_PRESET_SAVE_REFERENCE_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t configuration_desc_0[] = {
+/* GENERATED: rows come from settings_def_shader_preset.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_shader_preset.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  configuration_desc_0, ARRAY_SIZE(configuration_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             END_SUB_GROUP(list, list_info, parent_group);
             END_GROUP(list, list_info, parent_group);
@@ -11859,6 +12008,7 @@ static bool setting_append_list(
             (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
             (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
 
+            /* Descriptor holdout: change_handler poke; descriptor slot deferred to the single-source phase. */
             CONFIG_UINT(
                   list, list_info,
                   &settings->uints.frontend_log_level,
@@ -11877,55 +12027,24 @@ static bool setting_append_list(
             (*list)[list_info->index - 1].get_string_representation =
                &setting_get_string_representation_uint_libretro_log_level;
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.libretro_log_level,
-                  MENU_ENUM_LABEL_LIBRETRO_LOG_LEVEL,
-                  MENU_ENUM_LABEL_VALUE_LIBRETRO_LOG_LEVEL,
-                  DEFAULT_LIBRETRO_LOG_LEVEL,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_RADIO_BUTTONS;
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0, 3, 1.0, true, true);
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_libretro_log_level;
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.log_to_file,
-                  MENU_ENUM_LABEL_LOG_TO_FILE,
-                  MENU_ENUM_LABEL_VALUE_LOG_TO_FILE,
-                  DEFAULT_LOG_TO_FILE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.log_to_file_timestamp,
-                  MENU_ENUM_LABEL_LOG_TO_FILE_TIMESTAMP,
-                  MENU_ENUM_LABEL_VALUE_LOG_TO_FILE_TIMESTAMP,
-                  DEFAULT_LOG_TO_FILE_TIMESTAMP,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t logging_desc_0[] = {
+               SDESC_UINT_ROW_EX(libretro_log_level, LIBRETRO_LOG_LEVEL,
+                     DEFAULT_LIBRETRO_LOG_LEVEL,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 3, 1.0, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_libretro_log_level,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_RADIO_BUTTONS),
+               SDESC_BOOL_ROW_EX(log_to_file, LOG_TO_FILE,
+                     DEFAULT_LOG_TO_FILE, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_BOOL_ROW(log_to_file_timestamp, LOG_TO_FILE_TIMESTAMP,
+                     DEFAULT_LOG_TO_FILE_TIMESTAMP, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  logging_desc_0, ARRAY_SIZE(logging_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             END_SUB_GROUP(list, list_info, parent_group);
 
@@ -11934,6 +12053,7 @@ static bool setting_append_list(
 
             retroarch_ctl(RARCH_CTL_GET_PERFCNT, &tmp_b);
 
+            /* Descriptor holdout: value target outside settings_t. */
             CONFIG_BOOL(
                   list, list_info,
                   tmp_b,
@@ -12064,6 +12184,7 @@ static bool setting_append_list(
 
             for (i = 0; i < ARRAY_SIZE(bool_entries); i++)
             {
+               /* Descriptor holdout: value target outside settings_t. */
                CONFIG_BOOL(
                      list, list_info,
                      bool_entries[i].target,
@@ -12080,213 +12201,75 @@ static bool setting_append_list(
                      bool_entries[i].flags);
             }
 
+         {
+            static const setting_desc_t sav_desc_0[] = {
 #ifdef HAVE_THREADS
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.autosave_interval,
-                  MENU_ENUM_LABEL_AUTOSAVE_INTERVAL,
-                  MENU_ENUM_LABEL_VALUE_AUTOSAVE_INTERVAL,
-                  DEFAULT_AUTOSAVE_INTERVAL,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_AUTOSAVE_INIT);
-            menu_settings_list_current_add_range(list, list_info, 0, 0, 1, true, false);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_autosave_interval;
+               SDESC_UINT_ROW_EX(autosave_interval, AUTOSAVE_INTERVAL,
+                     DEFAULT_AUTOSAVE_INTERVAL,
+                     SD_FLAG_CMD_APPLY_AUTO, (SDESC_FLG_HAS_RANGE | SDESC_FLG_ENFORCE_MIN), CMD_EVENT_AUTOSAVE_INIT,
+                     0, 0, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_autosave_interval,
+                     NULL, NULL, NULL, NULL, 0),
 #endif
-
 #ifdef HAVE_THREADS
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.savestate_automatic_interval,
-                  MENU_ENUM_LABEL_SAVESTATE_AUTOMATIC_INTERVAL,
-                  MENU_ENUM_LABEL_VALUE_SAVESTATE_AUTOMATIC_INTERVAL,
-                  DEFAULT_SAVESTATE_AUTOMATIC_INTERVAL,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0, 0, 1, true, false);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_autosave_interval;
+               SDESC_UINT_ROW_EX(savestate_automatic_interval, SAVESTATE_AUTOMATIC_INTERVAL,
+                     DEFAULT_SAVESTATE_AUTOMATIC_INTERVAL,
+                     SD_FLAG_CMD_APPLY_AUTO, (SDESC_FLG_HAS_RANGE | SDESC_FLG_ENFORCE_MIN), 0,
+                     0, 0, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_autosave_interval,
+                     NULL, NULL, NULL, NULL, 0),
 #endif
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.savestate_auto_index,
-                  MENU_ENUM_LABEL_SAVESTATE_AUTO_INDEX,
-                  MENU_ENUM_LABEL_VALUE_SAVESTATE_AUTO_INDEX,
-                  DEFAULT_SAVESTATE_AUTO_INDEX,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.savestate_max_keep,
-                  MENU_ENUM_LABEL_SAVESTATE_MAX_KEEP,
-                  MENU_ENUM_LABEL_VALUE_SAVESTATE_MAX_KEEP,
-                  DEFAULT_SAVESTATE_MAX_KEEP,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0, 999, 1, true, true);
-
+               SDESC_BOOL_ROW_EX(savestate_auto_index, SAVESTATE_AUTO_INDEX,
+                     DEFAULT_SAVESTATE_AUTO_INDEX, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_UINT_ROW_EX(savestate_max_keep, SAVESTATE_MAX_KEEP,
+                     DEFAULT_SAVESTATE_MAX_KEEP,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 999, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
 #ifdef HAVE_BSV_MOVIE
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.replay_auto_index,
-                  MENU_ENUM_LABEL_REPLAY_AUTO_INDEX,
-                  MENU_ENUM_LABEL_VALUE_REPLAY_AUTO_INDEX,
-                  DEFAULT_REPLAY_AUTO_INDEX,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.replay_max_keep,
-                  MENU_ENUM_LABEL_REPLAY_MAX_KEEP,
-                  MENU_ENUM_LABEL_VALUE_REPLAY_MAX_KEEP,
-                  DEFAULT_REPLAY_MAX_KEEP,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0, 999, 1, true, true);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.replay_checkpoint_interval,
-                  MENU_ENUM_LABEL_REPLAY_CHECKPOINT_INTERVAL,
-                  MENU_ENUM_LABEL_VALUE_REPLAY_CHECKPOINT_INTERVAL,
-                  DEFAULT_REPLAY_CHECKPOINT_INTERVAL,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_replay_checkpoint_interval;
-            menu_settings_list_current_add_range(list, list_info, 0, 0, 1, true, false);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.replay_checkpoint_deserialize,
-                  MENU_ENUM_LABEL_REPLAY_CHECKPOINT_DESERIALIZE,
-                  MENU_ENUM_LABEL_VALUE_REPLAY_CHECKPOINT_DESERIALIZE,
-                  DEFAULT_REPLAY_CHECKPOINT_DESERIALIZE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+               SDESC_BOOL_ROW_EX(replay_auto_index, REPLAY_AUTO_INDEX,
+                     DEFAULT_REPLAY_AUTO_INDEX, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_UINT_ROW_EX(replay_max_keep, REPLAY_MAX_KEEP,
+                     DEFAULT_REPLAY_MAX_KEEP,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 999, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(replay_checkpoint_interval, REPLAY_CHECKPOINT_INTERVAL,
+                     DEFAULT_REPLAY_CHECKPOINT_INTERVAL,
+                     SD_FLAG_CMD_APPLY_AUTO, (SDESC_FLG_HAS_RANGE | SDESC_FLG_ENFORCE_MIN), 0,
+                     0, 0, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_replay_checkpoint_interval,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(replay_checkpoint_deserialize, REPLAY_CHECKPOINT_DESERIALIZE,
+                     DEFAULT_REPLAY_CHECKPOINT_DESERIALIZE, SD_FLAG_NONE, 0, 0),
 #endif
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.content_runtime_log,
-                  MENU_ENUM_LABEL_CONTENT_RUNTIME_LOG,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_RUNTIME_LOG,
-                  DEFAULT_CONTENT_RUNTIME_LOG,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.content_runtime_log_aggregate,
-                  MENU_ENUM_LABEL_CONTENT_RUNTIME_LOG_AGGREGATE,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_RUNTIME_LOG_AGGREGATE,
-                  DEFAULT_CONTENT_RUNTIME_LOG_AGGREGATE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
+               SDESC_BOOL_ROW(content_runtime_log, CONTENT_RUNTIME_LOG,
+                     DEFAULT_CONTENT_RUNTIME_LOG, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(content_runtime_log_aggregate, CONTENT_RUNTIME_LOG_AGGREGATE,
+                     DEFAULT_CONTENT_RUNTIME_LOG_AGGREGATE, SD_FLAG_NONE, 0, 0),
 #if defined(HAVE_ZLIB)
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.save_file_compression,
-                  MENU_ENUM_LABEL_SAVE_FILE_COMPRESSION,
-                  MENU_ENUM_LABEL_VALUE_SAVE_FILE_COMPRESSION,
-                  DEFAULT_SAVE_FILE_COMPRESSION,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.savestate_file_compression,
-                  MENU_ENUM_LABEL_SAVESTATE_FILE_COMPRESSION,
-                  MENU_ENUM_LABEL_VALUE_SAVESTATE_FILE_COMPRESSION,
-                  DEFAULT_SAVESTATE_FILE_COMPRESSION,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED);
+               SDESC_BOOL_ROW(save_file_compression, SAVE_FILE_COMPRESSION,
+                     DEFAULT_SAVE_FILE_COMPRESSION, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW(savestate_file_compression, SAVESTATE_FILE_COMPRESSION,
+                     DEFAULT_SAVESTATE_FILE_COMPRESSION, SD_FLAG_ADVANCED, 0, 0),
 #endif
-
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_CLOUD_SYNC_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SETTINGS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  sav_desc_0, ARRAY_SIZE(sav_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
+         {
+            static const setting_desc_t saving2_desc_0[] = {
+               SDESC_ACTION_ROW(CLOUD_SYNC_SETTINGS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  saving2_desc_0, ARRAY_SIZE(saving2_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             END_SUB_GROUP(list, list_info, parent_group);
             END_GROUP(list, list_info, parent_group);
@@ -12298,118 +12281,35 @@ static bool setting_append_list(
          START_GROUP(list, list_info, &group_info,
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SETTINGS),
                parent_group);
-         parent_group = MENU_ENUM_LABEL_CLOUD_SYNC_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_CLOUD_SYNC_SETTINGS);
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.cloud_sync_enable,
-               MENU_ENUM_LABEL_CLOUD_SYNC_ENABLE,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ENABLE,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.cloud_sync_destructive,
-               MENU_ENUM_LABEL_CLOUD_SYNC_DESTRUCTIVE,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_DESTRUCTIVE,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.cloud_sync_sync_saves,
-               MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_SAVES,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_SAVES,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.cloud_sync_sync_configs,
-               MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_CONFIGS,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_CONFIGS,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.cloud_sync_sync_thumbs,
-               MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_THUMBS,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_THUMBS,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.cloud_sync_sync_system,
-               MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_SYSTEM,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_SYSTEM,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.cloud_sync_sync_mode,
-               MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_MODE,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE,
-               CLOUD_SYNC_MODE_AUTOMATIC,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_cloud_sync_sync_mode;
-         menu_settings_list_current_add_range(list, list_info, 0, CLOUD_SYNC_MODE_LAST-1, 1, true, true);
+         {
+            static const setting_desc_t cs_desc_0[] = {
+               SDESC_BOOL_ROW_EX(cloud_sync_enable, CLOUD_SYNC_ENABLE,
+                     false, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_BOOL_ROW(cloud_sync_destructive, CLOUD_SYNC_DESTRUCTIVE,
+                     false, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(cloud_sync_sync_saves, CLOUD_SYNC_SYNC_SAVES,
+                     false, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(cloud_sync_sync_configs, CLOUD_SYNC_SYNC_CONFIGS,
+                     false, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(cloud_sync_sync_thumbs, CLOUD_SYNC_SYNC_THUMBS,
+                     false, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(cloud_sync_sync_system, CLOUD_SYNC_SYNC_SYSTEM,
+                     false, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(cloud_sync_sync_mode, CLOUD_SYNC_SYNC_MODE,
+                     CLOUD_SYNC_MODE_AUTOMATIC,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, CLOUD_SYNC_MODE_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_cloud_sync_sync_mode,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  cs_desc_0, ARRAY_SIZE(cs_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          CONFIG_STRING_OPTIONS(
                list, list_info,
@@ -12429,107 +12329,87 @@ static bool setting_append_list(
          (*list)[list_info->index - 1].action_left  = setting_string_action_left_driver;
          (*list)[list_info->index - 1].action_right = setting_string_action_right_driver;
 
-         CONFIG_STRING(
-               list, list_info,
-               settings->arrays.webdav_url,
-               sizeof(settings->arrays.webdav_url),
-               MENU_ENUM_LABEL_CLOUD_SYNC_URL,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_URL,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
-         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
-
-         CONFIG_STRING(
-               list, list_info,
-               settings->arrays.webdav_username,
-               sizeof(settings->arrays.webdav_username),
-               MENU_ENUM_LABEL_CLOUD_SYNC_USERNAME,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_USERNAME,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
-         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
-
-         CONFIG_STRING(
-               list, list_info,
-               settings->arrays.webdav_password,
-               sizeof(settings->arrays.webdav_password),
-               MENU_ENUM_LABEL_CLOUD_SYNC_PASSWORD,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_PASSWORD,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_password;
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_PASSWORD_LINE_EDIT;
-         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
+         {
+            static const setting_desc_t cs_desc_1[] = {
+/* GENERATED: rows come from settings_def_cloud_sync_webdav.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#include "../settings/settings_def_cloud_sync_webdav.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  cs_desc_1, ARRAY_SIZE(cs_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef HAVE_S3
          /* AWS */
-         CONFIG_STRING(
-               list, list_info,
-               settings->arrays.s3_url,
-               sizeof(settings->arrays.s3_url),
-               MENU_ENUM_LABEL_CLOUD_SYNC_S3_URL,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_S3_URL,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
-         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
-
-         CONFIG_STRING(
-               list, list_info,
-               settings->arrays.access_key_id,
-               sizeof(settings->arrays.access_key_id),
-               MENU_ENUM_LABEL_CLOUD_SYNC_ACCESS_KEY_ID,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ACCESS_KEY_ID,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
-         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
-
-         CONFIG_STRING(
-               list, list_info,
-               settings->arrays.secret_access_key,
-               sizeof(settings->arrays.secret_access_key),
-               MENU_ENUM_LABEL_CLOUD_SYNC_SECRET_ACCESS_KEY,
-               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SECRET_ACCESS_KEY,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_password;
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_PASSWORD_LINE_EDIT;
-         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
+         {
+            static const setting_desc_t cs_desc_2[] = {
+/* GENERATED: rows come from settings_def_cloud_sync_s3.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#include "../settings/settings_def_cloud_sync_s3.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  cs_desc_2, ARRAY_SIZE(cs_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
@@ -12542,20 +12422,39 @@ static bool setting_append_list(
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.video_frame_time_sample_gated,
-               MENU_ENUM_LABEL_VIDEO_FRAME_TIME_SAMPLE_GATED,
-               MENU_ENUM_LABEL_VALUE_VIDEO_FRAME_TIME_SAMPLE_GATED,
-               DEFAULT_FRAME_TIME_SAMPLE_GATED,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+         {
+            static const setting_desc_t frame_time_cou_desc_0[] = {
+/* GENERATED: rows come from settings_def_video_frame_time_sample.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_frame_time_sample.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  frame_time_cou_desc_0, ARRAY_SIZE(frame_time_cou_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
          /* Toggling this setting hides/shows
           * 'frame_time_counter_auto_reset' below, so the menu
           * needs a rebuild on change. */
@@ -12563,20 +12462,39 @@ static bool setting_append_list(
          (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
          (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.frame_time_counter_auto_reset,
-               MENU_ENUM_LABEL_FRAME_TIME_COUNTER_AUTO_RESET,
-               MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_AUTO_RESET,
-               DEFAULT_FRAME_TIME_COUNTER_AUTO_RESET,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+         {
+            static const setting_desc_t frame_time_cou_desc_1[] = {
+/* GENERATED: rows come from settings_def_frame_time_counter.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_frame_time_counter.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  frame_time_cou_desc_1, ARRAY_SIZE(frame_time_cou_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
@@ -12588,37 +12506,23 @@ static bool setting_append_list(
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.rewind_enable,
-               MENU_ENUM_LABEL_REWIND_ENABLE,
-               MENU_ENUM_LABEL_VALUE_REWIND_ENABLE,
-               DEFAULT_REWIND_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REWIND_TOGGLE);
+         {
+            static const setting_desc_t rewind_desc_0[] = {
+               SDESC_BOOL_ROW(rewind_enable, REWIND_ENABLE,
+                     DEFAULT_REWIND_ENABLE, SD_FLAG_NONE, 0, CMD_EVENT_REWIND_TOGGLE),
+               SDESC_UINT_ROW_EX(rewind_granularity, REWIND_GRANULARITY,
+                     DEFAULT_REWIND_GRANULARITY,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1, 32768, 1, 1,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  rewind_desc_0, ARRAY_SIZE(rewind_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.rewind_granularity,
-                  MENU_ENUM_LABEL_REWIND_GRANULARITY,
-                  MENU_ENUM_LABEL_VALUE_REWIND_GRANULARITY,
-                  DEFAULT_REWIND_GRANULARITY,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].offset_by     = 1;
-            menu_settings_list_current_add_range(list, list_info, 1, 32768, 1, true, true);
-
+            /* Descriptor holdout: setting class not modelled by descriptor rows. */
             CONFIG_SIZE(
                   list, list_info,
                   &settings->sizes.rewind_buffer_size,
@@ -12634,20 +12538,19 @@ static bool setting_append_list(
             menu_settings_list_current_add_range(list, list_info,
                   1024 * 1024, 1024 * 1024 * 1024, settings->uints.rewind_buffer_size_step * 1024 * 1024, true, true);
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.rewind_buffer_size_step,
-                  MENU_ENUM_LABEL_REWIND_BUFFER_SIZE_STEP,
-                  MENU_ENUM_LABEL_VALUE_REWIND_BUFFER_SIZE_STEP,
-                  DEFAULT_REWIND_BUFFER_SIZE_STEP,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].offset_by     = 1;
-            menu_settings_list_current_add_range(list, list_info, 1, 100, 1, true, true);
+         {
+            static const setting_desc_t rewind_desc_1[] = {
+               SDESC_UINT_ROW_EX(rewind_buffer_size_step, REWIND_BUFFER_SIZE_STEP,
+                     DEFAULT_REWIND_BUFFER_SIZE_STEP,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1, 100, 1, 1,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  rewind_desc_1, ARRAY_SIZE(rewind_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
@@ -12662,35 +12565,39 @@ static bool setting_append_list(
 
             START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.apply_cheats_after_load,
-                  MENU_ENUM_LABEL_CHEAT_APPLY_AFTER_LOAD,
-                  MENU_ENUM_LABEL_VALUE_CHEAT_APPLY_AFTER_LOAD,
-                  DEFAULT_APPLY_CHEATS_AFTER_LOAD,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_CMD_APPLY_AUTO);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.apply_cheats_after_toggle,
-                  MENU_ENUM_LABEL_CHEAT_APPLY_AFTER_TOGGLE,
-                  MENU_ENUM_LABEL_VALUE_CHEAT_APPLY_AFTER_TOGGLE,
-                  DEFAULT_APPLY_CHEATS_AFTER_TOGGLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_CMD_APPLY_AUTO);
+         {
+            static const setting_desc_t cheats_desc_0[] = {
+/* GENERATED: rows come from settings_def_cheats_apply.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_cheats_apply.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  cheats_desc_0, ARRAY_SIZE(cheats_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             END_SUB_GROUP(list, list_info, parent_group);
             END_GROUP(list, list_info, parent_group);
@@ -12713,6 +12620,7 @@ static bool setting_append_list(
                   NULL,NULL,
                   0,&setting_get_string_representation_uint,0,cheat_manager_get_size()-1,1);
 
+            /* Descriptor holdout: value target outside settings_t. */
             CONFIG_BOOL(
                   list, list_info,
                   &cheat_manager_state.working_cheat.state,
@@ -12969,6 +12877,7 @@ static bool setting_append_list(
                0,5,1);
          (*list)[list_info->index - 1].action_ok = &cheat_manager_initialize_memory;
 
+         /* Descriptor holdout: value target outside settings_t. */
          CONFIG_BOOL(
                list, list_info,
                &cheat_manager_state.big_endian,
@@ -13181,28 +13090,45 @@ static bool setting_append_list(
                   parent_group);
             MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info, MENU_ENUM_LABEL_VIDEO_SETTINGS);
 
-            parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+            parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
             START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
 #if (!defined(RARCH_CONSOLE) && !defined(RARCH_MOBILE)) || (defined(IOS) && TARGET_OS_TV)
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.ui_suspend_screensaver_enable,
-                  MENU_ENUM_LABEL_SUSPEND_SCREENSAVER_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_SUSPEND_SCREENSAVER_ENABLE,
-                  true,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+         {
+            static const setting_desc_t vid_desc_0[] = {
+/* GENERATED: rows come from settings_def_video_suspend_screensaver.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_suspend_screensaver.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_0, ARRAY_SIZE(vid_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
-
             END_SUB_GROUP(list, list_info, parent_group);
             START_SUB_GROUP(list, list_info, "Platform-specific", &group_info,
                   &subgroup_info, parent_group);
@@ -13213,47 +13139,63 @@ static bool setting_append_list(
             END_SUB_GROUP(list, list_info, parent_group);
             START_SUB_GROUP(list, list_info, "Monitor", &group_info, &subgroup_info, parent_group);
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_monitor_index,
-                  MENU_ENUM_LABEL_VIDEO_MONITOR_INDEX,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_MONITOR_INDEX,
-                  DEFAULT_MONITOR_INDEX,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-            menu_settings_list_current_add_range(list, list_info, 0, 15, 1, true, true);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_video_monitor_index;
+         {
+            static const setting_desc_t vid_desc_1[] = {
+               SDESC_UINT_ROW_EX(video_monitor_index, VIDEO_MONITOR_INDEX,
+                     DEFAULT_MONITOR_INDEX,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, CMD_EVENT_REINIT,
+                     0, 15, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_video_monitor_index,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_1, ARRAY_SIZE(vid_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             /* prevent unused function warning on unsupported builds */
             (void)setting_get_string_representation_int_gpu_index;
 
 #if defined(ANDROID) || TARGET_OS_IOS
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_notch_write_over_enable,
-                  MENU_ENUM_LABEL_VIDEO_NOTCH_WRITE_OVER,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_NOTCH_WRITE_OVER,
-                  DEFAULT_NOTCH_WRITE_OVER_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t vid_desc_2[] = {
+/* GENERATED: rows come from settings_def_video_notch.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_notch.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_2, ARRAY_SIZE(vid_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
-
 #ifdef HAVE_VULKAN
             if (string_is_equal(video_driver_get_ident(), "vulkan"))
             {
 #ifdef __APPLE__
+               /* Descriptor holdout: runtime default value. */
                CONFIG_BOOL(
                      list, list_info,
                      &settings->bools.video_use_metal_arg_buffers,
@@ -13270,270 +13212,233 @@ static bool setting_append_list(
                      SD_FLAG_NONE);
 #endif
 
-               CONFIG_INT(
-                     list, list_info,
-                     &settings->ints.vulkan_gpu_index,
-                     MENU_ENUM_LABEL_VIDEO_GPU_INDEX,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_GPU_INDEX,
+         {
+            static const setting_desc_t vid_desc_3[] = {
+               SDESC_INT_ROW_EX(vulkan_gpu_index, VIDEO_GPU_INDEX,
                      0,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               menu_settings_list_current_add_range(list, list_info, 0, 15, 1, true, true);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_int_gpu_index;
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 15, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_int_gpu_index,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_3, ARRAY_SIZE(vid_desc_3),
+                  &group_info, &subgroup_info, parent_group);
+         }
             }
 #endif
 
 #ifdef HAVE_D3D10
             if (string_is_equal(video_driver_get_ident(), "d3d10"))
             {
-               CONFIG_INT(
-                     list, list_info,
-                     &settings->ints.d3d10_gpu_index,
-                     MENU_ENUM_LABEL_VIDEO_GPU_INDEX,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_GPU_INDEX,
+         {
+            static const setting_desc_t vid_desc_4[] = {
+               SDESC_INT_ROW_EX(d3d10_gpu_index, VIDEO_GPU_INDEX,
                      0,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               menu_settings_list_current_add_range(list, list_info, 0, 15, 1, true, true);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_int_gpu_index;
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 15, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_int_gpu_index,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_4, ARRAY_SIZE(vid_desc_4),
+                  &group_info, &subgroup_info, parent_group);
+         }
             }
 #endif
 
 #ifdef HAVE_D3D11
             if (string_is_equal(video_driver_get_ident(), "d3d11"))
             {
-               CONFIG_INT(
-                     list, list_info,
-                     &settings->ints.d3d11_gpu_index,
-                     MENU_ENUM_LABEL_VIDEO_GPU_INDEX,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_GPU_INDEX,
+         {
+            static const setting_desc_t vid_desc_5[] = {
+               SDESC_INT_ROW_EX(d3d11_gpu_index, VIDEO_GPU_INDEX,
                      0,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               menu_settings_list_current_add_range(list, list_info, 0, 15, 1, true, true);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_int_gpu_index;
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 15, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_int_gpu_index,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_5, ARRAY_SIZE(vid_desc_5),
+                  &group_info, &subgroup_info, parent_group);
+         }
             }
 #endif
 
 #ifdef HAVE_D3D12
             if (string_is_equal(video_driver_get_ident(), "d3d12"))
             {
-               CONFIG_INT(
-                     list, list_info,
-                     &settings->ints.d3d12_gpu_index,
-                     MENU_ENUM_LABEL_VIDEO_GPU_INDEX,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_GPU_INDEX,
+         {
+            static const setting_desc_t vid_desc_6[] = {
+               SDESC_INT_ROW_EX(d3d12_gpu_index, VIDEO_GPU_INDEX,
                      0,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               menu_settings_list_current_add_range(list, list_info, 0, 15, 1, true, true);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_int_gpu_index;
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 15, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_int_gpu_index,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_6, ARRAY_SIZE(vid_desc_6),
+                  &group_info, &subgroup_info, parent_group);
+         }
             }
 #endif
 
 #ifdef HAVE_METAL
             if (string_is_equal(video_driver_get_ident(), "metal"))
             {
-               CONFIG_INT(
-                     list, list_info,
-                     &settings->ints.metal_gpu_index,
-                     MENU_ENUM_LABEL_VIDEO_GPU_INDEX,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_GPU_INDEX,
+         {
+            static const setting_desc_t vid_desc_7[] = {
+               SDESC_INT_ROW_EX(metal_gpu_index, VIDEO_GPU_INDEX,
                      0,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               menu_settings_list_current_add_range(list, list_info, 0, 15, 1, true, true);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_int_gpu_index;
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 15, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_int_gpu_index,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_7, ARRAY_SIZE(vid_desc_7),
+                  &group_info, &subgroup_info, parent_group);
+         }
             }
 #endif
 
 #ifdef WIIU
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_wiiu_prefer_drc,
-                  MENU_ENUM_LABEL_VIDEO_WIIU_PREFER_DRC,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_WIIU_PREFER_DRC,
-                  DEFAULT_WIIU_PREFER_DRC,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t vid_desc_8[] = {
+/* GENERATED: rows come from settings_def_video_wiiu_drc.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_wiiu_drc.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_8, ARRAY_SIZE(vid_desc_8),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
-
             if (video_driver_has_windowed())
             {
-               CONFIG_ACTION(
-                     list, list_info,
-                     MENU_ENUM_LABEL_VIDEO_FULLSCREEN_MODE_SETTINGS,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN_MODE_SETTINGS,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group);
-
-               CONFIG_ACTION(
-                     list, list_info,
-                     MENU_ENUM_LABEL_VIDEO_WINDOWED_MODE_SETTINGS,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_WINDOWED_MODE_SETTINGS,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group);
+         {
+            static const setting_desc_t vid_desc_9[] = {
+               SDESC_ACTION_ROW(VIDEO_FULLSCREEN_MODE_SETTINGS),
+               SDESC_ACTION_ROW(VIDEO_WINDOWED_MODE_SETTINGS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_9, ARRAY_SIZE(vid_desc_9),
+                  &group_info, &subgroup_info, parent_group);
+         }
             }
 
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_fullscreen,
-                  MENU_ENUM_LABEL_VIDEO_FULLSCREEN,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN,
-                  DEFAULT_FULLSCREEN,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_CMD_APPLY_AUTO);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT_FROM_TOGGLE);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
             {
-               CONFIG_BOOL(
-                     list, list_info,
-                     &settings->bools.video_windowed_fullscreen,
-                     MENU_ENUM_LABEL_VIDEO_WINDOWED_FULLSCREEN,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_WINDOWED_FULLSCREEN,
-                     DEFAULT_WINDOWED_FULLSCREEN,
-                     MENU_ENUM_LABEL_VALUE_OFF,
-                     MENU_ENUM_LABEL_VALUE_ON,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler,
-                     SD_FLAG_NONE);
-               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-               CONFIG_UINT(
-                     list, list_info,
-                     &settings->uints.video_fullscreen_x,
-                     MENU_ENUM_LABEL_VIDEO_FULLSCREEN_X,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN_X,
-                     DEFAULT_FULLSCREEN_X,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint_special;
-               menu_settings_list_current_add_range(list, list_info, 0, 7680, 8, true, true);
-
-               CONFIG_UINT(
-                     list, list_info,
-                     &settings->uints.video_fullscreen_y,
-                     MENU_ENUM_LABEL_VIDEO_FULLSCREEN_Y,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN_Y,
-                     DEFAULT_FULLSCREEN_Y,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint_special;
-               menu_settings_list_current_add_range(list, list_info, 0, 4320, 8, true, true);
+               static const setting_desc_t fs_desc[] = {
+/* GENERATED: rows come from settings_def_video_fullscreen.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_fullscreen.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     fs_desc, ARRAY_SIZE(fs_desc),
+                     &group_info, &subgroup_info, parent_group);
             }
 
 #if defined(DINGUX) && defined(DINGUX_BETA)
             if (   string_is_equal(settings->arrays.video_driver, "sdl_dingux")
                 || string_is_equal(settings->arrays.video_driver, "sdl_rs90"))
             {
-               CONFIG_UINT(
-                     list, list_info,
-                     &settings->uints.video_dingux_refresh_rate,
-                     MENU_ENUM_LABEL_VIDEO_DINGUX_REFRESH_RATE,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_DINGUX_REFRESH_RATE,
-                     DEFAULT_DINGUX_REFRESH_RATE,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-                     &setting_get_string_representation_uint_video_dingux_refresh_rate;
-               menu_settings_list_current_add_range(list, list_info, 0, DINGUX_REFRESH_RATE_LAST - 1, 1, true, true);
-               (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+               static const setting_desc_t dingux_rr_desc[] = {
+                  SDESC_UINT_ROW_EX(video_dingux_refresh_rate, VIDEO_DINGUX_REFRESH_RATE,
+                        DEFAULT_DINGUX_REFRESH_RATE,
+                        SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                        0, DINGUX_REFRESH_RATE_LAST - 1, 1, 0,
+                        setting_action_ok_uint,
+                        setting_get_string_representation_uint_video_dingux_refresh_rate,
+                        NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX)
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     dingux_rr_desc, ARRAY_SIZE(dingux_rr_desc),
+                     &group_info, &subgroup_info, parent_group);
             }
             else
 #endif
             {
                float actual_refresh_rate = video_driver_get_refresh_rate();
 
-               CONFIG_FLOAT(
-                     list, list_info,
-                     &settings->floats.video_refresh_rate,
-                     MENU_ENUM_LABEL_VIDEO_REFRESH_RATE,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_REFRESH_RATE,
-                     DEFAULT_REFRESH_RATE,
-                     "%.3f Hz",
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               menu_settings_list_current_add_range(list, list_info, 0, 0, 0.001, true, false);
-               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-               CONFIG_FLOAT(
-                     list, list_info,
-                     &settings->floats.video_refresh_rate,
-                     MENU_ENUM_LABEL_VIDEO_REFRESH_RATE_AUTO,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_REFRESH_RATE_AUTO,
-                     DEFAULT_REFRESH_RATE,
-                     "%.3f Hz",
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               (*list)[list_info->index - 1].action_start  = &setting_action_start_video_refresh_rate_auto;
-               (*list)[list_info->index - 1].action_ok     = &setting_action_ok_video_refresh_rate_auto;
-               (*list)[list_info->index - 1].action_select = &setting_action_ok_video_refresh_rate_auto;
-               (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_st_float_video_refresh_rate_auto;
-               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+               {
+                  /* video_refresh_rate is intentionally the value
+                   * target of the next two rows as well; the polled
+                   * variant below stays imperative because its
+                   * default is read from the video driver at
+                   * registration time. */
+                  static const setting_desc_t refresh_desc[] = {
+                     SDESC_FLOAT_ROW(video_refresh_rate, VIDEO_REFRESH_RATE,
+                           DEFAULT_REFRESH_RATE, "%.3f Hz",
+                           SD_FLAG_ALLOW_INPUT | SD_FLAG_LAKKA_ADVANCED,
+                           SDESC_FLG_HAS_RANGE | SDESC_FLG_ENFORCE_MIN,
+                           CMD_EVENT_NONE, 0, 0, 0.001,
+                           NULL, NULL),
+                     SDESC_FLOAT_ROW_EX(video_refresh_rate, VIDEO_REFRESH_RATE_AUTO,
+                           DEFAULT_REFRESH_RATE, "%.3f Hz",
+                           SD_FLAG_LAKKA_ADVANCED, 0, CMD_EVENT_NONE,
+                           0, 0, 0,
+                           setting_action_ok_video_refresh_rate_auto,
+                           setting_get_string_representation_st_float_video_refresh_rate_auto,
+                           setting_action_start_video_refresh_rate_auto,
+                           setting_action_ok_video_refresh_rate_auto,
+                           NULL, NULL, 0)
+                  };
+                  settings_list_add_desc(list, list_info, settings,
+                        refresh_desc, ARRAY_SIZE(refresh_desc),
+                        &group_info, &subgroup_info, parent_group);
+               }
 
                {
+                  /* Descriptor holdout: runtime default value. */
                   CONFIG_FLOAT(
                      list, list_info,
                      &settings->floats.video_refresh_rate,
@@ -13555,213 +13460,134 @@ static bool setting_append_list(
                }
             }
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_autoswitch_refresh_rate,
-                  MENU_ENUM_LABEL_VIDEO_AUTOSWITCH_REFRESH_RATE,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_AUTOSWITCH_REFRESH_RATE,
-                  DEFAULT_AUTOSWITCH_REFRESH_RATE,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_video_autoswitch_refresh_rate;
-            menu_settings_list_current_add_range(list, list_info, 0, AUTOSWITCH_REFRESH_RATE_LAST - 1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.video_autoswitch_pal_threshold,
-                  MENU_ENUM_LABEL_VIDEO_AUTOSWITCH_PAL_THRESHOLD,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_AUTOSWITCH_PAL_THRESHOLD,
-                  DEFAULT_AUTOSWITCH_PAL_THRESHOLD,
-                  "%.3f Hz",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-               menu_settings_list_current_add_range(list, list_info, 50, 56, 0.1, true, true);
-               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
+            {
+               static const setting_desc_t autoswitch_desc[] = {
+                  SDESC_UINT_ROW_EX(video_autoswitch_refresh_rate, VIDEO_AUTOSWITCH_REFRESH_RATE,
+                        DEFAULT_AUTOSWITCH_REFRESH_RATE,
+                        SD_FLAG_NONE, SDESC_RANGE_MINMAX, CMD_EVENT_NONE,
+                        0, AUTOSWITCH_REFRESH_RATE_LAST - 1, 1, 0,
+                        setting_action_ok_uint,
+                        setting_get_string_representation_uint_video_autoswitch_refresh_rate,
+                        NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+                  SDESC_FLOAT_ROW(video_autoswitch_pal_threshold, VIDEO_AUTOSWITCH_PAL_THRESHOLD,
+                        DEFAULT_AUTOSWITCH_PAL_THRESHOLD, "%.3f Hz",
+                        SD_FLAG_ALLOW_INPUT, SDESC_RANGE_MINMAX,
+                        CMD_EVENT_NONE, 50, 56, 0.1,
+                        NULL, NULL)
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     autoswitch_desc, ARRAY_SIZE(autoswitch_desc),
+                     &group_info, &subgroup_info, parent_group);
+            }
 
             if (string_is_equal(settings->arrays.video_driver, "gl"))
             {
-               CONFIG_BOOL(
-                     list, list_info,
-                     &settings->bools.video_force_srgb_disable,
-                     MENU_ENUM_LABEL_VIDEO_FORCE_SRGB_DISABLE,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_FORCE_SRGB_DISABLE,
-                     false,
-                     MENU_ENUM_LABEL_VALUE_OFF,
-                     MENU_ENUM_LABEL_VALUE_ON,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler,
-                     SD_FLAG_CMD_APPLY_AUTO | SD_FLAG_ADVANCED
-                     );
-               MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
+         {
+            static const setting_desc_t vid_desc_10[] = {
+/* GENERATED: rows come from settings_def_video_srgb.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_srgb.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_10, ARRAY_SIZE(vid_desc_10),
+                  &group_info, &subgroup_info, parent_group);
+         }
             }
 
             END_SUB_GROUP(list, list_info, parent_group);
             START_SUB_GROUP(list, list_info, "Aspect", &group_info, &subgroup_info, parent_group);
 
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.video_vp_bias_x,
-                  MENU_ENUM_LABEL_VIDEO_VIEWPORT_BIAS_X,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_BIAS_X,
-                  DEFAULT_VIEWPORT_BIAS_X,
-                  "%.2f",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 0.0, 1.0, 0.05, true, true);
-            (*list)[list_info->index - 1].offset_by = 0;
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info,
-                                               CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+            {
+               static const setting_desc_t bias_desc[] = {
+/* GENERATED: rows come from settings_def_video_bias.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_bias.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     bias_desc, ARRAY_SIZE(bias_desc),
+                     &group_info, &subgroup_info, parent_group);
+            }
 
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.video_vp_bias_y,
-                  MENU_ENUM_LABEL_VIDEO_VIEWPORT_BIAS_Y,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_BIAS_Y,
-                  DEFAULT_VIEWPORT_BIAS_Y,
-                  "%.2f",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 0.0, 1.0, 0.05, true, true);
-            (*list)[list_info->index - 1].offset_by = 0;
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info,
-                                               CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+            {
+               static const setting_desc_t aspect_desc[] = {
+                  SDESC_UINT_ROW_EX(video_aspect_ratio_idx, VIDEO_ASPECT_RATIO_INDEX,
+                        DEFAULT_ASPECT_RATIO_IDX,
+                        SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX,
+                        CMD_EVENT_VIDEO_SET_ASPECT_RATIO,
+                        0, LAST_ASPECT_RATIO, 1, 0,
+                        setting_action_ok_uint,
+                        setting_get_string_representation_uint_aspect_ratio_index,
+                        NULL, NULL,
+                        setting_uint_action_left_with_refresh,
+                        setting_uint_action_right_with_refresh, 0),
+                  SDESC_FLOAT_ROW(video_aspect_ratio, VIDEO_ASPECT_RATIO,
+                        DEFAULT_ASPECT_RATIO, "%.2f",
+                        SD_FLAG_NONE,
+                        SDESC_FLG_HAS_RANGE | SDESC_FLG_ENFORCE_MIN,
+                        CMD_EVENT_VIDEO_SET_ASPECT_RATIO,
+                        0.1, 16.0, 0.01, NULL, NULL),
+                  SDESC_INT_ROW_AT(offsetof(settings_t, video_vp_custom.x),
+                        VIDEO_VIEWPORT_CUSTOM_X, 0,
+                        SD_FLAG_ALLOW_INPUT, SDESC_RANGE_MINMAX,
+                        CMD_EVENT_VIDEO_APPLY_STATE_CHANGES,
+                        -9999, 9999, 1, -9999, NULL, NULL),
+                  SDESC_INT_ROW_AT(offsetof(settings_t, video_vp_custom.y),
+                        VIDEO_VIEWPORT_CUSTOM_Y, 0,
+                        SD_FLAG_ALLOW_INPUT, SDESC_RANGE_MINMAX,
+                        CMD_EVENT_VIDEO_APPLY_STATE_CHANGES,
+                        -9999, 9999, 1, -9999, NULL, NULL)
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     aspect_desc, ARRAY_SIZE(aspect_desc),
+                     &group_info, &subgroup_info, parent_group);
+            }
 
-#if defined(RARCH_MOBILE)
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.video_vp_bias_portrait_x,
-                  MENU_ENUM_LABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
-                  DEFAULT_VIEWPORT_BIAS_PORTRAIT_X,
-                  "%.2f",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 0.0, 1.0, 0.05, true, true);
-            (*list)[list_info->index - 1].offset_by = 0;
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info,
-                                               CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.video_vp_bias_portrait_y,
-                  MENU_ENUM_LABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
-                  DEFAULT_VIEWPORT_BIAS_PORTRAIT_Y,
-                  "%.2f",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 0.0, 1.0, 0.05, true, true);
-            (*list)[list_info->index - 1].offset_by = 0;
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info,
-                                               CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-#endif
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_aspect_ratio_idx,
-                  MENU_ENUM_LABEL_VIDEO_ASPECT_RATIO_INDEX,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_ASPECT_RATIO_INDEX,
-                  DEFAULT_ASPECT_RATIO_IDX,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(
-                  list,
-                  list_info,
-                  CMD_EVENT_VIDEO_SET_ASPECT_RATIO);
-            menu_settings_list_current_add_range(list, list_info, 0, LAST_ASPECT_RATIO, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_aspect_ratio_index;
-            (*list)[list_info->index - 1].action_left   = setting_uint_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = setting_uint_action_right_with_refresh;
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.video_aspect_ratio,
-                  MENU_ENUM_LABEL_VIDEO_ASPECT_RATIO,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_ASPECT_RATIO,
-                  DEFAULT_ASPECT_RATIO,
-                  "%.2f",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(
-                  list,
-                  list_info,
-                  CMD_EVENT_VIDEO_SET_ASPECT_RATIO);
-            menu_settings_list_current_add_range(list, list_info, 0.1, 16.0, 0.01, true, false);
-
-            CONFIG_INT(
-                  list, list_info,
-                  &custom_vp->x,
-                  MENU_ENUM_LABEL_VIDEO_VIEWPORT_CUSTOM_X,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_CUSTOM_X,
-                  0,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, -9999, 9999, 1, true, true);
-            (*list)[list_info->index - 1].offset_by = -9999;
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info,
-                  CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
-
-            CONFIG_INT(
-                  list, list_info,
-                  &custom_vp->y,
-                  MENU_ENUM_LABEL_VIDEO_VIEWPORT_CUSTOM_Y,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_CUSTOM_Y,
-                  0,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, -9999, 9999, 1, true, true);
-            (*list)[list_info->index - 1].offset_by = -9999;
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info,
-                  CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
 
 #if defined(GEKKO) || defined(PS2) || defined(__PS3__)
             if (true)
@@ -13769,531 +13595,407 @@ static bool setting_append_list(
             if (!string_is_equal(video_display_server_get_ident(), "null"))
 #endif
             {
-               CONFIG_ACTION(
-                     list, list_info,
-                     MENU_ENUM_LABEL_SCREEN_RESOLUTION,
-                     MENU_ENUM_LABEL_VALUE_SCREEN_RESOLUTION,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group);
+         {
+            static const setting_desc_t vid_desc_11[] = {
+               SDESC_ACTION_ROW(SCREEN_RESOLUTION),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_11, ARRAY_SIZE(vid_desc_11),
+                  &group_info, &subgroup_info, parent_group);
+         }
             }
 
 #if defined(HAVE_WINDOW_OFFSET)
-            CONFIG_INT(
-                  list, list_info,
-                  &settings->ints.video_window_offset_x,
-                  MENU_ENUM_LABEL_VIDEO_WINDOW_OFFSET_X,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_OFFSET_X,
-                  DEFAULT_WINDOW_OFFSET_X,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, -50, 50, 1, true, true);
-
-            CONFIG_INT(
-                  list, list_info,
-                  &settings->ints.video_window_offset_y,
-                  MENU_ENUM_LABEL_VIDEO_WINDOW_OFFSET_Y,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_OFFSET_Y,
-                  DEFAULT_WINDOW_OFFSET_Y,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, -50, 50, 1, true, true);
+         {
+            static const setting_desc_t vid_desc_12[] = {
+               SDESC_INT_ROW_EX(video_window_offset_x, VIDEO_WINDOW_OFFSET_X,
+                     DEFAULT_WINDOW_OFFSET_X,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     -50, 50, 1, 0,
+                     NULL, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_INT_ROW_EX(video_window_offset_y, VIDEO_WINDOW_OFFSET_Y,
+                     DEFAULT_WINDOW_OFFSET_Y,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     -50, 50, 1, 0,
+                     NULL, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_12, ARRAY_SIZE(vid_desc_12),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &custom_vp->width,
-                  MENU_ENUM_LABEL_VIDEO_VIEWPORT_CUSTOM_WIDTH,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_CUSTOM_WIDTH,
-                  0,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 1, 9999, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_custom_vp_width;
-            (*list)[list_info->index - 1].action_start = &setting_action_start_custom_vp_width;
-            (*list)[list_info->index - 1].action_left  = &setting_uint_action_left_custom_vp_width;
-            (*list)[list_info->index - 1].action_right = &setting_uint_action_right_custom_vp_width;
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info,
-                  CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &custom_vp->height,
-                  MENU_ENUM_LABEL_VIDEO_VIEWPORT_CUSTOM_HEIGHT,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_VIEWPORT_CUSTOM_HEIGHT,
-                  0,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 1, 9999, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_custom_vp_height;
-            (*list)[list_info->index - 1].action_start = &setting_action_start_custom_vp_height;
-            (*list)[list_info->index - 1].action_left  = &setting_uint_action_left_custom_vp_height;
-            (*list)[list_info->index - 1].action_right = &setting_uint_action_right_custom_vp_height;
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info,
-                  CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
+            {
+               static const setting_desc_t vp_size_desc[] = {
+                  SDESC_UINT_ROW_AT_EX(offsetof(settings_t, video_vp_custom.width),
+                        VIDEO_VIEWPORT_CUSTOM_WIDTH, 0,
+                        SD_FLAG_ALLOW_INPUT, SDESC_RANGE_MINMAX,
+                        CMD_EVENT_VIDEO_APPLY_STATE_CHANGES,
+                        1, 9999, 1, 0, NULL,
+                        setting_get_string_representation_uint_custom_vp_width,
+                        setting_action_start_custom_vp_width, NULL,
+                        setting_uint_action_left_custom_vp_width,
+                        setting_uint_action_right_custom_vp_width, 0),
+                  SDESC_UINT_ROW_AT_EX(offsetof(settings_t, video_vp_custom.height),
+                        VIDEO_VIEWPORT_CUSTOM_HEIGHT, 0,
+                        SD_FLAG_ALLOW_INPUT, SDESC_RANGE_MINMAX,
+                        CMD_EVENT_VIDEO_APPLY_STATE_CHANGES,
+                        1, 9999, 1, 0, NULL,
+                        setting_get_string_representation_uint_custom_vp_height,
+                        setting_action_start_custom_vp_height, NULL,
+                        setting_uint_action_left_custom_vp_height,
+                        setting_uint_action_right_custom_vp_height, 0)
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     vp_size_desc, ARRAY_SIZE(vp_size_desc),
+                     &group_info, &subgroup_info, parent_group);
+            }
 
 #if defined(DINGUX)
             if (   string_is_equal(settings->arrays.video_driver, "sdl_dingux")
                 || string_is_equal(settings->arrays.video_driver, "sdl_rs90"))
             {
-               CONFIG_BOOL(
-                     list, list_info,
-                     &settings->bools.video_dingux_ipu_keep_aspect,
-                     MENU_ENUM_LABEL_VIDEO_DINGUX_IPU_KEEP_ASPECT,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_DINGUX_IPU_KEEP_ASPECT,
-                     DEFAULT_DINGUX_IPU_KEEP_ASPECT,
-                     MENU_ENUM_LABEL_VALUE_OFF,
-                     MENU_ENUM_LABEL_VALUE_ON,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler,
-                     SD_FLAG_NONE);
-               MENU_SETTINGS_LIST_CURRENT_ADD_CMD(
-                     list,
-                     list_info,
-                     CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
+               static const setting_desc_t dingux_ka_desc[] = {
+/* GENERATED: rows come from settings_def_video_dingux_ipu.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_dingux_ipu.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     dingux_ka_desc, ARRAY_SIZE(dingux_ka_desc),
+                     &group_info, &subgroup_info, parent_group);
             }
 #endif
 
             END_SUB_GROUP(list, list_info, parent_group);
             START_SUB_GROUP(list, list_info, "Scaling", &group_info, &subgroup_info, parent_group);
 
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_VIDEO_SYNCHRONIZATION_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_SYNCHRONIZATION_SETTINGS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
-
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_VIDEO_SCALING_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_SCALING_SETTINGS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
+         {
+            static const setting_desc_t vid_desc_13[] = {
+               SDESC_ACTION_ROW(VIDEO_SYNCHRONIZATION_SETTINGS),
+               SDESC_ACTION_ROW(VIDEO_SCALING_SETTINGS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_13, ARRAY_SIZE(vid_desc_13),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             if (video_driver_has_windowed())
             {
-               CONFIG_UINT(
-                     list, list_info,
-                     &settings->uints.video_scale,
-                     MENU_ENUM_LABEL_VIDEO_SCALE,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_SCALE,
-                     DEFAULT_SCALE,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].offset_by = 1;
-               menu_settings_list_current_add_range(list, list_info, 1, 10, 1, true, true);
-               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-               CONFIG_UINT(
-                     list, list_info,
-                     &settings->uints.window_position_width,
-                     MENU_ENUM_LABEL_VIDEO_WINDOW_WIDTH,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_WIDTH,
-                     DEFAULT_WINDOW_WIDTH,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint_special;
-               menu_settings_list_current_add_range(list, list_info, 0, 7680, 8, true, true);
-               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-               CONFIG_UINT(
-                     list, list_info,
-                     &settings->uints.window_position_height,
-                     MENU_ENUM_LABEL_VIDEO_WINDOW_HEIGHT,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_HEIGHT,
-                     DEFAULT_WINDOW_HEIGHT,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint_special;
-               menu_settings_list_current_add_range(list, list_info, 0, 4320, 8, true, true);
-               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-               CONFIG_UINT(
-                     list, list_info,
-                     &settings->uints.window_auto_width_max,
-                     MENU_ENUM_LABEL_VIDEO_WINDOW_AUTO_WIDTH_MAX,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_AUTO_WIDTH_MAX,
-                     DEFAULT_WINDOW_AUTO_WIDTH_MAX,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint_special;
-               menu_settings_list_current_add_range(list, list_info, 0, 7680, 8, true, true);
-               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-               CONFIG_UINT(
-                     list, list_info,
-                     &settings->uints.window_auto_height_max,
-                     MENU_ENUM_LABEL_VIDEO_WINDOW_AUTO_HEIGHT_MAX,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_AUTO_HEIGHT_MAX,
-                     DEFAULT_WINDOW_AUTO_HEIGHT_MAX,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint_special;
-               menu_settings_list_current_add_range(list, list_info, 0, 4320, 8, true, true);
-               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-               CONFIG_UINT(
-                     list, list_info,
-                     &settings->uints.video_window_opacity,
-                     MENU_ENUM_LABEL_VIDEO_WINDOW_OPACITY,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_OPACITY,
-                     DEFAULT_WINDOW_OPACITY,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].offset_by = 1;
-               menu_settings_list_current_add_range(list, list_info, 1, 100, 1, true, true);
-               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+               static const setting_desc_t winscale_desc[] = {
+/* GENERATED: rows come from settings_def_video_window.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_window.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     winscale_desc, ARRAY_SIZE(winscale_desc),
+                     &group_info, &subgroup_info, parent_group);
             }
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_window_show_decorations,
-                  MENU_ENUM_LABEL_VIDEO_WINDOW_SHOW_DECORATIONS,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_SHOW_DECORATIONS,
-                  DEFAULT_WINDOW_DECORATIONS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t vid_desc_14[] = {
+/* GENERATED: rows come from settings_def_video_window_decorations.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_window_decorations.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_14, ARRAY_SIZE(vid_desc_14),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #ifndef OSX
             MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
 #endif
 
 #if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.ui_menubar_enable,
-               MENU_ENUM_LABEL_UI_MENUBAR_ENABLE,
-               MENU_ENUM_LABEL_VALUE_UI_MENUBAR_ENABLE,
-               DEFAULT_UI_MENUBAR_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
+         {
+            static const setting_desc_t vid_desc_15[] = {
+/* GENERATED: rows come from settings_def_ui_menubar.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_ui_menubar.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_15, ARRAY_SIZE(vid_desc_15),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
-
 #if (defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)) ||  \
     (defined(HAVE_COCOA_METAL) && !defined(HAVE_COCOATOUCH))
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_window_save_positions,
-                  MENU_ENUM_LABEL_VIDEO_WINDOW_SAVE_POSITION,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_SAVE_POSITION,
-                  DEFAULT_WINDOW_SAVE_POSITIONS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
+         {
+            static const setting_desc_t vid_desc_16[] = {
+               SDESC_BOOL_ROW_EX(video_window_save_positions, VIDEO_WINDOW_SAVE_POSITION,
+                     DEFAULT_WINDOW_SAVE_POSITIONS, SD_FLAG_NONE, 0, CMD_EVENT_REINIT,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_16, ARRAY_SIZE(vid_desc_16),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #else
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_window_custom_size_enable,
-                  MENU_ENUM_LABEL_VIDEO_WINDOW_CUSTOM_SIZE_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_WINDOW_CUSTOM_SIZE_ENABLE,
-                  DEFAULT_WINDOW_CUSTOM_SIZE_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
+         {
+            static const setting_desc_t vid_desc_17[] = {
+               SDESC_BOOL_ROW_EX(video_window_custom_size_enable, VIDEO_WINDOW_CUSTOM_SIZE_ENABLE,
+                     DEFAULT_WINDOW_CUSTOM_SIZE_ENABLE, SD_FLAG_NONE, 0, CMD_EVENT_REINIT,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_17, ARRAY_SIZE(vid_desc_17),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_scale_integer,
-                  MENU_ENUM_LABEL_VIDEO_SCALE_INTEGER,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER,
-                  DEFAULT_SCALE_INTEGER,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(
-                  list,
-                  list_info,
-                  CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_scale_integer_axis,
-                  MENU_ENUM_LABEL_VIDEO_SCALE_INTEGER_AXIS,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER_AXIS,
-                  DEFAULT_SCALE_INTEGER_AXIS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_video_scale_integer_axis;
-            menu_settings_list_current_add_range(list, list_info, 0, VIDEO_SCALE_INTEGER_AXIS_LAST - 1, 1, true, true);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(
-                  list,
-                  list_info,
-                  CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_scale_integer_scaling,
-                  MENU_ENUM_LABEL_VIDEO_SCALE_INTEGER_SCALING,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_SCALE_INTEGER_SCALING,
-                  DEFAULT_SCALE_INTEGER_SCALING,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_video_scale_integer_scaling;
-            menu_settings_list_current_add_range(list, list_info, 0, VIDEO_SCALE_INTEGER_SCALING_LAST - 1, 1, true, true);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(
-                  list,
-                  list_info,
-                  CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
+         {
+            static const setting_desc_t video2_desc_0[] = {
+               SDESC_BOOL_ROW_EX(video_scale_integer, VIDEO_SCALE_INTEGER,
+                     DEFAULT_SCALE_INTEGER, SD_FLAG_NONE, 0, CMD_EVENT_VIDEO_APPLY_STATE_CHANGES,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_UINT_ROW_EX(video_scale_integer_axis, VIDEO_SCALE_INTEGER_AXIS,
+                     DEFAULT_SCALE_INTEGER_AXIS,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, CMD_EVENT_VIDEO_APPLY_STATE_CHANGES,
+                     0, VIDEO_SCALE_INTEGER_AXIS_LAST - 1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_video_scale_integer_axis,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(video_scale_integer_scaling, VIDEO_SCALE_INTEGER_SCALING,
+                     DEFAULT_SCALE_INTEGER_SCALING,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, CMD_EVENT_VIDEO_APPLY_STATE_CHANGES,
+                     0, VIDEO_SCALE_INTEGER_SCALING_LAST - 1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_video_scale_integer_scaling,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  video2_desc_0, ARRAY_SIZE(video2_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef GEKKO
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_viwidth,
-                  MENU_ENUM_LABEL_VIDEO_VI_WIDTH,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_VI_WIDTH,
-                  DEFAULT_VIDEO_VI_WIDTH,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 640, 720, 2, true, true);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_vfilter,
-                  MENU_ENUM_LABEL_VIDEO_VFILTER,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_VFILTER,
-                  DEFAULT_VIDEO_VFILTER,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_overscan_correction_top,
-                  MENU_ENUM_LABEL_VIDEO_OVERSCAN_CORRECTION_TOP,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_OVERSCAN_CORRECTION_TOP,
-                  DEFAULT_VIDEO_OVERSCAN_CORRECTION_TOP,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 0, 24, 1, true, true);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_overscan_correction_bottom,
-                  MENU_ENUM_LABEL_VIDEO_OVERSCAN_CORRECTION_BOTTOM,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_OVERSCAN_CORRECTION_BOTTOM,
-                  DEFAULT_VIDEO_OVERSCAN_CORRECTION_BOTTOM,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 0, 24, 1, true, true);
+            {
+               static const setting_desc_t gx_desc[] = {
+/* GENERATED: rows come from settings_def_video_gamecube.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_gamecube.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     gx_desc, ARRAY_SIZE(gx_desc),
+                     &group_info, &subgroup_info, parent_group);
+            }
 #endif
 
 #if defined(DINGUX)
             if (string_is_equal(settings->arrays.video_driver, "sdl_dingux"))
             {
-               CONFIG_UINT(
-                     list, list_info,
-                     &settings->uints.video_dingux_ipu_filter_type,
-                     MENU_ENUM_LABEL_VIDEO_DINGUX_IPU_FILTER_TYPE,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_DINGUX_IPU_FILTER_TYPE,
-                     DEFAULT_DINGUX_IPU_FILTER_TYPE,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-                     &setting_get_string_representation_uint_video_dingux_ipu_filter_type;
-               menu_settings_list_current_add_range(list, list_info, 0, DINGUX_IPU_FILTER_LAST - 1, 1, true, true);
-               (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+               static const setting_desc_t dingux_ipu_desc[] = {
+                  SDESC_UINT_ROW_EX(video_dingux_ipu_filter_type, VIDEO_DINGUX_IPU_FILTER_TYPE,
+                        DEFAULT_DINGUX_IPU_FILTER_TYPE,
+                        SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                        0, DINGUX_IPU_FILTER_LAST - 1, 1, 0,
+                        setting_action_ok_uint,
+                        setting_get_string_representation_uint_video_dingux_ipu_filter_type,
+                        NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX)
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     dingux_ipu_desc, ARRAY_SIZE(dingux_ipu_desc),
+                     &group_info, &subgroup_info, parent_group);
             }
 #if defined(RS90) || defined(MIYOO)
             else if (string_is_equal(settings->arrays.video_driver, "sdl_rs90"))
             {
-               CONFIG_UINT(
-                     list, list_info,
-                     &settings->uints.video_dingux_rs90_softfilter_type,
-                     MENU_ENUM_LABEL_VIDEO_DINGUX_RS90_SOFTFILTER_TYPE,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_DINGUX_RS90_SOFTFILTER_TYPE,
-                     DEFAULT_DINGUX_RS90_SOFTFILTER_TYPE,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-                     &setting_get_string_representation_uint_video_dingux_rs90_softfilter_type;
-               menu_settings_list_current_add_range(list, list_info, 0, DINGUX_RS90_SOFTFILTER_LAST - 1, 1, true, true);
-               (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+               static const setting_desc_t dingux_rs90_desc[] = {
+                  SDESC_UINT_ROW_EX(video_dingux_rs90_softfilter_type, VIDEO_DINGUX_RS90_SOFTFILTER_TYPE,
+                        DEFAULT_DINGUX_RS90_SOFTFILTER_TYPE,
+                        SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                        0, DINGUX_RS90_SOFTFILTER_LAST - 1, 1, 0,
+                        setting_action_ok_uint,
+                        setting_get_string_representation_uint_video_dingux_rs90_softfilter_type,
+                        NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX)
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     dingux_rs90_desc, ARRAY_SIZE(dingux_rs90_desc),
+                     &group_info, &subgroup_info, parent_group);
             }
 #endif
             else
 #endif
             {
-               CONFIG_BOOL(
-                     list, list_info,
-                     &settings->bools.video_smooth,
-                     MENU_ENUM_LABEL_VIDEO_SMOOTH,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_SMOOTH,
-                     DEFAULT_VIDEO_SMOOTH,
-                     MENU_ENUM_LABEL_VALUE_OFF,
-                     MENU_ENUM_LABEL_VALUE_ON,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler,
-                     SD_FLAG_NONE
-                     );
-               MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
+               static const setting_desc_t smooth_desc[] = {
+/* GENERATED: rows come from settings_def_video_smooth.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_smooth.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     smooth_desc, ARRAY_SIZE(smooth_desc),
+                     &group_info, &subgroup_info, parent_group);
             }
 
 #ifdef HAVE_ODROIDGO2
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_ctx_scaling,
-                  MENU_ENUM_LABEL_VIDEO_CTX_SCALING,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_RGA_SCALING,
-                  DEFAULT_VIDEO_CTX_SCALING,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
+                        {
+               static const setting_desc_t vid_ctx_desc[] = {
+                  SDESC_BOOL_ROW_LV(video_ctx_scaling, VIDEO_CTX_SCALING,
+                        VIDEO_RGA_SCALING, DEFAULT_VIDEO_CTX_SCALING,
+                        SD_FLAG_NONE, 0, CMD_EVENT_REINIT)
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     vid_ctx_desc, ARRAY_SIZE(vid_ctx_desc),
+                     &group_info, &subgroup_info, parent_group);
+            }
 #endif
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_rotation,
-                  MENU_ENUM_LABEL_VIDEO_ROTATION,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_ROTATION,
-                  0,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 0, 3, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_video_rotation;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.screen_orientation,
-                  MENU_ENUM_LABEL_SCREEN_ORIENTATION,
-                  MENU_ENUM_LABEL_VALUE_SCREEN_ORIENTATION,
-                  0,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 0, 3, 1, true, true);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_screen_orientation;
+            {
+               static const setting_desc_t rot_desc[] = {
+                  SDESC_UINT_ROW_EX(video_rotation, VIDEO_ROTATION,
+                        0,
+                        SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                        0, 3, 1, 0,
+                        setting_action_ok_uint,
+                        setting_get_string_representation_uint_video_rotation,
+                        NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+                  SDESC_UINT_ROW_EX(screen_orientation, SCREEN_ORIENTATION,
+                        0,
+                        SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                        0, 3, 1, 0,
+                        setting_action_ok_uint,
+                        setting_get_string_representation_uint_screen_orientation,
+                        NULL, NULL, NULL, NULL, 0)
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     rot_desc, ARRAY_SIZE(rot_desc),
+                     &group_info, &subgroup_info, parent_group);
+            }
 
             END_SUB_GROUP(list, list_info, parent_group);
 
@@ -14301,14 +14003,16 @@ static bool setting_append_list(
             {
                START_SUB_GROUP(list, list_info, "HDR", &group_info, &subgroup_info, parent_group);
 
-               CONFIG_ACTION(
-                     list, list_info,
-                     MENU_ENUM_LABEL_VIDEO_HDR_SETTINGS,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SETTINGS,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group);
+         {
+            static const setting_desc_t vid_desc_18[] = {
+               SDESC_ACTION_ROW(VIDEO_HDR_SETTINGS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_18, ARRAY_SIZE(vid_desc_18),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
+               /* Descriptor holdout: poke tail outside the descriptor grammar. */
                CONFIG_UINT(
                      list, list_info,
                      &settings->uints.video_hdr_mode,
@@ -14331,100 +14035,61 @@ static bool setting_append_list(
 
                /* if (settings->uints.video_hdr_mode > 0) */
                {
-                  CONFIG_FLOAT(
-                        list, list_info,
-                        &settings->floats.video_hdr_menu_nits,
-                        MENU_ENUM_LABEL_MENU_HDR_BRIGHTNESS_NITS,
-                        MENU_ENUM_LABEL_VALUE_MENU_HDR_BRIGHTNESS_NITS,
-                        DEFAULT_MENU_HDR_BRIGHTNESS_NITS,
-                        "%.0f",
-                        &group_info,
-                        &subgroup_info,
-                        parent_group,
-                        general_write_handler,
-                        general_read_handler);
-                  (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-                  menu_settings_list_current_add_range(list, list_info, 40.0, 1000.0, 10.0, true, true);
-
-                  CONFIG_FLOAT(
-                        list, list_info,
-                        &settings->floats.video_hdr_paper_white_nits,
-                        MENU_ENUM_LABEL_VIDEO_HDR_PAPER_WHITE_NITS,
-                        MENU_ENUM_LABEL_VALUE_VIDEO_HDR_PAPER_WHITE_NITS,
-                        DEFAULT_VIDEO_HDR_PAPER_WHITE_NITS,
-                        "%.0f",
-                        &group_info,
-                        &subgroup_info,
-                        parent_group,
-                        general_write_handler,
-                        general_read_handler);
-                  (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-                  menu_settings_list_current_add_range(list, list_info, 0.0, 10000.0, 10.0, true, true);
-
-                  CONFIG_UINT(
-                        list, list_info,
-                        &settings->uints.video_hdr_expand_gamut,
-                        MENU_ENUM_LABEL_VIDEO_HDR_EXPAND_GAMUT,
-                        MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT,
-                        DEFAULT_VIDEO_HDR_EXPAND_GAMUT,
-                        &group_info,
-                        &subgroup_info,
-                        parent_group,
-                        general_write_handler,
-                        general_read_handler);
-                  (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-                  (*list)[list_info->index - 1].get_string_representation =
-                        &setting_get_string_representation_video_hdr_expand_gamut;
-                  menu_settings_list_current_add_range(list, list_info, 0, 3, 1, true, true);
+                  {
+                     static const setting_desc_t hdr_desc[] = {
+                        SDESC_FLOAT_ROW_EX(video_hdr_menu_nits, MENU_HDR_BRIGHTNESS_NITS,
+                              DEFAULT_MENU_HDR_BRIGHTNESS_NITS, "%.0f",
+                              SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                              40.0, 1000.0, 10.0,
+                              setting_action_ok_uint, NULL,
+                              NULL, NULL, NULL, NULL, 0),
+                        SDESC_FLOAT_ROW_EX(video_hdr_paper_white_nits, VIDEO_HDR_PAPER_WHITE_NITS,
+                              DEFAULT_VIDEO_HDR_PAPER_WHITE_NITS, "%.0f",
+                              SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                              0.0, 10000.0, 10.0,
+                              setting_action_ok_uint, NULL,
+                              NULL, NULL, NULL, NULL, 0),
+                        SDESC_UINT_ROW_EX(video_hdr_expand_gamut, VIDEO_HDR_EXPAND_GAMUT,
+                              DEFAULT_VIDEO_HDR_EXPAND_GAMUT,
+                              SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                              0, 3, 1, 0,
+                              setting_action_ok_uint,
+                              setting_get_string_representation_video_hdr_expand_gamut,
+                              NULL, NULL, NULL, NULL, 0)
+                     };
+                     settings_list_add_desc(list, list_info, settings,
+                           hdr_desc, ARRAY_SIZE(hdr_desc),
+                           &group_info, &subgroup_info, parent_group);
+                  }
 
                   START_SUB_GROUP(list, list_info, "HDR", &group_info, &subgroup_info, parent_group);
 
-                  CONFIG_ACTION(
-                        list, list_info,
-                        MENU_ENUM_LABEL_VIDEO_HDR_SETTINGS,
-                        MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SETTINGS,
-                        &group_info,
-                        &subgroup_info,
-                        parent_group);
-
-                  CONFIG_BOOL(
-                        list, list_info,
-                        &settings->bools.video_hdr_scanlines,
-                        MENU_ENUM_LABEL_VIDEO_HDR_SCANLINES,
-                        MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SCANLINES,
-                        DEFAULT_VIDEO_HDR_SCANLINES,
-                        MENU_ENUM_LABEL_VALUE_OFF,
-                        MENU_ENUM_LABEL_VALUE_ON,
-                        &group_info,
-                        &subgroup_info,
-                        parent_group,
-                        general_write_handler,
-                        general_read_handler,
-                        SD_FLAG_NONE);
-                  (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-                  (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-                  (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-                  MENU_SETTINGS_LIST_CURRENT_ADD_CMD(
-                        list,
-                        list_info,
-                        CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
+         {
+            static const setting_desc_t vid_desc_19[] = {
+               SDESC_ACTION_ROW(VIDEO_HDR_SETTINGS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_19, ARRAY_SIZE(vid_desc_19),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
                   {
-                     CONFIG_UINT(
-                           list, list_info,
-                           &settings->uints.video_hdr_subpixel_layout,
-                           MENU_ENUM_LABEL_VIDEO_HDR_SUBPIXEL_LAYOUT,
-                           MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SUBPIXEL_LAYOUT,
-                           DEFAULT_VIDEO_HDR_SUBPIXEL_LAYOUT,
-                           &group_info,
-                           &subgroup_info,
-                           parent_group,
-                           general_write_handler,
-                           general_read_handler);
-                     (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-                     (*list)[list_info->index - 1].get_string_representation =
-                           &setting_get_string_representation_video_hdr_subpixel_layout;
-                     menu_settings_list_current_add_range(list, list_info, 0, 2, 1, true, true);
+                     static const setting_desc_t hdr_desc2[] = {
+                        SDESC_BOOL_ROW(video_hdr_scanlines, VIDEO_HDR_SCANLINES,
+                              DEFAULT_VIDEO_HDR_SCANLINES,
+                              SD_FLAG_NONE, SDESC_FLG_REFRESH,
+                              CMD_EVENT_VIDEO_APPLY_STATE_CHANGES),
+                        SDESC_UINT_ROW_EX(video_hdr_subpixel_layout, VIDEO_HDR_SUBPIXEL_LAYOUT,
+                              DEFAULT_VIDEO_HDR_SUBPIXEL_LAYOUT,
+                              SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                              0, 2, 1, 0,
+                              setting_action_ok_uint,
+                              setting_get_string_representation_video_hdr_subpixel_layout,
+                              NULL, NULL, NULL, NULL, 0)
+                     };
+                     settings_list_add_desc(list, list_info, settings,
+                           hdr_desc2, ARRAY_SIZE(hdr_desc2),
+                           &group_info, &subgroup_info, parent_group);
                   }
 
                   END_SUB_GROUP(list, list_info, parent_group);
@@ -14443,25 +14108,23 @@ static bool setting_append_list(
 
             if (frontend_driver_can_set_screen_brightness())
             {
-               CONFIG_UINT(
-                      list, list_info,
-                      &settings->uints.screen_brightness,
-                      MENU_ENUM_LABEL_BRIGHTNESS_CONTROL,
-                      MENU_ENUM_LABEL_VALUE_BRIGHTNESS_CONTROL,
-                      DEFAULT_SCREEN_BRIGHTNESS,
-                      &group_info,
-                      &subgroup_info,
-                      parent_group,
-                      general_write_handler,
-                      general_read_handler);
-                (*list)[list_info->index - 1].ui_type = ST_UI_TYPE_UINT_COMBOBOX;
-                (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint_special;
-                (*list)[list_info->index - 1].get_string_representation =
-                   &setting_get_string_representation_percentage;
-                menu_settings_list_current_add_range(list, list_info, 5, 100, 5, true, true);
+         {
+            static const setting_desc_t vid_desc_20[] = {
+               SDESC_UINT_ROW_EX(screen_brightness, BRIGHTNESS_CONTROL,
+                     DEFAULT_SCREEN_BRIGHTNESS,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     5, 100, 5, 0,
+                     setting_action_ok_uint_special, setting_get_string_representation_percentage,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_20, ARRAY_SIZE(vid_desc_20),
+                  &group_info, &subgroup_info, parent_group);
+         }
             }
 
 #if defined(HAVE_THREADS) && !defined(__PSL1GHT__) && !defined(__PS3__) && !defined(__APPLE__)
+            /* Descriptor holdout: value target outside settings_t. */
             CONFIG_BOOL(
                   list, list_info,
                   video_driver_get_threaded(),
@@ -14483,240 +14146,99 @@ static bool setting_append_list(
             MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
 #endif
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_vsync,
-                  MENU_ENUM_LABEL_VIDEO_VSYNC,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_VSYNC,
-                  DEFAULT_VSYNC,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-            (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_swap_interval,
-                  MENU_ENUM_LABEL_VIDEO_SWAP_INTERVAL,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_SWAP_INTERVAL,
-                  DEFAULT_SWAP_INTERVAL,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_video_swap_interval;
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-            menu_settings_list_current_add_range(list, list_info, 0, 4, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_shader_subframes,
-                  MENU_ENUM_LABEL_VIDEO_SHADER_SUBFRAMES,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_SUBFRAMES,
-                  DEFAULT_SHADER_SUBFRAMES,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_shader_subframes;
-            (*list)[list_info->index - 1].offset_by = 1;
-            menu_settings_list_current_add_range(list, list_info, 1, 16, 1, true, true);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_scan_subframes,
-                  MENU_ENUM_LABEL_VIDEO_SCAN_SUBFRAMES,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_SCAN_SUBFRAMES,
-                  DEFAULT_SCAN_SUBFRAMES,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_max_swapchain_images,
-                  MENU_ENUM_LABEL_VIDEO_MAX_SWAPCHAIN_IMAGES,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_MAX_SWAPCHAIN_IMAGES,
-                  DEFAULT_MAX_SWAPCHAIN_IMAGES,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].offset_by = MINIMUM_MAX_SWAPCHAIN_IMAGES;
-            menu_settings_list_current_add_range(list, list_info, (*list)[list_info->index - 1].offset_by, MAXIMUM_MAX_SWAPCHAIN_IMAGES, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_waitable_swapchains,
-                  MENU_ENUM_LABEL_VIDEO_WAITABLE_SWAPCHAINS,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_WAITABLE_SWAPCHAINS,
-                  DEFAULT_WAITABLE_SWAPCHAINS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-
-            CONFIG_INT(
-                  list, list_info,
-                  &settings->ints.video_max_frame_latency,
-                  MENU_ENUM_LABEL_VIDEO_MAX_FRAME_LATENCY,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_MAX_FRAME_LATENCY,
-                  DEFAULT_MAX_FRAME_LATENCY,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].offset_by = -1;
-            menu_settings_list_current_add_range(list, list_info, (*list)[list_info->index - 1].offset_by, MAXIMUM_MAX_FRAME_LATENCY, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_hard_sync,
-                  MENU_ENUM_LABEL_VIDEO_HARD_SYNC,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_HARD_SYNC,
-                  DEFAULT_HARD_SYNC,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_hard_sync_frames,
-                  MENU_ENUM_LABEL_VIDEO_HARD_SYNC_FRAMES,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_HARD_SYNC_FRAMES,
-                  DEFAULT_HARD_SYNC_FRAMES,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, MINIMUM_HARD_SYNC_FRAMES, MAXIMUM_HARD_SYNC_FRAMES, 1, true, true);
-
+            {
+               /* Synchronization block: contiguous descriptor run.
+                * Row order is list order and must be preserved. */
+               static const setting_desc_t sync_desc[] = {
+/* GENERATED: rows come from settings_def_video_sync.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_sync.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
 #ifdef HAVE_D3DKMT
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_scanline_sync,
-                  MENU_ENUM_LABEL_VIDEO_SCANLINE_SYNC,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_SCANLINE_SYNC,
-                  DEFAULT_SCANLINE_SYNC,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
+                  SDESC_BOOL_ROW(video_scanline_sync, VIDEO_SCANLINE_SYNC,
+                        DEFAULT_SCANLINE_SYNC,
+                        SD_FLAG_NONE, 0, CMD_EVENT_NONE),
 #endif
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     sync_desc, ARRAY_SIZE(sync_desc),
+                     &group_info, &subgroup_info, parent_group);
+            }
 
             if (video_driver_test_all_flags(GFX_CTX_FLAGS_ADAPTIVE_VSYNC))
             {
-               CONFIG_BOOL(
-                     list, list_info,
-                     &settings->bools.video_adaptive_vsync,
-                     MENU_ENUM_LABEL_VIDEO_ADAPTIVE_VSYNC,
-                     MENU_ENUM_LABEL_VALUE_VIDEO_ADAPTIVE_VSYNC,
-                     DEFAULT_ADAPTIVE_VSYNC,
-                     MENU_ENUM_LABEL_VALUE_OFF,
-                     MENU_ENUM_LABEL_VALUE_ON,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler,
-                     SD_FLAG_NONE
-                     );
+               static const setting_desc_t avsync_desc[] = {
+/* GENERATED: rows come from settings_def_video_adaptive_vsync.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_adaptive_vsync.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     avsync_desc, ARRAY_SIZE(avsync_desc),
+                     &group_info, &subgroup_info, parent_group);
             }
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_frame_delay,
-                  MENU_ENUM_LABEL_VIDEO_FRAME_DELAY,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_FRAME_DELAY,
-                  DEFAULT_FRAME_DELAY,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0, MAXIMUM_FRAME_DELAY, 1, true, true);
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_video_frame_delay;
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_frame_delay_auto,
-                  MENU_ENUM_LABEL_VIDEO_FRAME_DELAY_AUTO,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_FRAME_DELAY_AUTO,
-                  DEFAULT_FRAME_DELAY_AUTO,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+            {
+               static const setting_desc_t fdelay_desc[] = {
+                  SDESC_UINT_ROW_EX(video_frame_delay, VIDEO_FRAME_DELAY,
+                        DEFAULT_FRAME_DELAY,
+                        SD_FLAG_LAKKA_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                        0, MAXIMUM_FRAME_DELAY, 1, 0,
+                        setting_action_ok_uint,
+                        setting_get_string_representation_video_frame_delay,
+                        NULL, NULL, NULL, NULL, 0),
+                  SDESC_BOOL_ROW(video_frame_delay_auto, VIDEO_FRAME_DELAY_AUTO,
+                        DEFAULT_FRAME_DELAY_AUTO,
+                        SD_FLAG_LAKKA_ADVANCED, 0, CMD_EVENT_NONE)
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     fdelay_desc, ARRAY_SIZE(fdelay_desc),
+                     &group_info, &subgroup_info, parent_group);
+            }
 
             /* Unlike all other shader-related menu entries
              * (which appear in the shaders quick menu, and
@@ -14737,55 +14259,55 @@ static bool setting_append_list(
                      || BIT32_GET(flags.flags, GFX_CTX_FLAGS_SHADERS_CG)
                      || BIT32_GET(flags.flags, GFX_CTX_FLAGS_SHADERS_HLSL))
                {
-                  CONFIG_UINT(
-                        list, list_info,
-                        &settings->uints.video_shader_delay,
-                        MENU_ENUM_LABEL_VIDEO_SHADER_DELAY,
-                        MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_DELAY,
-                        DEFAULT_SHADER_DELAY,
-                        &group_info,
-                        &subgroup_info,
-                        parent_group,
-                        general_write_handler,
-                        general_read_handler);
-                  (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-                  menu_settings_list_current_add_range(list, list_info, 0, 0, 1, true, false);
-                  SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+                  static const setting_desc_t sdelay_desc[] = {
+                     SDESC_UINT_ROW_EX(video_shader_delay, VIDEO_SHADER_DELAY,
+                           DEFAULT_SHADER_DELAY,
+                           SD_FLAG_ADVANCED,
+                           SDESC_FLG_HAS_RANGE | SDESC_FLG_ENFORCE_MIN, 0,
+                           0, 0, 1, 0,
+                           setting_action_ok_uint, NULL,
+                           NULL, NULL, NULL, NULL, 0)
+                  };
+                  settings_list_add_desc(list, list_info, settings,
+                        sdelay_desc, ARRAY_SIZE(sdelay_desc),
+                        &group_info, &subgroup_info, parent_group);
                }
             }
 #endif
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_shader_watch_files,
-                  MENU_ENUM_LABEL_SHADER_WATCH_FOR_CHANGES,
-                  MENU_ENUM_LABEL_VALUE_SHADER_WATCH_FOR_CHANGES,
-                  DEFAULT_VIDEO_SHADER_WATCH_FILES,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_shader_remember_last_dir,
-                  MENU_ENUM_LABEL_VIDEO_SHADER_REMEMBER_LAST_DIR,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_REMEMBER_LAST_DIR,
-                  DEFAULT_VIDEO_SHADER_REMEMBER_LAST_DIR,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
+            {
+               static const setting_desc_t shader_desc[] = {
+/* GENERATED: rows come from settings_def_shader_watch.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_shader_watch.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     shader_desc, ARRAY_SIZE(shader_desc),
+                     &group_info, &subgroup_info, parent_group);
+            }
 
             {
 #if defined(HAVE_STEAM) && defined(HAVE_MIST)
@@ -14799,38 +14321,25 @@ static bool setting_append_list(
 #endif
                {
 
-                  CONFIG_UINT(
-                        list, list_info,
-                        &settings->uints.video_black_frame_insertion,
-                        MENU_ENUM_LABEL_VIDEO_BLACK_FRAME_INSERTION,
-                        MENU_ENUM_LABEL_VALUE_VIDEO_BLACK_FRAME_INSERTION,
-                        DEFAULT_BLACK_FRAME_INSERTION,
-                        &group_info,
-                        &subgroup_info,
-                        parent_group,
-                        general_write_handler,
-                        general_read_handler);
-                  (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-                  (*list)[list_info->index - 1].get_string_representation =
-                        &setting_get_string_representation_black_frame_insertion;
-                  menu_settings_list_current_add_range(list, list_info, 0, 15, 1, true, true);
-                  MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-                  SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-                  CONFIG_UINT(
-                        list, list_info,
-                        &settings->uints.video_bfi_dark_frames,
-                        MENU_ENUM_LABEL_VIDEO_BFI_DARK_FRAMES,
-                        MENU_ENUM_LABEL_VALUE_VIDEO_BFI_DARK_FRAMES,
-                        DEFAULT_BFI_DARK_FRAMES,
-                        &group_info,
-                        &subgroup_info,
-                        parent_group,
-                        general_write_handler,
-                        general_read_handler);
-                  (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-                  (*list)[list_info->index - 1].offset_by = 1;
-                  menu_settings_list_current_add_range(list, list_info, 1, 15, 1, true, true);
+         {
+            static const setting_desc_t vid_desc_21[] = {
+               SDESC_UINT_ROW_EX(video_black_frame_insertion, VIDEO_BLACK_FRAME_INSERTION,
+                     DEFAULT_BLACK_FRAME_INSERTION,
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_REINIT,
+                     0, 15, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_black_frame_insertion,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(video_bfi_dark_frames, VIDEO_BFI_DARK_FRAMES,
+                     DEFAULT_BFI_DARK_FRAMES,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1, 15, 1, 1,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  vid_desc_21, ARRAY_SIZE(vid_desc_21),
+                  &group_info, &subgroup_info, parent_group);
+         }
                }
             }
 
@@ -14843,74 +14352,102 @@ static bool setting_append_list(
                   &subgroup_info,
                   parent_group);
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_gpu_screenshot,
-                  MENU_ENUM_LABEL_VIDEO_GPU_SCREENSHOT,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_GPU_SCREENSHOT,
-                  DEFAULT_GPU_SCREENSHOT,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_crop_overscan,
-                  MENU_ENUM_LABEL_VIDEO_CROP_OVERSCAN,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_CROP_OVERSCAN,
-                  DEFAULT_CROP_OVERSCAN,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-#ifdef HAVE_VIDEO_FILTER
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_filter_enable,
-                  MENU_ENUM_LABEL_VIDEO_FILTER_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_FILTER_ENABLE,
-                  true,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-#endif
-            CONFIG_PATH(
-                  list, list_info,
-                  settings->paths.path_softfilter_plugin,
-                  sizeof(settings->paths.path_softfilter_plugin),
-                  MENU_ENUM_LABEL_VIDEO_FILTER,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_FILTER,
-                  settings->paths.directory_video_filter,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_video_filter;
-            MENU_SETTINGS_LIST_CURRENT_ADD_VALUES(list, list_info, "filt");
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info,
-                  CMD_EVENT_VIDEO_FILTER_INIT);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+            {
+               static const setting_desc_t misc_desc[] = {
+/* GENERATED: rows come from settings_def_video_filter_rotation.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_video_filter_rotation.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     misc_desc, ARRAY_SIZE(misc_desc),
+                     &group_info, &subgroup_info, parent_group);
+            }
+            {
+               static const setting_desc_t video_filter_desc[] = {
+/* GENERATED: rows come from settings_def_video_filter_path.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_video_filter_path.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+               };
+               settings_list_add_desc(list, list_info, settings,
+                     video_filter_desc, ARRAY_SIZE(video_filter_desc),
+                     &group_info, &subgroup_info, parent_group);
+            }
 
             END_SUB_GROUP(list, list_info, parent_group);
             END_GROUP(list, list_info, parent_group);
@@ -14921,127 +14458,51 @@ static bool setting_append_list(
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_CRT_SWITCHRES_SETTINGS), parent_group);
          MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info, MENU_ENUM_LABEL_CRT_SWITCHRES_SETTINGS);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.crt_switch_resolution,
-               MENU_ENUM_LABEL_CRT_SWITCH_RESOLUTION,
-               MENU_ENUM_LABEL_VALUE_CRT_SWITCH_RESOLUTION,
-               DEFAULT_CRT_SWITCH_RESOLUTION,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_crt_switch_resolutions;
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-         menu_settings_list_current_add_range(list, list_info, CRT_SWITCH_NONE, CRT_SWITCH_INI, 1.0, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.crt_switch_resolution_super,
-               MENU_ENUM_LABEL_CRT_SWITCH_RESOLUTION_SUPER,
-               MENU_ENUM_LABEL_VALUE_CRT_SWITCH_RESOLUTION_SUPER,
-               DEFAULT_CRT_SWITCH_RESOLUTION_SUPER,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_left   = &setting_uint_action_left_crt_switch_resolution_super;
-         (*list)[list_info->index - 1].action_right  = &setting_uint_action_right_crt_switch_resolution_super;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_crt_switch_resolution_super;
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
-         CONFIG_INT(
-               list, list_info,
-               &settings->ints.crt_switch_center_adjust,
-               MENU_ENUM_LABEL_CRT_SWITCH_X_AXIS_CENTERING,
-               MENU_ENUM_LABEL_VALUE_CRT_SWITCH_X_AXIS_CENTERING,
-               DEFAULT_CRT_SWITCH_CENTER_ADJUST,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_UINT_SPINBOX;
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].offset_by     = -50;
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-         menu_settings_list_current_add_range(list, list_info, -50, 50, 1.0, true, true);
-
-         CONFIG_INT(
-               list, list_info,
-               &settings->ints.crt_switch_porch_adjust,
-               MENU_ENUM_LABEL_CRT_SWITCH_PORCH_ADJUST,
-               MENU_ENUM_LABEL_VALUE_CRT_SWITCH_PORCH_ADJUST,
-               DEFAULT_CRT_SWITCH_PORCH_ADJUST,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_UINT_SPINBOX;
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].offset_by     = -50;
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-         menu_settings_list_current_add_range(list, list_info, -50, 100, 2.0, true, true);
-
-         CONFIG_INT(
-               list, list_info,
-               &settings->ints.crt_switch_vertical_adjust,
-               MENU_ENUM_LABEL_CRT_SWITCH_VERTICAL_ADJUST,
-               MENU_ENUM_LABEL_VALUE_CRT_SWITCH_VERTICAL_ADJUST,
-               DEFAULT_CRT_SWITCH_VERTICAL_ADJUST,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_UINT_SPINBOX;
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].offset_by     = -20;
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-         menu_settings_list_current_add_range(list, list_info, -20, 20, 1.0, true, true);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.crt_switch_custom_refresh_enable,
-               MENU_ENUM_LABEL_CRT_SWITCH_RESOLUTION_USE_CUSTOM_REFRESH_RATE,
-               MENU_ENUM_LABEL_VALUE_CRT_SWITCH_RESOLUTION_USE_CUSTOM_REFRESH_RATE,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.crt_switch_hires_menu,
-               MENU_ENUM_LABEL_CRT_SWITCH_HIRES_MENU,
-               MENU_ENUM_LABEL_VALUE_CRT_SWITCH_HIRES_MENU,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
+         {
+            static const setting_desc_t crt_switchres_desc_0[] = {
+               SDESC_UINT_ROW_EX(crt_switch_resolution, CRT_SWITCH_RESOLUTION,
+                     DEFAULT_CRT_SWITCH_RESOLUTION,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     CRT_SWITCH_NONE, CRT_SWITCH_INI, 1.0, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_crt_switch_resolutions,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_UINT_ROW_EX(crt_switch_resolution_super, CRT_SWITCH_RESOLUTION_SUPER,
+                     DEFAULT_CRT_SWITCH_RESOLUTION_SUPER,
+                     SD_FLAG_ADVANCED, 0, 0,
+                     0, 0, 0, 0,
+                     NULL, setting_get_string_representation_crt_switch_resolution_super,
+                     NULL, NULL, setting_uint_action_left_crt_switch_resolution_super, setting_uint_action_right_crt_switch_resolution_super, 0),
+               SDESC_INT_ROW_EX(crt_switch_center_adjust, CRT_SWITCH_X_AXIS_CENTERING,
+                     DEFAULT_CRT_SWITCH_CENTER_ADJUST,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     -50, 50, 1.0, -50,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_SPINBOX),
+               SDESC_INT_ROW_EX(crt_switch_porch_adjust, CRT_SWITCH_PORCH_ADJUST,
+                     DEFAULT_CRT_SWITCH_PORCH_ADJUST,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     -50, 100, 2.0, -50,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_SPINBOX),
+               SDESC_INT_ROW_EX(crt_switch_vertical_adjust, CRT_SWITCH_VERTICAL_ADJUST,
+                     DEFAULT_CRT_SWITCH_VERTICAL_ADJUST,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     -20, 20, 1.0, -20,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_SPINBOX),
+               SDESC_BOOL_ROW(crt_switch_custom_refresh_enable, CRT_SWITCH_RESOLUTION_USE_CUSTOM_REFRESH_RATE,
+                     false, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(crt_switch_hires_menu, CRT_SWITCH_HIRES_MENU,
+                     false, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  crt_switchres_desc_0, ARRAY_SIZE(crt_switchres_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
@@ -15054,101 +14515,39 @@ static bool setting_append_list(
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.audio_enable_menu,
-               MENU_ENUM_LABEL_AUDIO_ENABLE_MENU,
-               MENU_ENUM_LABEL_VALUE_AUDIO_ENABLE_MENU,
-               DEFAULT_AUDIO_ENABLE_MENU,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.audio_enable_menu_ok,
-               MENU_ENUM_LABEL_MENU_SOUND_OK,
-               MENU_ENUM_LABEL_VALUE_MENU_SOUND_OK,
-               DEFAULT_AUDIO_ENABLE_MENU_OK,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.audio_enable_menu_cancel,
-               MENU_ENUM_LABEL_MENU_SOUND_CANCEL,
-               MENU_ENUM_LABEL_VALUE_MENU_SOUND_CANCEL,
-               DEFAULT_AUDIO_ENABLE_MENU_CANCEL,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.audio_enable_menu_notice,
-               MENU_ENUM_LABEL_MENU_SOUND_NOTICE,
-               MENU_ENUM_LABEL_VALUE_MENU_SOUND_NOTICE,
-               DEFAULT_AUDIO_ENABLE_MENU_NOTICE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.audio_enable_menu_bgm,
-               MENU_ENUM_LABEL_MENU_SOUND_BGM,
-               MENU_ENUM_LABEL_VALUE_MENU_SOUND_BGM,
-               DEFAULT_AUDIO_ENABLE_MENU_BGM,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.audio_enable_menu_scroll,
-               MENU_ENUM_LABEL_MENU_SOUND_SCROLL,
-               MENU_ENUM_LABEL_VALUE_MENU_SOUND_SCROLL,
-               DEFAULT_AUDIO_ENABLE_MENU_SCROLL,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
+         {
+            static const setting_desc_t menu_sounds_desc_0[] = {
+/* GENERATED: rows come from settings_def_menu_sounds.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_sounds.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_sounds_desc_0, ARRAY_SIZE(menu_sounds_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
@@ -15158,26 +14557,48 @@ static bool setting_append_list(
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_AUDIO_SETTINGS), parent_group);
          MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info, MENU_ENUM_LABEL_AUDIO_SETTINGS);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.audio_enable,
-               MENU_ENUM_LABEL_AUDIO_ENABLE,
-               MENU_ENUM_LABEL_VALUE_AUDIO_ENABLE,
-               DEFAULT_AUDIO_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
+         {
+            static const setting_desc_t audio_en_desc[] = {
+/* GENERATED: rows come from settings_def_audio_enable.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_audio_enable.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  audio_en_desc, ARRAY_SIZE(audio_en_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
+         /* The two mute settings stay imperative: their value
+          * targets come from audio_get_bool_ptr() at registration
+          * time and live outside settings_t, which offset-based
+          * descriptor rows cannot express. */
          CONFIG_BOOL(
                list, list_info,
                audio_get_bool_ptr(AUDIO_ACTION_MUTE_ENABLE),
@@ -15195,6 +14616,7 @@ static bool setting_append_list(
                );
 
 #ifdef HAVE_AUDIOMIXER
+         /* Descriptor holdout: value target outside settings_t. */
          CONFIG_BOOL(
                list, list_info,
                audio_get_bool_ptr(AUDIO_ACTION_MIXER_MUTE_ENABLE),
@@ -15212,109 +14634,45 @@ static bool setting_append_list(
                );
 #endif
 
+         {
+            static const setting_desc_t audio_state_desc[] = {
 #if TARGET_OS_IOS
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.audio_respect_silent_mode,
-               MENU_ENUM_LABEL_AUDIO_RESPECT_SILENT_MODE,
-               MENU_ENUM_LABEL_VALUE_AUDIO_RESPECT_SILENT_MODE,
-               DEFAULT_AUDIO_RESPECT_SILENT_MODE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
+               SDESC_BOOL_ROW(audio_respect_silent_mode, AUDIO_RESPECT_SILENT_MODE,
+                     DEFAULT_AUDIO_RESPECT_SILENT_MODE,
+                     SD_FLAG_NONE, 0, CMD_EVENT_NONE),
 #endif
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.audio_fastforward_mute,
-               MENU_ENUM_LABEL_AUDIO_FASTFORWARD_MUTE,
-               MENU_ENUM_LABEL_VALUE_AUDIO_FASTFORWARD_MUTE,
-               DEFAULT_AUDIO_FASTFORWARD_MUTE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.audio_fastforward_speedup,
-               MENU_ENUM_LABEL_AUDIO_FASTFORWARD_SPEEDUP,
-               MENU_ENUM_LABEL_VALUE_AUDIO_FASTFORWARD_SPEEDUP,
-               DEFAULT_AUDIO_FASTFORWARD_SPEEDUP,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.audio_rewind_mute,
-               MENU_ENUM_LABEL_AUDIO_REWIND_MUTE,
-               MENU_ENUM_LABEL_VALUE_AUDIO_REWIND_MUTE,
-               DEFAULT_AUDIO_REWIND_MUTE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.audio_volume,
-               MENU_ENUM_LABEL_AUDIO_VOLUME,
-               MENU_ENUM_LABEL_VALUE_AUDIO_VOLUME,
-               DEFAULT_AUDIO_VOLUME,
-               "%.1f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, -80, 12, 1.0, true, true);
-
+               SDESC_BOOL_ROW(audio_fastforward_mute, AUDIO_FASTFORWARD_MUTE,
+                     DEFAULT_AUDIO_FASTFORWARD_MUTE,
+                     SD_FLAG_NONE, 0, CMD_EVENT_NONE),
+               SDESC_BOOL_ROW(audio_fastforward_speedup, AUDIO_FASTFORWARD_SPEEDUP,
+                     DEFAULT_AUDIO_FASTFORWARD_SPEEDUP,
+                     SD_FLAG_NONE, 0, CMD_EVENT_NONE),
+               SDESC_BOOL_ROW(audio_rewind_mute, AUDIO_REWIND_MUTE,
+                     DEFAULT_AUDIO_REWIND_MUTE,
+                     SD_FLAG_NONE, 0, CMD_EVENT_NONE),
+               SDESC_FLOAT_ROW_EX(audio_volume, AUDIO_VOLUME,
+                     DEFAULT_AUDIO_VOLUME, "%.1f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     -80, 12, 1.0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
 #ifdef HAVE_AUDIOMIXER
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.audio_mixer_volume,
-               MENU_ENUM_LABEL_AUDIO_MIXER_VOLUME,
-               MENU_ENUM_LABEL_VALUE_AUDIO_MIXER_VOLUME,
-               DEFAULT_AUDIO_MIXER_VOLUME,
-               "%.1f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, -80, 12, 1.0, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+               SDESC_FLOAT_ROW_EX(audio_mixer_volume, AUDIO_MIXER_VOLUME,
+                     DEFAULT_AUDIO_MIXER_VOLUME, "%.1f",
+                     SD_FLAG_LAKKA_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     -80, 12, 1.0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
 #endif
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  audio_state_desc, ARRAY_SIZE(audio_state_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(
                list,
@@ -15324,23 +14682,43 @@ static bool setting_append_list(
                &subgroup_info,
                parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.audio_sync,
-               MENU_ENUM_LABEL_AUDIO_SYNC,
-               MENU_ENUM_LABEL_VALUE_AUDIO_SYNC,
-               DEFAULT_AUDIO_SYNC,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+         {
+            static const setting_desc_t audio_sync_desc[] = {
+/* GENERATED: rows come from settings_def_audio_sync.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_audio_sync.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  audio_sync_desc, ARRAY_SIZE(audio_sync_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
+         /* The latency pair stays imperative: defaults come from
+          * g_defaults at registration time. */
+         /* Descriptor holdout: runtime default value. */
          CONFIG_UINT(
                list, list_info,
                &settings->uints.audio_latency,
@@ -15375,26 +14753,44 @@ static bool setting_append_list(
          SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
 #endif
 
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.audio_resampler_quality,
-               MENU_ENUM_LABEL_AUDIO_RESAMPLER_QUALITY,
-               MENU_ENUM_LABEL_VALUE_AUDIO_RESAMPLER_QUALITY,
-               DEFAULT_AUDIO_RESAMPLER_QUALITY_LEVEL,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_audio_resampler_quality;
-         menu_settings_list_current_add_range(list, list_info, RESAMPLER_QUALITY_DONTCARE, RESAMPLER_QUALITY_HIGHEST, 1.0, true, true);
+         {
+            static const setting_desc_t audio_rq_desc[] = {
+               SDESC_UINT_ROW_EX(audio_resampler_quality, AUDIO_RESAMPLER_QUALITY,
+                     DEFAULT_AUDIO_RESAMPLER_QUALITY_LEVEL,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     RESAMPLER_QUALITY_DONTCARE, RESAMPLER_QUALITY_HIGHEST, 1.0, 0,
+                     setting_action_ok_uint,
+                     setting_get_string_representation_uint_audio_resampler_quality,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_BOOL_ROW(audio_fastpath_s16, AUDIO_FASTPATH_S16,
+                     DEFAULT_AUDIO_FASTPATH_S16,
+                     SD_FLAG_ADVANCED, 0, CMD_EVENT_NONE)
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  audio_rq_desc, ARRAY_SIZE(audio_rq_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
+
+         {
+            static const setting_desc_t audio_fmt_desc[] = {
+               SDESC_UINT_ROW_EX(audio_format_negotiation,
+                     AUDIO_FORMAT_NEGOTIATION,
+                     DEFAULT_AUDIO_FORMAT_NEGOTIATION,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     AUDIO_FORMAT_NEGOTIATION_INT16,
+                     AUDIO_FORMAT_NEGOTIATION_FLOAT, 1.0, 0,
+                     setting_action_ok_uint,
+                     setting_get_string_representation_uint_audio_format_negotiation,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX)
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  audio_fmt_desc, ARRAY_SIZE(audio_fmt_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          CONFIG_FLOAT(
                list, list_info,
-               audio_get_float_ptr(AUDIO_ACTION_RATE_CONTROL_DELTA),
+               &settings->floats.audio_rate_control_delta,
                MENU_ENUM_LABEL_AUDIO_RATE_CONTROL_DELTA,
                MENU_ENUM_LABEL_VALUE_AUDIO_RATE_CONTROL_DELTA,
                DEFAULT_RATE_CONTROL_DELTA,
@@ -15408,54 +14804,33 @@ static bool setting_append_list(
          menu_settings_list_current_add_range(list, list_info, 0.0, 0.020, 0.001, true, true);
          SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
 
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.audio_max_timing_skew,
-               MENU_ENUM_LABEL_AUDIO_MAX_TIMING_SKEW,
-               MENU_ENUM_LABEL_VALUE_AUDIO_MAX_TIMING_SKEW,
-               DEFAULT_MAX_TIMING_SKEW,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0.0, 0.5, 0.01, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
+         {
+            static const setting_desc_t audio_skew_desc[] = {
+               SDESC_FLOAT_ROW_EX(audio_max_timing_skew, AUDIO_MAX_TIMING_SKEW,
+                     DEFAULT_MAX_TIMING_SKEW, "%.3f",
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     0.0, 0.5, 0.01,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
 #ifdef RARCH_MOBILE
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.audio_block_frames,
-               MENU_ENUM_LABEL_AUDIO_BLOCK_FRAMES,
-               MENU_ENUM_LABEL_VALUE_AUDIO_BLOCK_FRAMES,
-               0,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+               SDESC_UINT_ROW(audio_block_frames, AUDIO_BLOCK_FRAMES,
+                     0, SD_FLAG_ADVANCED, 0, 0,
+                     0, 0, 0, 0, NULL, NULL),
 #ifdef HAVE_MICROPHONE
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.microphone_block_frames,
-               MENU_ENUM_LABEL_MICROPHONE_BLOCK_FRAMES,
-               MENU_ENUM_LABEL_VALUE_MICROPHONE_BLOCK_FRAMES,
-               0,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+               SDESC_UINT_ROW(microphone_block_frames, MICROPHONE_BLOCK_FRAMES,
+                     0, SD_FLAG_ADVANCED, 0, 0,
+                     0, 0, 0, 0, NULL, NULL),
 #endif
 #endif
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  audio_skew_desc, ARRAY_SIZE(audio_skew_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(
                list,
@@ -15465,163 +14840,143 @@ static bool setting_append_list(
                &subgroup_info,
                parent_group);
 
+         {
+            static const setting_desc_t audio_dev_desc[] = {
 #if !defined(RARCH_CONSOLE)
-         CONFIG_STRING(
-               list, list_info,
-               settings->arrays.audio_device,
-               sizeof(settings->arrays.audio_device),
-               MENU_ENUM_LABEL_AUDIO_DEVICE,
-               MENU_ENUM_LABEL_VALUE_AUDIO_DEVICE,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start  = &setting_string_action_start_audio_device;
-         (*list)[list_info->index - 1].action_left   = &setting_string_action_left_audio_device;
-         (*list)[list_info->index - 1].action_right  = &setting_string_action_right_audio_device;
-         (*list)[list_info->index - 1].action_ok     = &setting_string_action_ok_audio_device;
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_string_audio_device;
-
+               SDESC_STRING_ROW(audio_device, AUDIO_DEVICE,
+                     "", SD_FLAG_NONE, 0,
+                     setting_string_action_ok_audio_device,
+                     setting_get_string_representation_string_audio_device,
+                     setting_string_action_start_audio_device, NULL,
+                     setting_string_action_left_audio_device,
+                     setting_string_action_right_audio_device, 0),
 #ifdef HAVE_MICROPHONE
-         CONFIG_STRING(
-               list, list_info,
-               settings->arrays.microphone_device,
-               sizeof(settings->arrays.microphone_device),
-               MENU_ENUM_LABEL_MICROPHONE_DEVICE,
-               MENU_ENUM_LABEL_VALUE_MICROPHONE_DEVICE,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
-         (*list)[list_info->index - 1].action_start  = setting_string_action_start_microphone_device;
-         (*list)[list_info->index - 1].action_left   = &setting_string_action_left_microphone_device;
-         (*list)[list_info->index - 1].action_right  = &setting_string_action_right_microphone_device;
-         (*list)[list_info->index - 1].action_ok     = &setting_string_action_ok_microphone_device;
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_string_audio_device;
+               SDESC_STRING_ROW(microphone_device, MICROPHONE_DEVICE,
+                     "", SD_FLAG_ALLOW_INPUT, 0,
+                     setting_string_action_ok_microphone_device,
+                     setting_get_string_representation_string_audio_device,
+                     setting_string_action_start_microphone_device, NULL,
+                     setting_string_action_left_microphone_device,
+                     setting_string_action_right_microphone_device,
+                     ST_UI_TYPE_STRING_LINE_EDIT),
 #endif
 #endif
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.audio_output_sample_rate,
-               MENU_ENUM_LABEL_AUDIO_OUTPUT_RATE,
-               MENU_ENUM_LABEL_VALUE_AUDIO_OUTPUT_RATE,
-               DEFAULT_OUTPUT_RATE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint_special;
-         menu_settings_list_current_add_range(list, list_info, 1000, 192000, 100.0, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
+               SDESC_UINT_ROW_EX(audio_output_sample_rate, AUDIO_OUTPUT_RATE,
+                     DEFAULT_OUTPUT_RATE,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     1000, 192000, 100.0, 0,
+                     setting_action_ok_uint_special, NULL,
+                     NULL, NULL, NULL, NULL, 0),
 #ifdef HAVE_MICROPHONE
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.microphone_sample_rate,
-               MENU_ENUM_LABEL_MICROPHONE_INPUT_RATE,
-               MENU_ENUM_LABEL_VALUE_MICROPHONE_INPUT_RATE,
-               DEFAULT_INPUT_RATE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint_special;
-         menu_settings_list_current_add_range(list, list_info, 1000, 192000, 100.0, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+               SDESC_UINT_ROW_EX(microphone_sample_rate, MICROPHONE_INPUT_RATE,
+                     DEFAULT_INPUT_RATE,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     1000, 192000, 100.0, 0,
+                     setting_action_ok_uint_special, NULL,
+                     NULL, NULL, NULL, NULL, 0),
 #endif
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  audio_dev_desc, ARRAY_SIZE(audio_dev_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-         CONFIG_PATH(
-               list, list_info,
-               settings->paths.path_audio_dsp_plugin,
-               sizeof(settings->paths.path_audio_dsp_plugin),
-               MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN,
-               MENU_ENUM_LABEL_VALUE_AUDIO_DSP_PLUGIN,
-               settings->paths.directory_audio_filter,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         MENU_SETTINGS_LIST_CURRENT_ADD_VALUES(list, list_info, "dsp");
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_DSP_FILTER_INIT);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+         {
+            static const setting_desc_t audio_dsp_desc[] = {
+/* GENERATED: rows come from settings_def_audio_dsp_path.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_audio_dsp_path.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  audio_dsp_desc, ARRAY_SIZE(audio_dsp_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef HAVE_WASAPI
          if (string_is_equal(audio_driver_get_ident(), "wasapi"))
          {
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.audio_wasapi_exclusive_mode,
-                  MENU_ENUM_LABEL_AUDIO_WASAPI_EXCLUSIVE_MODE,
-                  MENU_ENUM_LABEL_VALUE_AUDIO_WASAPI_EXCLUSIVE_MODE,
-                  DEFAULT_WASAPI_EXCLUSIVE_MODE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.audio_wasapi_float_format,
-                  MENU_ENUM_LABEL_AUDIO_WASAPI_FLOAT_FORMAT,
-                  MENU_ENUM_LABEL_VALUE_AUDIO_WASAPI_FLOAT_FORMAT,
-                  DEFAULT_WASAPI_FLOAT_FORMAT,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.audio_wasapi_sh_buffer_length,
-                  MENU_ENUM_LABEL_AUDIO_WASAPI_SH_BUFFER_LENGTH,
-                  MENU_ENUM_LABEL_VALUE_AUDIO_WASAPI_SH_BUFFER_LENGTH,
-                  DEFAULT_WASAPI_SH_BUFFER_LENGTH,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint_special;
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_audio_wasapi_sh_buffer_length;
-            menu_settings_list_current_add_range(list, list_info, 0, 32.0f * 200, 32.0f, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+            static const setting_desc_t audio_wasapi_desc[] = {
+               SDESC_BOOL_ROW(audio_wasapi_exclusive_mode,
+                     AUDIO_WASAPI_EXCLUSIVE_MODE,
+                     DEFAULT_WASAPI_EXCLUSIVE_MODE, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(audio_wasapi_sh_buffer_length,
+                     AUDIO_WASAPI_SH_BUFFER_LENGTH,
+                     DEFAULT_WASAPI_SH_BUFFER_LENGTH,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     0, 32.0f * 200, 32.0f, 0,
+                     setting_action_ok_uint_special,
+                     setting_get_string_representation_uint_audio_wasapi_sh_buffer_length,
+                     NULL, NULL, NULL, NULL, 0)
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  audio_wasapi_desc, ARRAY_SIZE(audio_wasapi_desc),
+                  &group_info, &subgroup_info, parent_group);
          }
 #endif
 
 #ifdef HAVE_ASIO
          if (string_is_equal(audio_driver_get_ident(), "asio"))
          {
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_AUDIO_ASIO_CONTROL_PANEL,
-                  MENU_ENUM_LABEL_VALUE_AUDIO_ASIO_CONTROL_PANEL,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
-            (*list)[list_info->index - 1].action_ok = &setting_action_asio_control_panel;
+            static const setting_desc_t audio_asio_desc[] = {
+               SDESC_ACTION_ROW_EX(AUDIO_ASIO_CONTROL_PANEL, SD_FLAG_NONE,
+                     setting_action_asio_control_panel, NULL, 0)
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  audio_asio_desc, ARRAY_SIZE(audio_asio_desc),
+                  &group_info, &subgroup_info, parent_group);
          }
 #endif
 
@@ -15634,30 +14989,49 @@ static bool setting_append_list(
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MICROPHONE_SETTINGS), parent_group);
          MENU_SETTINGS_LIST_CURRENT_ADD_ENUM_IDX_PTR(list, list_info, MENU_ENUM_LABEL_MICROPHONE_SETTINGS);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.microphone_enable,
-               MENU_ENUM_LABEL_MICROPHONE_ENABLE,
-               MENU_ENUM_LABEL_VALUE_MICROPHONE_ENABLE,
-               DEFAULT_AUDIO_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
+         {
+            static const setting_desc_t mic_enable_desc[] = {
+/* GENERATED: rows come from settings_def_microphone.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_microphone.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mic_enable_desc, ARRAY_SIZE(mic_enable_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
+         /* Descriptor holdout: runtime default value. */
          CONFIG_UINT(
                list, list_info,
                &settings->uints.microphone_latency,
@@ -15675,23 +15049,44 @@ static bool setting_append_list(
          SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
 
 #ifdef RARCH_MOBILE
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.microphone_block_frames,
-               MENU_ENUM_LABEL_MICROPHONE_BLOCK_FRAMES,
-               MENU_ENUM_LABEL_VALUE_MICROPHONE_BLOCK_FRAMES,
-               0,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+         {
+            static const setting_desc_t mic_block_desc[] = {
+/* GENERATED: rows come from settings_def_microphone_block.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_microphone_block.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mic_block_desc, ARRAY_SIZE(mic_block_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 
          END_SUB_GROUP(list, list_info, parent_group);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(
                list,
@@ -15701,112 +15096,61 @@ static bool setting_append_list(
                &subgroup_info,
                parent_group);
 
+         {
+            static const setting_desc_t mic_misc_desc[] = {
 #if !defined(RARCH_CONSOLE)
-         CONFIG_STRING(
-               list, list_info,
-               settings->arrays.microphone_device,
-               sizeof(settings->arrays.microphone_device),
-               MENU_ENUM_LABEL_MICROPHONE_DEVICE,
-               MENU_ENUM_LABEL_VALUE_MICROPHONE_DEVICE,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
-         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
-         (*list)[list_info->index - 1].action_left   = &setting_string_action_left_microphone_device;
-         (*list)[list_info->index - 1].action_right  = &setting_string_action_right_microphone_device;
-         (*list)[list_info->index - 1].action_ok     = &setting_string_action_ok_microphone_device;
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_string_audio_device;
+               SDESC_STRING_ROW(microphone_device, MICROPHONE_DEVICE,
+                     "", SD_FLAG_ALLOW_INPUT, 0,
+                     setting_string_action_ok_microphone_device,
+                     setting_get_string_representation_string_audio_device,
+                     setting_generic_action_start_default, NULL,
+                     setting_string_action_left_microphone_device,
+                     setting_string_action_right_microphone_device,
+                     ST_UI_TYPE_STRING_LINE_EDIT),
 #endif
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.microphone_sample_rate,
-               MENU_ENUM_LABEL_MICROPHONE_INPUT_RATE,
-               MENU_ENUM_LABEL_VALUE_MICROPHONE_INPUT_RATE,
-               DEFAULT_INPUT_RATE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint_special;
-         menu_settings_list_current_add_range(list, list_info, 1000, 192000, 100.0, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.microphone_resampler_quality,
-               MENU_ENUM_LABEL_MICROPHONE_RESAMPLER_QUALITY,
-               MENU_ENUM_LABEL_VALUE_MICROPHONE_RESAMPLER_QUALITY,
-               DEFAULT_AUDIO_RESAMPLER_QUALITY_LEVEL,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_audio_resampler_quality;
-         menu_settings_list_current_add_range(list, list_info, RESAMPLER_QUALITY_DONTCARE, RESAMPLER_QUALITY_HIGHEST, 1.0, true, true);
+               SDESC_UINT_ROW_EX(microphone_sample_rate,
+                     MICROPHONE_INPUT_RATE, DEFAULT_INPUT_RATE,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     1000, 192000, 100.0, 0,
+                     setting_action_ok_uint_special, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(microphone_resampler_quality,
+                     MICROPHONE_RESAMPLER_QUALITY,
+                     DEFAULT_AUDIO_RESAMPLER_QUALITY_LEVEL,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     RESAMPLER_QUALITY_DONTCARE,
+                     RESAMPLER_QUALITY_HIGHEST, 1.0, 0,
+                     setting_action_ok_uint,
+                     setting_get_string_representation_uint_audio_resampler_quality,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX)
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mic_misc_desc, ARRAY_SIZE(mic_misc_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef HAVE_WASAPI
          if (string_is_equal(settings->arrays.microphone_driver, "wasapi"))
          {
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.microphone_wasapi_exclusive_mode,
-                  MENU_ENUM_LABEL_MICROPHONE_WASAPI_EXCLUSIVE_MODE,
-                  MENU_ENUM_LABEL_VALUE_MICROPHONE_WASAPI_EXCLUSIVE_MODE,
-                  DEFAULT_WASAPI_EXCLUSIVE_MODE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.microphone_wasapi_float_format,
-                  MENU_ENUM_LABEL_MICROPHONE_WASAPI_FLOAT_FORMAT,
-                  MENU_ENUM_LABEL_VALUE_MICROPHONE_WASAPI_FLOAT_FORMAT,
-                  DEFAULT_WASAPI_FLOAT_FORMAT,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.microphone_wasapi_sh_buffer_length,
-                  MENU_ENUM_LABEL_MICROPHONE_WASAPI_SH_BUFFER_LENGTH,
-                  MENU_ENUM_LABEL_VALUE_MICROPHONE_WASAPI_SH_BUFFER_LENGTH,
-                  DEFAULT_WASAPI_MICROPHONE_SH_BUFFER_LENGTH,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint_special;
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_microphone_wasapi_sh_buffer_length;
-            menu_settings_list_current_add_range(list, list_info, 0, 32.0f * 200, 32.0f, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+            static const setting_desc_t mic_wasapi_desc[] = {
+               SDESC_BOOL_ROW(microphone_wasapi_exclusive_mode,
+                     MICROPHONE_WASAPI_EXCLUSIVE_MODE,
+                     DEFAULT_WASAPI_EXCLUSIVE_MODE, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(microphone_wasapi_float_format,
+                     MICROPHONE_WASAPI_FLOAT_FORMAT,
+                     DEFAULT_WASAPI_FLOAT_FORMAT, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(microphone_wasapi_sh_buffer_length,
+                     MICROPHONE_WASAPI_SH_BUFFER_LENGTH,
+                     DEFAULT_WASAPI_MICROPHONE_SH_BUFFER_LENGTH,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     0, 32.0f * 200, 32.0f, 0,
+                     setting_action_ok_uint_special,
+                     setting_get_string_representation_uint_microphone_wasapi_sh_buffer_length,
+                     NULL, NULL, NULL, NULL, 0)
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  mic_wasapi_desc, ARRAY_SIZE(mic_wasapi_desc),
+                  &group_info, &subgroup_info, parent_group);
          }
 #endif
 
@@ -15821,684 +15165,334 @@ static bool setting_append_list(
                   MENU_ENUM_LABEL_INPUT_SETTINGS_BEGIN_STR,
                   parent_group);
 
-            parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+            parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
             START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.input_max_users,
-                  MENU_ENUM_LABEL_INPUT_MAX_USERS,
-                  MENU_ENUM_LABEL_VALUE_INPUT_MAX_USERS,
-                  DEFAULT_INPUT_MAX_USERS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok    = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].action_left  = &setting_uint_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right = &setting_uint_action_right_with_refresh;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_max_users;
-            (*list)[list_info->index - 1].offset_by = 1;
-            menu_settings_list_current_add_range(list, list_info, 1, MAX_USERS, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_unified_controls,
-                  MENU_ENUM_LABEL_INPUT_UNIFIED_MENU_CONTROLS,
-                  MENU_ENUM_LABEL_VALUE_INPUT_UNIFIED_MENU_CONTROLS,
-                  false,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_disable_info_button,
-                  MENU_ENUM_LABEL_INPUT_DISABLE_INFO_BUTTON,
-                  MENU_ENUM_LABEL_VALUE_INPUT_DISABLE_INFO_BUTTON,
-                  false,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_disable_search_button,
-                  MENU_ENUM_LABEL_INPUT_DISABLE_SEARCH_BUTTON,
-                  MENU_ENUM_LABEL_VALUE_INPUT_DISABLE_SEARCH_BUTTON,
-                  false,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_disable_left_analog,
-                  MENU_ENUM_LABEL_INPUT_DISABLE_LEFT_ANALOG_IN_MENU,
-                  MENU_ENUM_LABEL_VALUE_INPUT_DISABLE_LEFT_ANALOG_IN_MENU,
-                  false,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_disable_right_analog,
-                  MENU_ENUM_LABEL_INPUT_DISABLE_RIGHT_ANALOG_IN_MENU,
-                  MENU_ENUM_LABEL_VALUE_INPUT_DISABLE_RIGHT_ANALOG_IN_MENU,
-                  false,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.confirm_quit,
-                  MENU_ENUM_LABEL_CONFIRM_QUIT,
-                  MENU_ENUM_LABEL_VALUE_CONFIRM_QUIT,
-                  DEFAULT_CONFIRM_QUIT,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.confirm_close,
-                  MENU_ENUM_LABEL_CONFIRM_CLOSE,
-                  MENU_ENUM_LABEL_VALUE_CONFIRM_CLOSE,
-                  DEFAULT_CONFIRM_CLOSE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.confirm_reset,
-                  MENU_ENUM_LABEL_CONFIRM_RESET,
-                  MENU_ENUM_LABEL_VALUE_CONFIRM_RESET,
-                  DEFAULT_CONFIRM_RESET,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.vibrate_on_keypress,
-                  MENU_ENUM_LABEL_VIBRATE_ON_KEYPRESS,
-                  MENU_ENUM_LABEL_VALUE_VIBRATE_ON_KEYPRESS,
-                  DEFAULT_VIBRATE_ON_KEYPRESS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.enable_device_vibration,
-                  MENU_ENUM_LABEL_ENABLE_DEVICE_VIBRATION,
-                  MENU_ENUM_LABEL_VALUE_ENABLE_DEVICE_VIBRATION,
-                  DEFAULT_ENABLE_DEVICE_VIBRATION,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.input_rumble_gain,
-                  MENU_ENUM_LABEL_INPUT_RUMBLE_GAIN,
-                  MENU_ENUM_LABEL_VALUE_INPUT_RUMBLE_GAIN,
-                  DEFAULT_RUMBLE_GAIN,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint_special;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_percentage;
-            menu_settings_list_current_add_range(list, list_info, 0, 100, 5, true, true);
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.input_poll_type_behavior,
-                  MENU_ENUM_LABEL_INPUT_POLL_TYPE_BEHAVIOR,
-                  MENU_ENUM_LABEL_VALUE_INPUT_POLL_TYPE_BEHAVIOR,
-                  DEFAULT_INPUT_POLL_TYPE_BEHAVIOR,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_poll_type_behavior;
-            menu_settings_list_current_add_range(list, list_info, 0, 2, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+         {
+            static const setting_desc_t inp_desc_0[] = {
+               SDESC_UINT_ROW_EX(input_max_users, INPUT_MAX_USERS,
+                     DEFAULT_INPUT_MAX_USERS,
+                     SD_FLAG_LAKKA_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     1, MAX_USERS, 1, 1,
+                     setting_action_ok_uint, setting_get_string_representation_max_users,
+                     NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, 0),
+               SDESC_BOOL_ROW(menu_unified_controls, INPUT_UNIFIED_MENU_CONTROLS,
+                     false, SD_FLAG_LAKKA_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW(menu_disable_info_button, INPUT_DISABLE_INFO_BUTTON,
+                     false, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW(menu_disable_search_button, INPUT_DISABLE_SEARCH_BUTTON,
+                     false, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW(menu_disable_left_analog, INPUT_DISABLE_LEFT_ANALOG_IN_MENU,
+                     false, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW(menu_disable_right_analog, INPUT_DISABLE_RIGHT_ANALOG_IN_MENU,
+                     false, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW(confirm_quit, CONFIRM_QUIT,
+                     DEFAULT_CONFIRM_QUIT, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(confirm_close, CONFIRM_CLOSE,
+                     DEFAULT_CONFIRM_CLOSE, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(confirm_reset, CONFIRM_RESET,
+                     DEFAULT_CONFIRM_RESET, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(vibrate_on_keypress, VIBRATE_ON_KEYPRESS,
+                     DEFAULT_VIBRATE_ON_KEYPRESS, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(enable_device_vibration, ENABLE_DEVICE_VIBRATION,
+                     DEFAULT_ENABLE_DEVICE_VIBRATION, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(input_rumble_gain, INPUT_RUMBLE_GAIN,
+                     DEFAULT_RUMBLE_GAIN,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 100, 5, 0,
+                     setting_action_ok_uint_special, setting_get_string_representation_percentage,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_UINT_ROW_EX(input_poll_type_behavior, INPUT_POLL_TYPE_BEHAVIOR,
+                     DEFAULT_INPUT_POLL_TYPE_BEHAVIOR,
+                     SD_FLAG_LAKKA_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     0, 2, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_poll_type_behavior,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_0, ARRAY_SIZE(inp_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef GEKKO
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.input_mouse_scale,
-                  MENU_ENUM_LABEL_INPUT_MOUSE_SCALE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_MOUSE_SCALE,
-                  DEFAULT_MOUSE_SCALE,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 1, 4, 1, true, true);
+         {
+            static const setting_desc_t inp_desc_1[] = {
+               SDESC_UINT_ROW_EX(input_mouse_scale, INPUT_MOUSE_SCALE,
+                     DEFAULT_MOUSE_SCALE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1, 4, 1, 0,
+                     NULL, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_1, ARRAY_SIZE(inp_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.input_touch_scale,
-                  MENU_ENUM_LABEL_INPUT_TOUCH_SCALE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_SCALE,
-                  DEFAULT_TOUCH_SCALE,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_input_touch_scale;
-            (*list)[list_info->index - 1].offset_by = 1;
-            menu_settings_list_current_add_range(list, list_info, 1, 4, 1, true, true);
+         {
+            static const setting_desc_t inp_desc_2[] = {
+               SDESC_UINT_ROW_EX(input_touch_scale, INPUT_TOUCH_SCALE,
+                     DEFAULT_TOUCH_SCALE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1, 4, 1, 1,
+                     setting_action_ok_uint, setting_get_string_representation_input_touch_scale,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_2, ARRAY_SIZE(inp_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef UDEV_TOUCH_SUPPORT
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_touch_vmouse_pointer,
-                  MENU_ENUM_LABEL_INPUT_TOUCH_VMOUSE_POINTER,
-                  MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_POINTER,
-                  DEFAULT_INPUT_TOUCH_VMOUSE_POINTER,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_touch_vmouse_mouse,
-                  MENU_ENUM_LABEL_INPUT_TOUCH_VMOUSE_MOUSE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_MOUSE,
-                  DEFAULT_INPUT_TOUCH_VMOUSE_MOUSE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_touch_vmouse_touchpad,
-                  MENU_ENUM_LABEL_INPUT_TOUCH_VMOUSE_TOUCHPAD,
-                  MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_TOUCHPAD,
-                  DEFAULT_INPUT_TOUCH_VMOUSE_TOUCHPAD,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_touch_vmouse_trackball,
-                  MENU_ENUM_LABEL_INPUT_TOUCH_VMOUSE_TRACKBALL,
-                  MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_TRACKBALL,
-                  DEFAULT_INPUT_TOUCH_VMOUSE_TRACKBALL,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_touch_vmouse_gesture,
-                  MENU_ENUM_LABEL_INPUT_TOUCH_VMOUSE_GESTURE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_GESTURE,
-                  DEFAULT_INPUT_TOUCH_VMOUSE_GESTURE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
+         {
+            static const setting_desc_t inp_desc_3[] = {
+/* GENERATED: rows come from settings_def_input_vmouse.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_input_vmouse.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_3, ARRAY_SIZE(inp_desc_3),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 
 #ifdef VITA
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_backtouch_enable,
-                  MENU_ENUM_LABEL_INPUT_TOUCH_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_ENABLE,
-                  DEFAULT_INPUT_BACKTOUCH_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_backtouch_toggle,
-                  MENU_ENUM_LABEL_INPUT_PREFER_FRONT_TOUCH,
-                  MENU_ENUM_LABEL_VALUE_INPUT_PREFER_FRONT_TOUCH,
-                  DEFAULT_INPUT_BACKTOUCH_TOGGLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
+         {
+            static const setting_desc_t inp_desc_4[] = {
+/* GENERATED: rows come from settings_def_input_backtouch.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_input_backtouch.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_4, ARRAY_SIZE(inp_desc_4),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 
 #if TARGET_OS_IPHONE
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_keyboard_gamepad_enable,
-                  MENU_ENUM_LABEL_INPUT_ICADE_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_ICADE_ENABLE,
-                  false,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.input_keyboard_gamepad_mapping_type,
-                  MENU_ENUM_LABEL_INPUT_KEYBOARD_GAMEPAD_MAPPING_TYPE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_KEYBOARD_GAMEPAD_MAPPING_TYPE,
-                  1,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_keyboard_gamepad_mapping_type;
-            menu_settings_list_current_add_range(list, list_info, 0, 3, 1, true, true);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_small_keyboard_enable,
-                  MENU_ENUM_LABEL_INPUT_SMALL_KEYBOARD_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_SMALL_KEYBOARD_ENABLE,
-                  false,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
+         {
+            static const setting_desc_t inp_desc_5[] = {
+               SDESC_BOOL_ROW(input_keyboard_gamepad_enable, INPUT_ICADE_ENABLE,
+                     false, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(input_keyboard_gamepad_mapping_type, INPUT_KEYBOARD_GAMEPAD_MAPPING_TYPE,
+                     1,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 3, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_keyboard_gamepad_mapping_type,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(input_small_keyboard_enable, INPUT_SMALL_KEYBOARD_ENABLE,
+                     false, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_5, ARRAY_SIZE(inp_desc_5),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.input_menu_toggle_gamepad_combo,
-                  MENU_ENUM_LABEL_INPUT_MENU_ENUM_TOGGLE_GAMEPAD_COMBO,
-                  MENU_ENUM_LABEL_VALUE_INPUT_MENU_ENUM_TOGGLE_GAMEPAD_COMBO,
-                  DEFAULT_MENU_TOGGLE_GAMEPAD_COMBO,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_gamepad_combo;
-            menu_settings_list_current_add_range(list, list_info, 0, (INPUT_COMBO_LAST-1), 1, true, true);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.input_quit_gamepad_combo,
-                  MENU_ENUM_LABEL_INPUT_QUIT_GAMEPAD_COMBO,
-                  MENU_ENUM_LABEL_VALUE_INPUT_QUIT_GAMEPAD_COMBO,
-                  DEFAULT_QUIT_GAMEPAD_COMBO,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_gamepad_combo;
-            menu_settings_list_current_add_range(list, list_info, 0, (INPUT_COMBO_LAST-1), 1, true, true);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.input_hotkey_block_delay,
-                  MENU_ENUM_LABEL_INPUT_HOTKEY_BLOCK_DELAY,
-                  MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_BLOCK_DELAY,
-                  DEFAULT_INPUT_HOTKEY_BLOCK_DELAY,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0, 600, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_hotkey_device_merge,
-                  MENU_ENUM_LABEL_INPUT_HOTKEY_DEVICE_MERGE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_DEVICE_MERGE,
-                  DEFAULT_INPUT_HOTKEY_DEVICE_MERGE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_hotkey_follows_player1,
-                  MENU_ENUM_LABEL_INPUT_HOTKEY_FOLLOWS_PLAYER1,
-                  MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_FOLLOWS_PLAYER1,
-                  DEFAULT_INPUT_HOTKEY_FOLLOWS_PLAYER1,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_menu_swap_ok_cancel_buttons,
-                  MENU_ENUM_LABEL_MENU_INPUT_SWAP_OK_CANCEL,
-                  MENU_ENUM_LABEL_VALUE_MENU_INPUT_SWAP_OK_CANCEL,
-                  DEFAULT_MENU_SWAP_OK_CANCEL_BUTTONS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_menu_swap_scroll_buttons,
-                  MENU_ENUM_LABEL_MENU_INPUT_SWAP_SCROLL,
-                  MENU_ENUM_LABEL_VALUE_MENU_INPUT_SWAP_SCROLL,
-                  DEFAULT_MENU_SWAP_SCROLL_BUTTONS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_all_users_control_menu,
-                  MENU_ENUM_LABEL_INPUT_ALL_USERS_CONTROL_MENU,
-                  MENU_ENUM_LABEL_VALUE_INPUT_ALL_USERS_CONTROL_MENU,
-                  DEFAULT_ALL_USERS_CONTROL_MENU,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_menu_singleclick_playlists,
-                  MENU_ENUM_LABEL_MENU_SINGLECLICK_PLAYLISTS,
-                  MENU_ENUM_LABEL_VALUE_MENU_SINGLECLICK_PLAYLISTS,
-                  DEFAULT_MENU_SINGLECLICK_PLAYLISTS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_menu_allow_tabs_back,
-                  MENU_ENUM_LABEL_MENU_ALLOW_TABS_BACK,
-                  MENU_ENUM_LABEL_VALUE_MENU_ALLOW_TABS_BACK,
-                  DEFAULT_MENU_ALLOW_TABS_BACK,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_remap_binds_enable,
-                  MENU_ENUM_LABEL_INPUT_REMAP_BINDS_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_REMAP_BINDS_ENABLE,
-                  true,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_remap_sort_by_controller_enable,
-                  MENU_ENUM_LABEL_INPUT_REMAP_SORT_BY_CONTROLLER_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_REMAP_SORT_BY_CONTROLLER_ENABLE,
-                  false,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_autodetect_enable,
-                  MENU_ENUM_LABEL_INPUT_AUTODETECT_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_AUTODETECT_ENABLE,
-                  DEFAULT_INPUT_AUTODETECT_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED
-                  );
+         {
+            static const setting_desc_t inp_desc_6[] = {
+               SDESC_UINT_ROW_EX(input_menu_toggle_gamepad_combo, INPUT_MENU_ENUM_TOGGLE_GAMEPAD_COMBO,
+                     DEFAULT_MENU_TOGGLE_GAMEPAD_COMBO,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, (INPUT_COMBO_LAST-1), 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_gamepad_combo,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_UINT_ROW_EX(input_quit_gamepad_combo, INPUT_QUIT_GAMEPAD_COMBO,
+                     DEFAULT_QUIT_GAMEPAD_COMBO,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, (INPUT_COMBO_LAST-1), 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_gamepad_combo,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_UINT_ROW_EX(input_hotkey_block_delay, INPUT_HOTKEY_BLOCK_DELAY,
+                     DEFAULT_INPUT_HOTKEY_BLOCK_DELAY,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     0, 600, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_BOOL_ROW(input_hotkey_device_merge, INPUT_HOTKEY_DEVICE_MERGE,
+                     DEFAULT_INPUT_HOTKEY_DEVICE_MERGE, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(input_hotkey_follows_player1, INPUT_HOTKEY_FOLLOWS_PLAYER1,
+                     DEFAULT_INPUT_HOTKEY_FOLLOWS_PLAYER1, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(input_menu_swap_ok_cancel_buttons, MENU_INPUT_SWAP_OK_CANCEL,
+                     DEFAULT_MENU_SWAP_OK_CANCEL_BUTTONS, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(input_menu_swap_scroll_buttons, MENU_INPUT_SWAP_SCROLL,
+                     DEFAULT_MENU_SWAP_SCROLL_BUTTONS, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(input_all_users_control_menu, INPUT_ALL_USERS_CONTROL_MENU,
+                     DEFAULT_ALL_USERS_CONTROL_MENU, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(input_menu_singleclick_playlists, MENU_SINGLECLICK_PLAYLISTS,
+                     DEFAULT_MENU_SINGLECLICK_PLAYLISTS, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(input_menu_allow_tabs_back, MENU_ALLOW_TABS_BACK,
+                     DEFAULT_MENU_ALLOW_TABS_BACK, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(input_remap_binds_enable, INPUT_REMAP_BINDS_ENABLE,
+                     true, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW(input_remap_sort_by_controller_enable, INPUT_REMAP_SORT_BY_CONTROLLER_ENABLE,
+                     false, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW(input_autodetect_enable, INPUT_AUTODETECT_ENABLE,
+                     DEFAULT_INPUT_AUTODETECT_ENABLE, SD_FLAG_ADVANCED, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_6, ARRAY_SIZE(inp_desc_6),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #if defined(HAVE_DINPUT) || defined(HAVE_WINRAWINPUT)
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_nowinkey_enable,
-                  MENU_ENUM_LABEL_INPUT_NOWINKEY_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_NOWINKEY_ENABLE,
-                  false,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
+         {
+            static const setting_desc_t inp_desc_7[] = {
+/* GENERATED: rows come from settings_def_input_nowinkey.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_input_nowinkey.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_7, ARRAY_SIZE(inp_desc_7),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_auto_mouse_grab,
-                  MENU_ENUM_LABEL_INPUT_AUTO_MOUSE_GRAB,
-                  MENU_ENUM_LABEL_VALUE_INPUT_AUTO_MOUSE_GRAB,
-                  DEFAULT_INPUT_AUTO_MOUSE_GRAB,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
+         {
+            static const setting_desc_t inp_desc_8[] = {
+/* GENERATED: rows come from settings_def_input_auto_mouse_grab.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_input_auto_mouse_grab.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_8, ARRAY_SIZE(inp_desc_8),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef ANDROID
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.android_input_disconnect_workaround,
-                  MENU_ENUM_LABEL_ANDROID_INPUT_DISCONNECT_WORKAROUND,
-                  MENU_ENUM_LABEL_VALUE_ANDROID_INPUT_DISCONNECT_WORKAROUND,
-                  false,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
+         {
+            static const setting_desc_t inp_desc_9[] = {
+/* GENERATED: rows come from settings_def_input_android_workaround.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_input_android_workaround.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_9, ARRAY_SIZE(inp_desc_9),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             input_driver_state_t *st = input_state_get_ptr();
             input_driver_t *current_input = st->current_driver;
             if (string_is_equal(current_input->ident, "android"))
             {
+               /* Descriptor holdout: value target outside settings_t. */
                CONFIG_ACTION(
                      list, list_info,
                      MENU_ENUM_LABEL_INPUT_SELECT_PHYSICAL_KEYBOARD,
@@ -16514,101 +15508,49 @@ static bool setting_append_list(
             }
 #endif
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.input_auto_game_focus,
-                  MENU_ENUM_LABEL_INPUT_AUTO_GAME_FOCUS,
-                  MENU_ENUM_LABEL_VALUE_INPUT_AUTO_GAME_FOCUS,
-                  DEFAULT_INPUT_AUTO_GAME_FOCUS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-               (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_input_auto_game_focus;
-            menu_settings_list_current_add_range(list, list_info, 0, AUTO_GAME_FOCUS_LAST-1, 1, true, true);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.pause_on_disconnect,
-                  MENU_ENUM_LABEL_PAUSE_ON_DISCONNECT,
-                  MENU_ENUM_LABEL_VALUE_PAUSE_ON_DISCONNECT,
-                  DEFAULT_PAUSE_ON_DISCONNECT,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t inp_desc_10[] = {
+               SDESC_UINT_ROW_EX(input_auto_game_focus, INPUT_AUTO_GAME_FOCUS,
+                     DEFAULT_INPUT_AUTO_GAME_FOCUS,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, AUTO_GAME_FOCUS_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_input_auto_game_focus,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_BOOL_ROW(pause_on_disconnect, PAUSE_ON_DISCONNECT,
+                     DEFAULT_PAUSE_ON_DISCONNECT, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_10, ARRAY_SIZE(inp_desc_10),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             END_SUB_GROUP(list, list_info, parent_group);
 
 
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.input_axis_threshold,
-                  MENU_ENUM_LABEL_INPUT_BUTTON_AXIS_THRESHOLD,
-                  MENU_ENUM_LABEL_VALUE_INPUT_BUTTON_AXIS_THRESHOLD,
-                  DEFAULT_AXIS_THRESHOLD,
-                  "%.3f",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.05, 0.99, 0.01, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.input_analog_deadzone,
-                  MENU_ENUM_LABEL_INPUT_ANALOG_DEADZONE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_ANALOG_DEADZONE,
-                  DEFAULT_ANALOG_DEADZONE,
-                  "%.1f",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0, 1.0, 0.1, true, true);
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.input_analog_sensitivity,
-                  MENU_ENUM_LABEL_INPUT_ANALOG_SENSITIVITY,
-                  MENU_ENUM_LABEL_VALUE_INPUT_ANALOG_SENSITIVITY,
-                  DEFAULT_ANALOG_SENSITIVITY,
-                  "%.1f",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, -5.0, 5.0, 0.1, true, true);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.input_sensors_enable,
-                  MENU_ENUM_LABEL_INPUT_SENSORS_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_INPUT_SENSORS_ENABLE,
-                  DEFAULT_INPUT_SENSORS_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t inp_desc_11[] = {
+               SDESC_FLOAT_ROW_EX(input_axis_threshold, INPUT_BUTTON_AXIS_THRESHOLD,
+                     DEFAULT_AXIS_THRESHOLD, "%.3f",
+                     SD_FLAG_LAKKA_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     0.05, 0.99, 0.01,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_analog_deadzone, INPUT_ANALOG_DEADZONE,
+                     DEFAULT_ANALOG_DEADZONE, "%.1f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 1.0, 0.1,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_analog_sensitivity, INPUT_ANALOG_SENSITIVITY,
+                     DEFAULT_ANALOG_SENSITIVITY, "%.1f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     -5.0, 5.0, 0.1,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(input_sensors_enable, INPUT_SENSORS_ENABLE,
+                     DEFAULT_INPUT_SENSORS_ENABLE, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_11, ARRAY_SIZE(inp_desc_11),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             {
                /* Auto (0) uses gravity detection, only available on Android.
@@ -16618,6 +15560,7 @@ static bool setting_append_list(
 #else
                unsigned orientation_default = 1;
 #endif
+               /* Descriptor holdout: runtime default value. */
                CONFIG_UINT(
                      list, list_info,
                      &settings->uints.input_sensor_orientation,
@@ -16640,118 +15583,52 @@ static bool setting_append_list(
             (*list)[list_info->index - 1].get_string_representation =
                &setting_get_string_representation_uint_sensor_orientation;
 
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.input_sensor_accelerometer_sensitivity,
-                  MENU_ENUM_LABEL_INPUT_SENSOR_ACCELEROMETER_SENSITIVITY,
-                  MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_ACCELEROMETER_SENSITIVITY,
-                  DEFAULT_SENSOR_ACCELEROMETER_SENSITIVITY,
-                  "%.1f",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, -5.0, 5.0, 0.1, true, true);
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.input_sensor_gyroscope_sensitivity,
-                  MENU_ENUM_LABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY,
-                  MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_GYROSCOPE_SENSITIVITY,
-                  DEFAULT_SENSOR_GYROSCOPE_SENSITIVITY,
-                  "%.1f",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, -5.0, 5.0, 0.1, true, true);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.input_bind_timeout,
-                  MENU_ENUM_LABEL_INPUT_BIND_TIMEOUT,
-                  MENU_ENUM_LABEL_VALUE_INPUT_BIND_TIMEOUT,
-                  DEFAULT_INPUT_BIND_TIMEOUT,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].offset_by = 1;
-            menu_settings_list_current_add_range(list, list_info, 1, 30, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.input_bind_hold,
-                  MENU_ENUM_LABEL_INPUT_BIND_HOLD,
-                  MENU_ENUM_LABEL_VALUE_INPUT_BIND_HOLD,
-                  DEFAULT_INPUT_BIND_HOLD,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].offset_by = 0;
-            menu_settings_list_current_add_range(list, list_info, 0, 5, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_INPUT_SENSOR_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_SETTINGS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
-
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_INPUT_HAPTIC_FEEDBACK_SETTINGS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
-
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_INPUT_MENU_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_INPUT_MENU_SETTINGS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
+         {
+            static const setting_desc_t inp_desc_12[] = {
+               SDESC_FLOAT_ROW_EX(input_sensor_accelerometer_sensitivity, INPUT_SENSOR_ACCELEROMETER_SENSITIVITY,
+                     DEFAULT_SENSOR_ACCELEROMETER_SENSITIVITY, "%.1f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     -5.0, 5.0, 0.1,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_sensor_gyroscope_sensitivity, INPUT_SENSOR_GYROSCOPE_SENSITIVITY,
+                     DEFAULT_SENSOR_GYROSCOPE_SENSITIVITY, "%.1f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     -5.0, 5.0, 0.1,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(input_bind_timeout, INPUT_BIND_TIMEOUT,
+                     DEFAULT_INPUT_BIND_TIMEOUT,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     1, 30, 1, 1,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(input_bind_hold, INPUT_BIND_HOLD,
+                     DEFAULT_INPUT_BIND_HOLD,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     0, 5, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_ACTION_ROW(INPUT_SENSOR_SETTINGS),
+               SDESC_ACTION_ROW(INPUT_HAPTIC_FEEDBACK_SETTINGS),
+               SDESC_ACTION_ROW(INPUT_MENU_SETTINGS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_12, ARRAY_SIZE(inp_desc_12),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 
             START_SUB_GROUP(list, list_info, "Binds", &group_info, &subgroup_info, parent_group);
 
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_INPUT_HOTKEY_BINDS,
-                  MENU_ENUM_LABEL_VALUE_INPUT_HOTKEY_BINDS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
-
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_INPUT_RETROPAD_BINDS,
-                  MENU_ENUM_LABEL_VALUE_INPUT_RETROPAD_BINDS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
-
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_INPUT_TURBO_FIRE_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_INPUT_TURBO_FIRE_SETTINGS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
+         {
+            static const setting_desc_t inp_desc_13[] = {
+               SDESC_ACTION_ROW(INPUT_HOTKEY_BINDS),
+               SDESC_ACTION_ROW(INPUT_RETROPAD_BINDS),
+               SDESC_ACTION_ROW(INPUT_TURBO_FIRE_SETTINGS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  inp_desc_13, ARRAY_SIZE(inp_desc_13),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             {
                unsigned user;
@@ -16764,6 +15641,7 @@ static bool setting_append_list(
                   snprintf(binds_label, sizeof(binds_label),
                         val_input_user_binds, user + 1);
 
+                  /* Descriptor holdout: dynamic runtime label through the ALT macro. */
                   CONFIG_ACTION_ALT(
                         list, list_info,
                         msg_hash_to_str((enum msg_hash_enums)
@@ -16790,130 +15668,51 @@ static bool setting_append_list(
          START_GROUP(list, list_info, &group_info,
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_INPUT_TURBO_FIRE_SETTINGS),
                parent_group);
-         parent_group = MENU_ENUM_LABEL_INPUT_TURBO_FIRE_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_INPUT_TURBO_FIRE_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.input_turbo_enable,
-               MENU_ENUM_LABEL_INPUT_TURBO_ENABLE,
-               MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ENABLE,
-               DEFAULT_TURBO_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.input_turbo_mode,
-               MENU_ENUM_LABEL_INPUT_TURBO_MODE,
-               MENU_ENUM_LABEL_VALUE_INPUT_TURBO_MODE,
-               DEFAULT_TURBO_MODE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].ui_type      = ST_UI_TYPE_UINT_COMBOBOX;
-         (*list)[list_info->index - 1].action_ok    = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].action_left  = &setting_uint_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right = &setting_uint_action_right_with_refresh;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_turbo_mode;
-         menu_settings_list_current_add_range(list, list_info, 0, (INPUT_TURBO_MODE_LAST-1), 1, true, true);
-
-         CONFIG_INT(
-               list, list_info,
-               &settings->ints.input_turbo_bind,
-               MENU_ENUM_LABEL_INPUT_TURBO_BIND,
-               MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BIND,
-               DEFAULT_TURBO_BIND,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].ui_type      = ST_UI_TYPE_UINT_COMBOBOX;
-         (*list)[list_info->index - 1].action_ok    = &setting_action_ok_retropad_bind;
-         (*list)[list_info->index - 1].action_left  = &setting_action_left_retropad_bind;
-         (*list)[list_info->index - 1].action_right = &setting_action_right_retropad_bind;
-         (*list)[list_info->index - 1].offset_by = -1;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_retropad_bind;
-         menu_settings_list_current_add_range(list, list_info, -1, (RARCH_ANALOG_BIND_LIST_END-1), 1, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.input_turbo_button,
-               MENU_ENUM_LABEL_INPUT_TURBO_BUTTON,
-               MENU_ENUM_LABEL_VALUE_INPUT_TURBO_BUTTON,
-               DEFAULT_TURBO_BUTTON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].ui_type      = ST_UI_TYPE_UINT_COMBOBOX;
-         (*list)[list_info->index - 1].action_ok    = &setting_action_ok_retropad_bind;
-         (*list)[list_info->index - 1].action_left  = &setting_action_left_retropad_bind;
-         (*list)[list_info->index - 1].action_right = &setting_action_right_retropad_bind;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_retropad_bind;
-         menu_settings_list_current_add_range(list, list_info, 0, (RARCH_FIRST_CUSTOM_BIND-1), 1, true, true);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.input_turbo_allow_dpad,
-               MENU_ENUM_LABEL_INPUT_TURBO_ALLOW_DPAD,
-               MENU_ENUM_LABEL_VALUE_INPUT_TURBO_ALLOW_DPAD,
-               DEFAULT_TURBO_ALLOW_DPAD,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.input_turbo_period,
-               MENU_ENUM_LABEL_INPUT_TURBO_PERIOD,
-               MENU_ENUM_LABEL_VALUE_INPUT_TURBO_PERIOD,
-               DEFAULT_TURBO_PERIOD,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].offset_by = 1;
-         menu_settings_list_current_add_range(list, list_info, 2, 100, 1, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.input_turbo_duty_cycle,
-               MENU_ENUM_LABEL_INPUT_TURBO_DUTY_CYCLE,
-               MENU_ENUM_LABEL_VALUE_INPUT_TURBO_DUTY_CYCLE,
-               DEFAULT_TURBO_DUTY_CYCLE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_turbo_duty_cycle;
-         menu_settings_list_current_add_range(list, list_info, 0, 100, 1, true, true);
+         {
+            static const setting_desc_t input_turbo_fi_desc_0[] = {
+               SDESC_BOOL_ROW(input_turbo_enable, INPUT_TURBO_ENABLE,
+                     DEFAULT_TURBO_ENABLE, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(input_turbo_mode, INPUT_TURBO_MODE,
+                     DEFAULT_TURBO_MODE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, (INPUT_TURBO_MODE_LAST-1), 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_turbo_mode,
+                     NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_INT_ROW_EX(input_turbo_bind, INPUT_TURBO_BIND,
+                     DEFAULT_TURBO_BIND,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     -1, (RARCH_ANALOG_BIND_LIST_END-1), 1, -1,
+                     setting_action_ok_retropad_bind, setting_get_string_representation_retropad_bind,
+                     NULL, NULL, setting_action_left_retropad_bind, setting_action_right_retropad_bind, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_UINT_ROW_EX(input_turbo_button, INPUT_TURBO_BUTTON,
+                     DEFAULT_TURBO_BUTTON,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, (RARCH_FIRST_CUSTOM_BIND-1), 1, 0,
+                     setting_action_ok_retropad_bind, setting_get_string_representation_retropad_bind,
+                     NULL, NULL, setting_action_left_retropad_bind, setting_action_right_retropad_bind, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_BOOL_ROW(input_turbo_allow_dpad, INPUT_TURBO_ALLOW_DPAD,
+                     DEFAULT_TURBO_ALLOW_DPAD, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(input_turbo_period, INPUT_TURBO_PERIOD,
+                     DEFAULT_TURBO_PERIOD,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     2, 100, 1, 1,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(input_turbo_duty_cycle, INPUT_TURBO_DUTY_CYCLE,
+                     DEFAULT_TURBO_DUTY_CYCLE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 100, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_turbo_duty_cycle,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  input_turbo_fi_desc_0, ARRAY_SIZE(input_turbo_fi_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
 
@@ -16928,53 +15727,85 @@ static bool setting_append_list(
 
             START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-            CONFIG_UINT(
-               list, list_info,
-               &settings->uints.video_record_quality,
-               MENU_ENUM_LABEL_VIDEO_RECORD_QUALITY,
-               MENU_ENUM_LABEL_VALUE_VIDEO_RECORD_QUALITY,
-               RECORD_CONFIG_TYPE_RECORDING_MED_QUALITY,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_video_record_quality;
-            menu_settings_list_current_add_range(list, list_info, RECORD_CONFIG_TYPE_RECORDING_CUSTOM, RECORD_CONFIG_TYPE_RECORDING_APNG, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+         {
+            static const setting_desc_t recording_desc_0[] = {
+               SDESC_UINT_ROW_EX(video_record_quality, VIDEO_RECORD_QUALITY,
+                     RECORD_CONFIG_TYPE_RECORDING_MED_QUALITY,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     RECORD_CONFIG_TYPE_RECORDING_CUSTOM, RECORD_CONFIG_TYPE_RECORDING_APNG, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_video_record_quality,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  recording_desc_0, ARRAY_SIZE(recording_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_PATH(
-               list, list_info,
-               settings->paths.path_record_config,
-               sizeof(settings->paths.path_record_config),
-               MENU_ENUM_LABEL_RECORD_CONFIG,
-               MENU_ENUM_LABEL_VALUE_RECORD_CONFIG,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-            MENU_SETTINGS_LIST_CURRENT_ADD_VALUES(list, list_info, "cfg");
+         {
+            static const setting_desc_t recording2_desc_0[] = {
+/* GENERATED: rows come from settings_def_recording_paths.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_recording_paths.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  recording2_desc_0, ARRAY_SIZE(recording2_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_STRING(
-                  list, list_info,
-                  settings->paths.streaming_title,
-                  sizeof(settings->paths.streaming_title),
-                  MENU_ENUM_LABEL_STREAMING_TITLE,
-                  MENU_ENUM_LABEL_VALUE_STREAMING_TITLE,
-                  "",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
-            (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
-
+            /* Descriptor holdout: non-general read/write handler. */
             CONFIG_UINT(
                list, list_info,
                &settings->uints.streaming_mode,
@@ -17007,70 +15838,100 @@ static bool setting_append_list(
             menu_settings_list_current_add_range(list, list_info, 1, 65536, 1, true, true);
 
 
-            CONFIG_UINT(
-               list, list_info,
-               &settings->uints.video_stream_quality,
-               MENU_ENUM_LABEL_VIDEO_STREAM_QUALITY,
-               MENU_ENUM_LABEL_VALUE_VIDEO_STREAM_QUALITY,
-               RECORD_CONFIG_TYPE_STREAMING_MED_QUALITY,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_video_stream_quality;
-               (*list)[list_info->index - 1].offset_by = RECORD_CONFIG_TYPE_STREAMING_CUSTOM;
-            menu_settings_list_current_add_range(list, list_info, RECORD_CONFIG_TYPE_STREAMING_CUSTOM, RECORD_CONFIG_TYPE_STREAMING_HIGH_QUALITY, 1, true, true);
+         {
+            static const setting_desc_t recording_desc_1[] = {
+               SDESC_UINT_ROW_EX(video_stream_quality, VIDEO_STREAM_QUALITY,
+                     RECORD_CONFIG_TYPE_STREAMING_MED_QUALITY,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     RECORD_CONFIG_TYPE_STREAMING_CUSTOM, RECORD_CONFIG_TYPE_STREAMING_HIGH_QUALITY, 1, RECORD_CONFIG_TYPE_STREAMING_CUSTOM,
+                     setting_action_ok_uint, setting_get_string_representation_video_stream_quality,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  recording_desc_1, ARRAY_SIZE(recording_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_PATH(
-               list, list_info,
-               settings->paths.path_stream_config,
-               sizeof(settings->paths.path_stream_config),
-               MENU_ENUM_LABEL_STREAM_CONFIG,
-               MENU_ENUM_LABEL_VALUE_STREAM_CONFIG,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-            MENU_SETTINGS_LIST_CURRENT_ADD_VALUES(list, list_info, "cfg");
-            (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_FILE_SELECTOR;
+         {
+            static const setting_desc_t recording2_desc_1[] = {
+/* GENERATED: rows come from settings_def_streaming_paths.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_streaming_paths.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  recording2_desc_1, ARRAY_SIZE(recording2_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_STRING(
-               list, list_info,
-               settings->paths.path_stream_url,
-               sizeof(settings->paths.path_stream_url),
-               MENU_ENUM_LABEL_STREAMING_URL,
-               MENU_ENUM_LABEL_VALUE_STREAMING_URL,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
-            (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
+         {
+            static const setting_desc_t recording_desc_2[] = {
+               SDESC_UINT_ROW_EX(video_record_threads, VIDEO_RECORD_THREADS,
+                     DEFAULT_VIDEO_RECORD_THREADS,
+                     SD_FLAG_LAKKA_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     1, 8, 1, 0,
+                     setting_action_ok_uint_special, NULL,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  recording_desc_2, ARRAY_SIZE(recording_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_UINT(
-               list, list_info,
-               &settings->uints.video_record_threads,
-               MENU_ENUM_LABEL_VIDEO_RECORD_THREADS,
-               MENU_ENUM_LABEL_VALUE_VIDEO_RECORD_THREADS,
-               DEFAULT_VIDEO_RECORD_THREADS,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint_special;
-               menu_settings_list_current_add_range(list, list_info, 1, 8, 1, true, true);
-               SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-               (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
+            /* Descriptor holdout: value target lives in recording_state,
+             * outside settings_t. */
             CONFIG_DIR(
                list, list_info,
                recording_st->output_dir,
@@ -17090,37 +15951,39 @@ static bool setting_append_list(
 
             START_SUB_GROUP(list, list_info, "Miscellaneous", &group_info, &subgroup_info, parent_group);
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_post_filter_record,
-                  MENU_ENUM_LABEL_VIDEO_POST_FILTER_RECORD,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_POST_FILTER_RECORD,
-                  DEFAULT_POST_FILTER_RECORD,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.video_gpu_record,
-                  MENU_ENUM_LABEL_VIDEO_GPU_RECORD,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_GPU_RECORD,
-                  DEFAULT_GPU_RECORD,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
+         {
+            static const setting_desc_t recording_desc_3[] = {
+/* GENERATED: rows come from settings_def_recording_video.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_recording_video.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  recording_desc_3, ARRAY_SIZE(recording_desc_3),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             END_SUB_GROUP(list, list_info, parent_group);
             END_GROUP(list, list_info, parent_group);
@@ -17132,7 +15995,7 @@ static bool setting_append_list(
                   MENU_ENUM_LABEL_INPUT_HOTKEY_BINDS_BEGIN_STR,
                   parent_group);
 
-            parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+            parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
             START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info,
                   parent_group);
@@ -17172,91 +16035,49 @@ static bool setting_append_list(
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.fastforward_ratio,
-               MENU_ENUM_LABEL_FASTFORWARD_RATIO,
-               MENU_ENUM_LABEL_VALUE_FASTFORWARD_RATIO,
-               DEFAULT_FASTFORWARD_RATIO,
-               "%.1fx",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_SET_FRAME_LIMIT);
-         menu_settings_list_current_add_range(list, list_info, 0, MAXIMUM_FASTFORWARD_RATIO, 0.1, true, true);
+         {
+            static const setting_desc_t frame_throttli_desc_0[] = {
+               SDESC_FLOAT_ROW_EX(fastforward_ratio, FASTFORWARD_RATIO,
+                     DEFAULT_FASTFORWARD_RATIO, "%.1fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, CMD_EVENT_SET_FRAME_LIMIT,
+                     0, MAXIMUM_FASTFORWARD_RATIO, 0.1,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(fastforward_frameskip, FASTFORWARD_FRAMESKIP,
+                     DEFAULT_FASTFORWARD_FRAMESKIP, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW_EX(vrr_runloop_enable, VRR_RUNLOOP_ENABLE,
+                     false, SD_FLAG_CMD_APPLY_AUTO, 0, CMD_EVENT_REINIT,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  frame_throttli_desc_0, ARRAY_SIZE(frame_throttli_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.fastforward_frameskip,
-               MENU_ENUM_LABEL_FASTFORWARD_FRAMESKIP,
-               MENU_ENUM_LABEL_VALUE_FASTFORWARD_FRAMESKIP,
-               DEFAULT_FASTFORWARD_FRAMESKIP,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.vrr_runloop_enable,
-               MENU_ENUM_LABEL_VRR_RUNLOOP_ENABLE,
-               MENU_ENUM_LABEL_VALUE_VRR_RUNLOOP_ENABLE,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-         (*list)[list_info->index - 1].action_ok    = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left  = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right = &setting_bool_action_right_with_refresh;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_throttle_framerate,
-               MENU_ENUM_LABEL_MENU_THROTTLE_FRAMERATE,
-               MENU_ENUM_LABEL_VALUE_MENU_ENUM_THROTTLE_FRAMERATE,
-               true,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED
-               );
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.slowmotion_ratio,
-               MENU_ENUM_LABEL_SLOWMOTION_RATIO,
-               MENU_ENUM_LABEL_VALUE_SLOWMOTION_RATIO,
-               DEFAULT_SLOWMOTION_RATIO,
-               "%.1fx",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 1, 10, 0.1, true, true);
+         {
+            static const setting_desc_t menu_thr_desc[] = {
+               SDESC_BOOL_ROW_LV(menu_throttle_framerate, MENU_THROTTLE_FRAMERATE,
+                     MENU_ENUM_THROTTLE_FRAMERATE, true,
+                     SD_FLAG_ADVANCED, 0, 0)
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_thr_desc, ARRAY_SIZE(menu_thr_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
+         {
+            static const setting_desc_t frame_throttli_desc_1[] = {
+               SDESC_FLOAT_ROW_EX(slowmotion_ratio, SLOWMOTION_RATIO,
+                     DEFAULT_SLOWMOTION_RATIO, "%.1fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1, 10, 0.1,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  frame_throttli_desc_1, ARRAY_SIZE(frame_throttli_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef HAVE_RUNAHEAD
+         /* Descriptor holdout: value target outside settings_t. */
          CONFIG_UINT(
                list, list_info,
                &menu_state_get_ptr()->runahead_mode,
@@ -17277,6 +16098,7 @@ static bool setting_append_list(
          menu_settings_list_current_add_range(list, list_info,
                MENU_RUNAHEAD_MODE_OFF, MENU_RUNAHEAD_MODE_LAST - 1, 1, true, true);
 
+         /* Descriptor holdout: change_handler poke; descriptor slot deferred to the single-source phase. */
          CONFIG_UINT(
                list, list_info,
                &settings->uints.run_ahead_frames,
@@ -17294,21 +16116,39 @@ static bool setting_append_list(
          (*list)[list_info->index - 1].change_handler = runahead_change_handler;
          menu_settings_list_current_add_range(list, list_info, 1, MAX_RUNAHEAD_FRAMES, 1, true, true);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.run_ahead_hide_warnings,
-               MENU_ENUM_LABEL_RUN_AHEAD_HIDE_WARNINGS,
-               MENU_ENUM_LABEL_VALUE_RUN_AHEAD_HIDE_WARNINGS,
-               DEFAULT_RUN_AHEAD_HIDE_WARNINGS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED
-               );
+         {
+            static const setting_desc_t frame_throttli_desc_2[] = {
+/* GENERATED: rows come from settings_def_runahead_warnings.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_runahead_warnings.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  frame_throttli_desc_2, ARRAY_SIZE(frame_throttli_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          CONFIG_UINT(
                list, list_info,
@@ -17329,21 +16169,20 @@ static bool setting_append_list(
 #endif
 
 #ifdef ANDROID
-         CONFIG_UINT(
-            list, list_info,
-            &settings->uints.input_block_timeout,
-            MENU_ENUM_LABEL_INPUT_BLOCK_TIMEOUT,
-            MENU_ENUM_LABEL_VALUE_INPUT_BLOCK_TIMEOUT,
-            DEFAULT_INPUT_BLOCK_TIMEOUT,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0, 4, 1, true, true);
+         {
+            static const setting_desc_t frame_throttli_desc_3[] = {
+               SDESC_UINT_ROW_EX(input_block_timeout, INPUT_BLOCK_TIMEOUT,
+                     DEFAULT_INPUT_BLOCK_TIMEOUT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 4, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  frame_throttli_desc_3, ARRAY_SIZE(frame_throttli_desc_3),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
-
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
          break;
@@ -17360,701 +16199,301 @@ static bool setting_append_list(
                parent_group);
 
 #ifdef HAVE_GFX_WIDGETS
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_enable_widgets,
-               MENU_ENUM_LABEL_MENU_WIDGETS_ENABLE,
-               MENU_ENUM_LABEL_VALUE_MENU_WIDGETS_ENABLE,
-               DEFAULT_MENU_ENABLE_WIDGETS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_widget_scale_auto,
-               MENU_ENUM_LABEL_MENU_WIDGET_SCALE_AUTO,
-               MENU_ENUM_LABEL_VALUE_MENU_WIDGET_SCALE_AUTO,
-               DEFAULT_MENU_WIDGET_SCALE_AUTO,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-         (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
+                  {
+            static const setting_desc_t osn_desc_0[] = {
+               SDESC_BOOL_ROW_EX(menu_enable_widgets, MENU_WIDGETS_ENABLE,
+                     DEFAULT_MENU_ENABLE_WIDGETS, SD_FLAG_NONE, 0, CMD_EVENT_REINIT,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_BOOL_ROW_EX(menu_widget_scale_auto, MENU_WIDGET_SCALE_AUTO,
+                     DEFAULT_MENU_WIDGET_SCALE_AUTO, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  osn_desc_0, ARRAY_SIZE(osn_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #if (defined(RARCH_CONSOLE) || defined(RARCH_MOBILE))
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.menu_widget_scale_factor,
-               MENU_ENUM_LABEL_MENU_WIDGET_SCALE_FACTOR,
-               MENU_ENUM_LABEL_VALUE_MENU_WIDGET_SCALE_FACTOR,
-               DEFAULT_MENU_WIDGET_SCALE_FACTOR,
-               "%.2fx",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
+                  {
+            static const setting_desc_t osn_desc_1[] = {
+               SDESC_FLOAT_ROW(menu_widget_scale_factor, MENU_WIDGET_SCALE_FACTOR,
+                     DEFAULT_MENU_WIDGET_SCALE_FACTOR, "%.2fx",
+                     SD_FLAG_NONE, 0, 0,
+                     0, 0, 0,
+                     NULL, NULL),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  osn_desc_1, ARRAY_SIZE(osn_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #else
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.menu_widget_scale_factor,
-               MENU_ENUM_LABEL_MENU_WIDGET_SCALE_FACTOR,
-               MENU_ENUM_LABEL_VALUE_MENU_WIDGET_SCALE_FACTOR_FULLSCREEN,
-               DEFAULT_MENU_WIDGET_SCALE_FACTOR,
-               "%.2fx",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
+         {
+            static const setting_desc_t widget_fs_desc[] = {
+               SDESC_FLOAT_ROW_LV(menu_widget_scale_factor, MENU_WIDGET_SCALE_FACTOR,
+                     MENU_WIDGET_SCALE_FACTOR_FULLSCREEN,
+                     DEFAULT_MENU_WIDGET_SCALE_FACTOR, "%.2fx",
+                     SD_FLAG_NONE, 0, 0)
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  widget_fs_desc, ARRAY_SIZE(widget_fs_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
          (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
          menu_settings_list_current_add_range(list, list_info, 0.2, 5.0, 0.01, true, true);
 
 #if !(defined(RARCH_CONSOLE) || defined(RARCH_MOBILE))
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.menu_widget_scale_factor_windowed,
-               MENU_ENUM_LABEL_MENU_WIDGET_SCALE_FACTOR_WINDOWED,
-               MENU_ENUM_LABEL_VALUE_MENU_WIDGET_SCALE_FACTOR_WINDOWED,
-               DEFAULT_MENU_WIDGET_SCALE_FACTOR_WINDOWED,
-               "%.2fx",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0.2, 5.0, 0.01, true, true);
+                  {
+            static const setting_desc_t osn_desc_2[] = {
+               SDESC_FLOAT_ROW_EX(menu_widget_scale_factor_windowed, MENU_WIDGET_SCALE_FACTOR_WINDOWED,
+                     DEFAULT_MENU_WIDGET_SCALE_FACTOR_WINDOWED, "%.2fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.2, 5.0, 0.01,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  osn_desc_2, ARRAY_SIZE(osn_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 #endif
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.video_font_enable,
-               MENU_ENUM_LABEL_VIDEO_FONT_ENABLE,
-               MENU_ENUM_LABEL_VALUE_VIDEO_FONT_ENABLE,
-               DEFAULT_FONT_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-         (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
+                  {
+            static const setting_desc_t osn_desc_3[] = {
+               SDESC_BOOL_ROW_EX(video_font_enable, VIDEO_FONT_ENABLE,
+                     DEFAULT_FONT_ENABLE, SD_FLAG_NONE, 0, CMD_EVENT_REINIT,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  osn_desc_3, ARRAY_SIZE(osn_desc_3),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-         CONFIG_PATH(
-               list, list_info,
-               settings->paths.path_font,
-               sizeof(settings->paths.path_font),
-               MENU_ENUM_LABEL_VIDEO_FONT_PATH,
-               MENU_ENUM_LABEL_VALUE_VIDEO_FONT_PATH,
-               settings->paths.directory_assets,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].get_string_representation = &setting_get_string_representation_video_font_path;
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_FONT_SELECTOR;
-         MENU_SETTINGS_LIST_CURRENT_ADD_VALUES(list, list_info, "ttf");
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
+         {
+            static const setting_desc_t onscreen_not2_desc_0[] = {
+/* GENERATED: rows come from settings_def_notification_font_path.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_notification_font_path.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  onscreen_not2_desc_0, ARRAY_SIZE(onscreen_not2_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.video_font_size,
-               MENU_ENUM_LABEL_VIDEO_FONT_SIZE,
-               MENU_ENUM_LABEL_VALUE_VIDEO_FONT_SIZE,
-               DEFAULT_FONT_SIZE,
-               "%.1f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 1.00, 100.00, 1.0, true, true);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.video_msg_pos_x,
-               MENU_ENUM_LABEL_VIDEO_MESSAGE_POS_X,
-               MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_POS_X,
-               DEFAULT_MESSAGE_POS_OFFSET_X,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0, 1, 0.01, true, true);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.video_msg_pos_y,
-               MENU_ENUM_LABEL_VIDEO_MESSAGE_POS_Y,
-               MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_POS_Y,
-               DEFAULT_MESSAGE_POS_OFFSET_Y,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0, 1, 0.01, true, true);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.video_msg_color_r,
-               MENU_ENUM_LABEL_VIDEO_MESSAGE_COLOR_RED,
-               MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_COLOR_RED,
-               ((DEFAULT_MESSAGE_COLOR >> 16) & 0xff) / 255.0f,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_float_video_msg_color;
-         menu_settings_list_current_add_range(list, list_info, 0, 1, 1.0f/255.0f, true, true);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.video_msg_color_g,
-               MENU_ENUM_LABEL_VIDEO_MESSAGE_COLOR_GREEN,
-               MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_COLOR_GREEN,
-               ((DEFAULT_MESSAGE_COLOR >> 8) & 0xff) / 255.0f,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_float_video_msg_color;
-         menu_settings_list_current_add_range(list, list_info, 0, 1, 1.0f/255.0f, true, true);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.video_msg_color_b,
-               MENU_ENUM_LABEL_VIDEO_MESSAGE_COLOR_BLUE,
-               MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_COLOR_BLUE,
-               ((DEFAULT_MESSAGE_COLOR >> 0) & 0xff) / 255.0f,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_float_video_msg_color;
-         menu_settings_list_current_add_range(list, list_info, 0, 1, 1.0f/255.0f, true, true);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.video_msg_bgcolor_enable,
-               MENU_ENUM_LABEL_VIDEO_MESSAGE_BGCOLOR_ENABLE,
-               MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_BGCOLOR_ENABLE,
-               DEFAULT_MESSAGE_BGCOLOR_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-         (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.video_msg_bgcolor_red,
-               MENU_ENUM_LABEL_VIDEO_MESSAGE_BGCOLOR_RED,
-               MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_BGCOLOR_RED,
-               DEFAULT_MESSAGE_BGCOLOR_RED,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         menu_settings_list_current_add_range(list, list_info, 0, 255, 1, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.video_msg_bgcolor_green,
-               MENU_ENUM_LABEL_VIDEO_MESSAGE_BGCOLOR_GREEN,
-               MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_BGCOLOR_GREEN,
-               DEFAULT_MESSAGE_BGCOLOR_GREEN,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         menu_settings_list_current_add_range(list, list_info, 0, 255, 1, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.video_msg_bgcolor_blue,
-               MENU_ENUM_LABEL_VIDEO_MESSAGE_BGCOLOR_BLUE,
-               MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_BGCOLOR_BLUE,
-               DEFAULT_MESSAGE_BGCOLOR_BLUE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0, 255, 1, true, true);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.video_msg_bgcolor_opacity,
-               MENU_ENUM_LABEL_VIDEO_MESSAGE_BGCOLOR_OPACITY,
-               MENU_ENUM_LABEL_VALUE_VIDEO_MESSAGE_BGCOLOR_OPACITY,
-               DEFAULT_MESSAGE_BGCOLOR_OPACITY,
-               "%.2f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0, 1, 0.01, true, true);
+                  {
+            static const setting_desc_t osn_desc_4[] = {
+               SDESC_FLOAT_ROW_EX(video_font_size, VIDEO_FONT_SIZE,
+                     DEFAULT_FONT_SIZE, "%.1f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, CMD_EVENT_REINIT,
+                     1.00, 100.00, 1.0,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(video_msg_pos_x, VIDEO_MESSAGE_POS_X,
+                     DEFAULT_MESSAGE_POS_OFFSET_X, "%.3f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 1, 0.01,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(video_msg_pos_y, VIDEO_MESSAGE_POS_Y,
+                     DEFAULT_MESSAGE_POS_OFFSET_Y, "%.3f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 1, 0.01,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(video_msg_color_r, VIDEO_MESSAGE_COLOR_RED,
+                     ((DEFAULT_MESSAGE_COLOR >> 16) & 0xff) / 255.0f, "%.3f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 1, 1.0f/255.0f,
+                     NULL, setting_get_string_representation_float_video_msg_color, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(video_msg_color_g, VIDEO_MESSAGE_COLOR_GREEN,
+                     ((DEFAULT_MESSAGE_COLOR >> 8) & 0xff) / 255.0f, "%.3f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 1, 1.0f/255.0f,
+                     NULL, setting_get_string_representation_float_video_msg_color, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(video_msg_color_b, VIDEO_MESSAGE_COLOR_BLUE,
+                     ((DEFAULT_MESSAGE_COLOR >> 0) & 0xff) / 255.0f, "%.3f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 1, 1.0f/255.0f,
+                     NULL, setting_get_string_representation_float_video_msg_color, NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW_EX(video_msg_bgcolor_enable, VIDEO_MESSAGE_BGCOLOR_ENABLE,
+                     DEFAULT_MESSAGE_BGCOLOR_ENABLE, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_UINT_ROW_EX(video_msg_bgcolor_red, VIDEO_MESSAGE_BGCOLOR_RED,
+                     DEFAULT_MESSAGE_BGCOLOR_RED,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 255, 1, 0,
+                     NULL, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(video_msg_bgcolor_green, VIDEO_MESSAGE_BGCOLOR_GREEN,
+                     DEFAULT_MESSAGE_BGCOLOR_GREEN,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 255, 1, 0,
+                     NULL, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(video_msg_bgcolor_blue, VIDEO_MESSAGE_BGCOLOR_BLUE,
+                     DEFAULT_MESSAGE_BGCOLOR_BLUE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 255, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(video_msg_bgcolor_opacity, VIDEO_MESSAGE_BGCOLOR_OPACITY,
+                     DEFAULT_MESSAGE_BGCOLOR_OPACITY, "%.2f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 1, 0.01,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  osn_desc_4, ARRAY_SIZE(osn_desc_4),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
          START_SUB_GROUP(list, list_info, "Notification Views", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.video_fps_show,
-               MENU_ENUM_LABEL_FPS_SHOW,
-               MENU_ENUM_LABEL_VALUE_FPS_SHOW,
-               DEFAULT_FPS_SHOW,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.fps_update_interval,
-               MENU_ENUM_LABEL_FPS_UPDATE_INTERVAL,
-               MENU_ENUM_LABEL_VALUE_FPS_UPDATE_INTERVAL,
-               DEFAULT_FPS_UPDATE_INTERVAL,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint_special;
-         menu_settings_list_current_add_range(list, list_info, 1, 512, 1, true, true);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.video_memory_show,
-               MENU_ENUM_LABEL_MEMORY_SHOW,
-               MENU_ENUM_LABEL_VALUE_MEMORY_SHOW,
-               DEFAULT_MEMORY_SHOW,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.memory_update_interval,
-               MENU_ENUM_LABEL_MEMORY_UPDATE_INTERVAL,
-               MENU_ENUM_LABEL_VALUE_MEMORY_UPDATE_INTERVAL,
-               DEFAULT_MEMORY_UPDATE_INTERVAL,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint_special;
-         menu_settings_list_current_add_range(list, list_info, 1, 512, 1, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.video_time_show,
-               MENU_ENUM_LABEL_TIME_SHOW,
-               MENU_ENUM_LABEL_VALUE_TIME_SHOW,
-               DEFAULT_TIME_SHOW,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].action_left   = &setting_uint_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = &setting_uint_action_right_with_refresh;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_time_show;
-         menu_settings_list_current_add_range(list, list_info, 0, TIME_SHOW_LAST - 1, 1, true, true);
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.video_statistics_show,
-               MENU_ENUM_LABEL_STATISTICS_SHOW,
-               MENU_ENUM_LABEL_VALUE_STATISTICS_SHOW,
-               DEFAULT_STATISTICS_SHOW,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.video_framecount_show,
-               MENU_ENUM_LABEL_FRAMECOUNT_SHOW,
-               MENU_ENUM_LABEL_VALUE_FRAMECOUNT_SHOW,
-               DEFAULT_FRAMECOUNT_SHOW,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
+                  {
+            static const setting_desc_t osn_desc_5[] = {
+               SDESC_BOOL_ROW_EX(video_fps_show, FPS_SHOW,
+                     DEFAULT_FPS_SHOW, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_UINT_ROW_EX(fps_update_interval, FPS_UPDATE_INTERVAL,
+                     DEFAULT_FPS_UPDATE_INTERVAL,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1, 512, 1, 0,
+                     setting_action_ok_uint_special, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW_EX(video_memory_show, MEMORY_SHOW,
+                     DEFAULT_MEMORY_SHOW, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_UINT_ROW_EX(memory_update_interval, MEMORY_UPDATE_INTERVAL,
+                     DEFAULT_MEMORY_UPDATE_INTERVAL,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1, 512, 1, 0,
+                     setting_action_ok_uint_special, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(video_time_show, TIME_SHOW,
+                     DEFAULT_TIME_SHOW,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, TIME_SHOW_LAST - 1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_time_show,
+                     NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_BOOL_ROW(video_statistics_show, STATISTICS_SHOW,
+                     DEFAULT_STATISTICS_SHOW, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(video_framecount_show, FRAMECOUNT_SHOW,
+                     DEFAULT_FRAMECOUNT_SHOW, SD_FLAG_NONE, 0, 0),
 #ifdef HAVE_GFX_WIDGETS
 #ifdef HAVE_NETWORKING
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.netplay_ping_show,
-               MENU_ENUM_LABEL_NETPLAY_PING_SHOW,
-               MENU_ENUM_LABEL_VALUE_NETPLAY_PING_SHOW,
-               DEFAULT_NETPLAY_PING_SHOW,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         (*list)[list_info->index - 1].action_ok    = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left  = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right = &setting_bool_action_right_with_refresh;
+               SDESC_BOOL_ROW_EX(netplay_ping_show, NETPLAY_PING_SHOW,
+                     DEFAULT_NETPLAY_PING_SHOW, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
 #endif
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_show_load_content_animation,
-               MENU_ENUM_LABEL_MENU_SHOW_LOAD_CONTENT_ANIMATION,
-               MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CONTENT_ANIMATION,
-               DEFAULT_MENU_SHOW_LOAD_CONTENT_ANIMATION,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+               SDESC_BOOL_ROW(menu_show_load_content_animation, MENU_SHOW_LOAD_CONTENT_ANIMATION,
+                     DEFAULT_MENU_SHOW_LOAD_CONTENT_ANIMATION, SD_FLAG_NONE, 0, 0),
 #endif
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_autoconfig,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_AUTOCONFIG,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_AUTOCONFIG,
-               DEFAULT_NOTIFICATION_SHOW_AUTOCONFIG,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_autoconfig_fails,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
-               DEFAULT_NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
+               SDESC_BOOL_ROW(notification_show_autoconfig, NOTIFICATION_SHOW_AUTOCONFIG,
+                     DEFAULT_NOTIFICATION_SHOW_AUTOCONFIG, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(notification_show_autoconfig_fails, NOTIFICATION_SHOW_AUTOCONFIG_FAILS,
+                     DEFAULT_NOTIFICATION_SHOW_AUTOCONFIG_FAILS, SD_FLAG_NONE, 0, 0),
 #ifdef HAVE_CHEATS
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_cheats_applied,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_CHEATS_APPLIED,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_CHEATS_APPLIED,
-               DEFAULT_NOTIFICATION_SHOW_CHEATS_APPLIED,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+               SDESC_BOOL_ROW(notification_show_cheats_applied, NOTIFICATION_SHOW_CHEATS_APPLIED,
+                     DEFAULT_NOTIFICATION_SHOW_CHEATS_APPLIED, SD_FLAG_NONE, 0, 0),
 #endif
 #ifdef HAVE_PATCH
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_patch_applied,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_PATCH_APPLIED,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_PATCH_APPLIED,
-               DEFAULT_NOTIFICATION_SHOW_PATCH_APPLIED,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+               SDESC_BOOL_ROW(notification_show_patch_applied, NOTIFICATION_SHOW_PATCH_APPLIED,
+                     DEFAULT_NOTIFICATION_SHOW_PATCH_APPLIED, SD_FLAG_NONE, 0, 0),
 #endif
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_remap_load,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_REMAP_LOAD,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_REMAP_LOAD,
-               DEFAULT_NOTIFICATION_SHOW_REMAP_LOAD,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_config_override_load,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_CONFIG_OVERRIDE_LOAD,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_CONFIG_OVERRIDE_LOAD,
-               DEFAULT_NOTIFICATION_SHOW_CONFIG_OVERRIDE_LOAD,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_set_initial_disk,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_SET_INITIAL_DISK,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_SET_INITIAL_DISK,
-               DEFAULT_NOTIFICATION_SHOW_SET_INITIAL_DISK,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_disk_control,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_DISK_CONTROL,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_DISK_CONTROL,
-               DEFAULT_NOTIFICATION_SHOW_DISK_CONTROL,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_save_state,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_SAVE_STATE,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_SAVE_STATE,
-               DEFAULT_NOTIFICATION_SHOW_SAVE_STATE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_fast_forward,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_FAST_FORWARD,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_FAST_FORWARD,
-               DEFAULT_NOTIFICATION_SHOW_FAST_FORWARD,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
+               SDESC_BOOL_ROW(notification_show_remap_load, NOTIFICATION_SHOW_REMAP_LOAD,
+                     DEFAULT_NOTIFICATION_SHOW_REMAP_LOAD, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(notification_show_config_override_load, NOTIFICATION_SHOW_CONFIG_OVERRIDE_LOAD,
+                     DEFAULT_NOTIFICATION_SHOW_CONFIG_OVERRIDE_LOAD, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(notification_show_set_initial_disk, NOTIFICATION_SHOW_SET_INITIAL_DISK,
+                     DEFAULT_NOTIFICATION_SHOW_SET_INITIAL_DISK, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(notification_show_disk_control, NOTIFICATION_SHOW_DISK_CONTROL,
+                     DEFAULT_NOTIFICATION_SHOW_DISK_CONTROL, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(notification_show_save_state, NOTIFICATION_SHOW_SAVE_STATE,
+                     DEFAULT_NOTIFICATION_SHOW_SAVE_STATE, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(notification_show_fast_forward, NOTIFICATION_SHOW_FAST_FORWARD,
+                     DEFAULT_NOTIFICATION_SHOW_FAST_FORWARD, SD_FLAG_NONE, 0, 0),
 #ifdef HAVE_SCREENSHOTS
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_screenshot,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_SCREENSHOT,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_SCREENSHOT,
-               DEFAULT_NOTIFICATION_SHOW_SCREENSHOT,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
+               SDESC_BOOL_ROW_EX(notification_show_screenshot, NOTIFICATION_SHOW_SCREENSHOT,
+                     DEFAULT_NOTIFICATION_SHOW_SCREENSHOT, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
 #ifdef HAVE_GFX_WIDGETS
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.notification_show_screenshot_duration,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_SCREENSHOT_DURATION,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_SCREENSHOT_DURATION,
-               DEFAULT_NOTIFICATION_SHOW_SCREENSHOT_DURATION,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_notification_show_screenshot_duration;
-         menu_settings_list_current_add_range(list, list_info, 0, NOTIFICATION_SHOW_SCREENSHOT_DURATION_LAST-1, 1, true, true);
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.notification_show_screenshot_flash,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_SCREENSHOT_FLASH,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_SCREENSHOT_FLASH,
-               DEFAULT_NOTIFICATION_SHOW_SCREENSHOT_FLASH,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_notification_show_screenshot_flash;
-         menu_settings_list_current_add_range(list, list_info, 0, NOTIFICATION_SHOW_SCREENSHOT_FLASH_LAST-1, 1, true, true);
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+               SDESC_UINT_ROW_EX(notification_show_screenshot_duration, NOTIFICATION_SHOW_SCREENSHOT_DURATION,
+                     DEFAULT_NOTIFICATION_SHOW_SCREENSHOT_DURATION,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, NOTIFICATION_SHOW_SCREENSHOT_DURATION_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_notification_show_screenshot_duration,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_UINT_ROW_EX(notification_show_screenshot_flash, NOTIFICATION_SHOW_SCREENSHOT_FLASH,
+                     DEFAULT_NOTIFICATION_SHOW_SCREENSHOT_FLASH,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, NOTIFICATION_SHOW_SCREENSHOT_FLASH_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_notification_show_screenshot_flash,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
 #endif
 #endif
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_refresh_rate,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_REFRESH_RATE,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_REFRESH_RATE,
-               DEFAULT_NOTIFICATION_SHOW_REFRESH_RATE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
+               SDESC_BOOL_ROW(notification_show_refresh_rate, NOTIFICATION_SHOW_REFRESH_RATE,
+                     DEFAULT_NOTIFICATION_SHOW_REFRESH_RATE, SD_FLAG_NONE, 0, 0),
 #ifdef HAVE_NETWORKING
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_netplay_extra,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_NETPLAY_EXTRA,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_NETPLAY_EXTRA,
-               DEFAULT_NOTIFICATION_SHOW_NETPLAY_EXTRA,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+               SDESC_BOOL_ROW(notification_show_netplay_extra, NOTIFICATION_SHOW_NETPLAY_EXTRA,
+                     DEFAULT_NOTIFICATION_SHOW_NETPLAY_EXTRA, SD_FLAG_NONE, 0, 0),
 #endif
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.notification_show_when_menu_is_alive,
-               MENU_ENUM_LABEL_NOTIFICATION_SHOW_WHEN_MENU_IS_ALIVE,
-               MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_WHEN_MENU_IS_ALIVE,
-               DEFAULT_NOTIFICATION_SHOW_WHEN_MENU_IS_ALIVE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+               SDESC_BOOL_ROW(notification_show_when_menu_is_alive, NOTIFICATION_SHOW_WHEN_MENU_IS_ALIVE,
+                     DEFAULT_NOTIFICATION_SHOW_WHEN_MENU_IS_ALIVE, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  osn_desc_5, ARRAY_SIZE(osn_desc_5),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
@@ -18069,6 +16508,7 @@ static bool setting_append_list(
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
+         /* Descriptor holdout: change_handler poke; descriptor slot deferred to the single-source phase. */
          CONFIG_BOOL(
                list, list_info,
                &settings->bools.input_overlay_enable,
@@ -18108,21 +16548,39 @@ static bool setting_append_list(
 
          if (video_driver_test_all_flags(GFX_CTX_FLAGS_OVERLAY_BEHIND_MENU_SUPPORTED))
          {
-            CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.input_overlay_behind_menu,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_BEHIND_MENU,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_BEHIND_MENU,
-               DEFAULT_OVERLAY_BEHIND_MENU,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
+         {
+            static const setting_desc_t ovl_desc_0[] = {
+/* GENERATED: rows come from settings_def_overlay_enable.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_overlay_enable.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ovl_desc_0, ARRAY_SIZE(ovl_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
          CONFIG_BOOL(
                list, list_info,
@@ -18158,6 +16616,7 @@ static bool setting_append_list(
                );
          (*list)[list_info->index - 1].change_handler = overlay_enable_toggle_change_handler;
 
+         /* Descriptor holdout: poke tail outside the descriptor grammar. */
          CONFIG_UINT(
                list, list_info,
                &settings->uints.input_overlay_show_inputs,
@@ -18178,6 +16637,7 @@ static bool setting_append_list(
                &setting_get_string_representation_uint_input_overlay_show_inputs;
          menu_settings_list_current_add_range(list, list_info, 0, OVERLAY_SHOW_INPUT_LAST-1, 1, true, true);
 
+         /* Descriptor holdout: change_handler poke; descriptor slot deferred to the single-source phase. */
          CONFIG_UINT(
                list, list_info,
                &settings->uints.input_overlay_show_inputs_port,
@@ -18229,59 +16689,95 @@ static bool setting_append_list(
                );
          (*list)[list_info->index - 1].change_handler = overlay_enable_toggle_change_handler;
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.input_overlay_auto_scale,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_AUTO_SCALE,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_AUTO_SCALE,
-               DEFAULT_INPUT_OVERLAY_AUTO_SCALE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-         (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
+         {
+            static const setting_desc_t ovl_desc_1[] = {
+               SDESC_BOOL_ROW_EX(input_overlay_auto_scale, INPUT_OVERLAY_AUTO_SCALE,
+                     DEFAULT_INPUT_OVERLAY_AUTO_SCALE, SD_FLAG_CMD_APPLY_AUTO, 0, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ovl_desc_1, ARRAY_SIZE(ovl_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-         CONFIG_PATH(
-               list, list_info,
-               settings->paths.path_overlay,
-               sizeof(settings->paths.path_overlay),
-               MENU_ENUM_LABEL_OVERLAY_PRESET,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_PRESET,
-               settings->paths.directory_overlay,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         MENU_SETTINGS_LIST_CURRENT_ADD_VALUES(list, list_info, "cfg");
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_INIT);
+         {
+            static const setting_desc_t overlay2_desc_0[] = {
+/* GENERATED: rows come from settings_def_overlay_preset_path.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_overlay_preset_path.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  overlay2_desc_0, ARRAY_SIZE(overlay2_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_opacity,
-               MENU_ENUM_LABEL_OVERLAY_OPACITY,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_OPACITY,
-               DEFAULT_INPUT_OVERLAY_OPACITY,
-               "%.2f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_ALPHA_MOD);
-         menu_settings_list_current_add_range(list, list_info, 0, 1, 0.01, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
+         {
+            static const setting_desc_t ovl_desc_2[] = {
+               SDESC_FLOAT_ROW_EX(input_overlay_opacity, OVERLAY_OPACITY,
+                     DEFAULT_INPUT_OVERLAY_OPACITY, "%.2f",
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_OVERLAY_SET_ALPHA_MOD,
+                     0, 1, 0.01,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ovl_desc_2, ARRAY_SIZE(ovl_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
+         /* Descriptor holdout: poke tail outside the descriptor grammar. */
          CONFIG_UINT(
                list, list_info,
                &settings->uints.input_overlay_dpad_diagonal_sensitivity,
@@ -18337,228 +16833,76 @@ static bool setting_append_list(
                &setting_get_string_representation_percentage;
          menu_settings_list_current_add_range(list, list_info, 0, 100, 1, true, true);
 
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_scale_landscape,
-               MENU_ENUM_LABEL_OVERLAY_SCALE_LANDSCAPE,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_SCALE_LANDSCAPE,
-               DEFAULT_INPUT_OVERLAY_SCALE_LANDSCAPE,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-         menu_settings_list_current_add_range(list, list_info, 0.0f, 2.0f, 0.005, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_aspect_adjust_landscape,
-               MENU_ENUM_LABEL_OVERLAY_ASPECT_ADJUST_LANDSCAPE,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_ASPECT_ADJUST_LANDSCAPE,
-               DEFAULT_INPUT_OVERLAY_ASPECT_ADJUST_LANDSCAPE,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-         menu_settings_list_current_add_range(list, list_info, -2.0f, 2.0f, 0.005f, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_x_separation_landscape,
-               MENU_ENUM_LABEL_OVERLAY_X_SEPARATION_LANDSCAPE,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_X_SEPARATION_LANDSCAPE,
-               DEFAULT_INPUT_OVERLAY_X_SEPARATION_LANDSCAPE,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-         menu_settings_list_current_add_range(list, list_info, -2.0f, 2.0f, 0.005f, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_y_separation_landscape,
-               MENU_ENUM_LABEL_OVERLAY_Y_SEPARATION_LANDSCAPE,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_Y_SEPARATION_LANDSCAPE,
-               DEFAULT_INPUT_OVERLAY_Y_SEPARATION_LANDSCAPE,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-         menu_settings_list_current_add_range(list, list_info, -2.0f, 2.0f, 0.005f, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_x_offset_landscape,
-               MENU_ENUM_LABEL_OVERLAY_X_OFFSET_LANDSCAPE,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_X_OFFSET_LANDSCAPE,
-               DEFAULT_INPUT_OVERLAY_X_OFFSET_LANDSCAPE,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-         menu_settings_list_current_add_range(list, list_info, -1.0f, 1.0f, 0.005f, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_y_offset_landscape,
-               MENU_ENUM_LABEL_OVERLAY_Y_OFFSET_LANDSCAPE,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_Y_OFFSET_LANDSCAPE,
-               DEFAULT_INPUT_OVERLAY_Y_OFFSET_LANDSCAPE,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-         menu_settings_list_current_add_range(list, list_info, -1.0f, 1.0f, 0.005f, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_scale_portrait,
-               MENU_ENUM_LABEL_OVERLAY_SCALE_PORTRAIT,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_SCALE_PORTRAIT,
-               DEFAULT_INPUT_OVERLAY_SCALE_PORTRAIT,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-         menu_settings_list_current_add_range(list, list_info, 0.0f, 2.0f, 0.005, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_aspect_adjust_portrait,
-               MENU_ENUM_LABEL_OVERLAY_ASPECT_ADJUST_PORTRAIT,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_ASPECT_ADJUST_PORTRAIT,
-               DEFAULT_INPUT_OVERLAY_ASPECT_ADJUST_PORTRAIT,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-         menu_settings_list_current_add_range(list, list_info, -2.0f, 2.0f, 0.005f, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_x_separation_portrait,
-               MENU_ENUM_LABEL_OVERLAY_X_SEPARATION_PORTRAIT,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_X_SEPARATION_PORTRAIT,
-               DEFAULT_INPUT_OVERLAY_X_SEPARATION_PORTRAIT,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-         menu_settings_list_current_add_range(list, list_info, -2.0f, 2.0f, 0.005f, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_y_separation_portrait,
-               MENU_ENUM_LABEL_OVERLAY_Y_SEPARATION_PORTRAIT,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_Y_SEPARATION_PORTRAIT,
-               DEFAULT_INPUT_OVERLAY_Y_SEPARATION_PORTRAIT,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-         menu_settings_list_current_add_range(list, list_info, -2.0f, 2.0f, 0.005f, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_x_offset_portrait,
-               MENU_ENUM_LABEL_OVERLAY_X_OFFSET_PORTRAIT,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_X_OFFSET_PORTRAIT,
-               DEFAULT_INPUT_OVERLAY_X_OFFSET_PORTRAIT,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-         menu_settings_list_current_add_range(list, list_info, -1.0f, 1.0f, 0.005f, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_y_offset_portrait,
-               MENU_ENUM_LABEL_OVERLAY_Y_OFFSET_PORTRAIT,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_Y_OFFSET_PORTRAIT,
-               DEFAULT_INPUT_OVERLAY_Y_OFFSET_PORTRAIT,
-               "%.3f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR);
-         menu_settings_list_current_add_range(list, list_info, -1.0f, 1.0f, 0.005f, true, true);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.input_overlay_pointer_enable,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_POINTER_ENABLE,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_POINTER_ENABLE,
-               DEFAULT_INPUT_OVERLAY_POINTER_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-         (*list)[list_info->index - 1].action_ok    = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left  = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right = &setting_bool_action_right_with_refresh;
+         {
+            static const setting_desc_t ovl_desc_3[] = {
+               SDESC_FLOAT_ROW_EX(input_overlay_scale_landscape, OVERLAY_SCALE_LANDSCAPE,
+                     DEFAULT_INPUT_OVERLAY_SCALE_LANDSCAPE, "%.3f",
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR,
+                     0.0f, 2.0f, 0.005,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_overlay_aspect_adjust_landscape, OVERLAY_ASPECT_ADJUST_LANDSCAPE,
+                     DEFAULT_INPUT_OVERLAY_ASPECT_ADJUST_LANDSCAPE, "%.3f",
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR,
+                     -2.0f, 2.0f, 0.005f,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_overlay_x_separation_landscape, OVERLAY_X_SEPARATION_LANDSCAPE,
+                     DEFAULT_INPUT_OVERLAY_X_SEPARATION_LANDSCAPE, "%.3f",
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR,
+                     -2.0f, 2.0f, 0.005f,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_overlay_y_separation_landscape, OVERLAY_Y_SEPARATION_LANDSCAPE,
+                     DEFAULT_INPUT_OVERLAY_Y_SEPARATION_LANDSCAPE, "%.3f",
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR,
+                     -2.0f, 2.0f, 0.005f,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_overlay_x_offset_landscape, OVERLAY_X_OFFSET_LANDSCAPE,
+                     DEFAULT_INPUT_OVERLAY_X_OFFSET_LANDSCAPE, "%.3f",
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR,
+                     -1.0f, 1.0f, 0.005f,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_overlay_y_offset_landscape, OVERLAY_Y_OFFSET_LANDSCAPE,
+                     DEFAULT_INPUT_OVERLAY_Y_OFFSET_LANDSCAPE, "%.3f",
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR,
+                     -1.0f, 1.0f, 0.005f,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_overlay_scale_portrait, OVERLAY_SCALE_PORTRAIT,
+                     DEFAULT_INPUT_OVERLAY_SCALE_PORTRAIT, "%.3f",
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR,
+                     0.0f, 2.0f, 0.005,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_overlay_aspect_adjust_portrait, OVERLAY_ASPECT_ADJUST_PORTRAIT,
+                     DEFAULT_INPUT_OVERLAY_ASPECT_ADJUST_PORTRAIT, "%.3f",
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR,
+                     -2.0f, 2.0f, 0.005f,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_overlay_x_separation_portrait, OVERLAY_X_SEPARATION_PORTRAIT,
+                     DEFAULT_INPUT_OVERLAY_X_SEPARATION_PORTRAIT, "%.3f",
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR,
+                     -2.0f, 2.0f, 0.005f,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_overlay_y_separation_portrait, OVERLAY_Y_SEPARATION_PORTRAIT,
+                     DEFAULT_INPUT_OVERLAY_Y_SEPARATION_PORTRAIT, "%.3f",
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR,
+                     -2.0f, 2.0f, 0.005f,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_overlay_x_offset_portrait, OVERLAY_X_OFFSET_PORTRAIT,
+                     DEFAULT_INPUT_OVERLAY_X_OFFSET_PORTRAIT, "%.3f",
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR,
+                     -1.0f, 1.0f, 0.005f,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_overlay_y_offset_portrait, OVERLAY_Y_OFFSET_PORTRAIT,
+                     DEFAULT_INPUT_OVERLAY_Y_OFFSET_PORTRAIT, "%.3f",
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_OVERLAY_SET_SCALE_FACTOR,
+                     -1.0f, 1.0f, 0.005f,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW_EX(input_overlay_pointer_enable, INPUT_OVERLAY_POINTER_ENABLE,
+                     DEFAULT_INPUT_OVERLAY_POINTER_ENABLE, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ovl_desc_3, ARRAY_SIZE(ovl_desc_3),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
 
@@ -18575,6 +16919,7 @@ static bool setting_append_list(
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
+         /* Descriptor holdout: runtime default value. */
          CONFIG_PATH(
                list, list_info,
                settings->paths.path_osk_overlay,
@@ -18590,6 +16935,7 @@ static bool setting_append_list(
          MENU_SETTINGS_LIST_CURRENT_ADD_VALUES(list, list_info, "cfg");
          MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_OVERLAY_INIT);
 
+         /* Descriptor holdout: poke tail outside the descriptor grammar. */
          CONFIG_BOOL(
                list, list_info,
                &settings->bools.input_osk_overlay_auto_scale,
@@ -18643,120 +16989,47 @@ static bool setting_append_list(
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_INT(
-               list, list_info,
-               &settings->ints.input_overlay_lightgun_port,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_LIGHTGUN_PORT,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_LIGHTGUN_PORT,
-               DEFAULT_INPUT_OVERLAY_LIGHTGUN_PORT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].offset_by = -1;
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_overlay_lightgun_port;
-         menu_settings_list_current_add_range(list, list_info, -1, MAX_USERS - 1, 1, true, true);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.input_overlay_lightgun_trigger_on_touch,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_LIGHTGUN_TRIGGER_ON_TOUCH,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_LIGHTGUN_TRIGGER_ON_TOUCH,
-               DEFAULT_INPUT_OVERLAY_LIGHTGUN_TRIGGER_ON_TOUCH,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.input_overlay_lightgun_trigger_delay,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_LIGHTGUN_TRIGGER_DELAY,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_LIGHTGUN_TRIGGER_DELAY,
-               DEFAULT_INPUT_OVERLAY_LIGHTGUN_TRIGGER_DELAY,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0,
-               OVERLAY_LIGHTGUN_TRIG_MAX_DELAY, 1, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.input_overlay_lightgun_two_touch_input,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_LIGHTGUN_TWO_TOUCH_INPUT,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_LIGHTGUN_TWO_TOUCH_INPUT,
-               DEFAULT_INPUT_OVERLAY_LIGHTGUN_MULTI_TOUCH_INPUT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_overlay_lightgun_action;
-         menu_settings_list_current_add_range(list, list_info,
-               OVERLAY_LIGHTGUN_ACTION_NONE, OVERLAY_LIGHTGUN_ACTION_END - 1, 1, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.input_overlay_lightgun_three_touch_input,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_LIGHTGUN_THREE_TOUCH_INPUT,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_LIGHTGUN_THREE_TOUCH_INPUT,
-               DEFAULT_INPUT_OVERLAY_LIGHTGUN_MULTI_TOUCH_INPUT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_overlay_lightgun_action;
-         menu_settings_list_current_add_range(list, list_info,
-               OVERLAY_LIGHTGUN_ACTION_NONE, OVERLAY_LIGHTGUN_ACTION_END - 1, 1, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.input_overlay_lightgun_four_touch_input,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_LIGHTGUN_FOUR_TOUCH_INPUT,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_LIGHTGUN_FOUR_TOUCH_INPUT,
-               DEFAULT_INPUT_OVERLAY_LIGHTGUN_MULTI_TOUCH_INPUT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_overlay_lightgun_action;
-         menu_settings_list_current_add_range(list, list_info,
-               OVERLAY_LIGHTGUN_ACTION_NONE, OVERLAY_LIGHTGUN_ACTION_END - 1, 1, true, true);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.input_overlay_lightgun_allow_offscreen,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_LIGHTGUN_ALLOW_OFFSCREEN,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_LIGHTGUN_ALLOW_OFFSCREEN,
-               DEFAULT_INPUT_OVERLAY_LIGHTGUN_ALLOW_OFFSCREEN,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
+         {
+            static const setting_desc_t overlay_lightg_desc_0[] = {
+               SDESC_INT_ROW_EX(input_overlay_lightgun_port, INPUT_OVERLAY_LIGHTGUN_PORT,
+                     DEFAULT_INPUT_OVERLAY_LIGHTGUN_PORT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     -1, MAX_USERS - 1, 1, -1,
+                     setting_action_ok_uint, setting_get_string_representation_overlay_lightgun_port,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(input_overlay_lightgun_trigger_on_touch, INPUT_OVERLAY_LIGHTGUN_TRIGGER_ON_TOUCH,
+                     DEFAULT_INPUT_OVERLAY_LIGHTGUN_TRIGGER_ON_TOUCH, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(input_overlay_lightgun_trigger_delay, INPUT_OVERLAY_LIGHTGUN_TRIGGER_DELAY,
+                     DEFAULT_INPUT_OVERLAY_LIGHTGUN_TRIGGER_DELAY,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, OVERLAY_LIGHTGUN_TRIG_MAX_DELAY, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(input_overlay_lightgun_two_touch_input, INPUT_OVERLAY_LIGHTGUN_TWO_TOUCH_INPUT,
+                     DEFAULT_INPUT_OVERLAY_LIGHTGUN_MULTI_TOUCH_INPUT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     OVERLAY_LIGHTGUN_ACTION_NONE, OVERLAY_LIGHTGUN_ACTION_END - 1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_overlay_lightgun_action,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(input_overlay_lightgun_three_touch_input, INPUT_OVERLAY_LIGHTGUN_THREE_TOUCH_INPUT,
+                     DEFAULT_INPUT_OVERLAY_LIGHTGUN_MULTI_TOUCH_INPUT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     OVERLAY_LIGHTGUN_ACTION_NONE, OVERLAY_LIGHTGUN_ACTION_END - 1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_overlay_lightgun_action,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(input_overlay_lightgun_four_touch_input, INPUT_OVERLAY_LIGHTGUN_FOUR_TOUCH_INPUT,
+                     DEFAULT_INPUT_OVERLAY_LIGHTGUN_MULTI_TOUCH_INPUT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     OVERLAY_LIGHTGUN_ACTION_NONE, OVERLAY_LIGHTGUN_ACTION_END - 1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_overlay_lightgun_action,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(input_overlay_lightgun_allow_offscreen, INPUT_OVERLAY_LIGHTGUN_ALLOW_OFFSCREEN,
+                     DEFAULT_INPUT_OVERLAY_LIGHTGUN_ALLOW_OFFSCREEN, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  overlay_lightg_desc_0, ARRAY_SIZE(overlay_lightg_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
 
@@ -18773,112 +17046,45 @@ static bool setting_append_list(
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_mouse_speed,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_MOUSE_SPEED,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_MOUSE_SPEED,
-               DEFAULT_INPUT_OVERLAY_MOUSE_SPEED,
-               "%.1fx",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0.1, 5.0, 0.1, true, true);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.input_overlay_mouse_hold_to_drag,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_MOUSE_HOLD_TO_DRAG,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_MOUSE_HOLD_TO_DRAG,
-               DEFAULT_INPUT_OVERLAY_MOUSE_HOLD_TO_DRAG,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.input_overlay_mouse_hold_msec,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_MOUSE_HOLD_MSEC,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_MOUSE_HOLD_MSEC,
-               DEFAULT_INPUT_OVERLAY_MOUSE_HOLD_MSEC,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0, 1000, 1, true, true);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.input_overlay_mouse_dtap_to_drag,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_MOUSE_DTAP_TO_DRAG,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_MOUSE_DTAP_TO_DRAG,
-               DEFAULT_INPUT_OVERLAY_MOUSE_DTAP_TO_DRAG,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.input_overlay_mouse_dtap_msec,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_MOUSE_DTAP_MSEC,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_MOUSE_DTAP_MSEC,
-               DEFAULT_INPUT_OVERLAY_MOUSE_DTAP_MSEC,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0, 500, 1, true, true);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.input_overlay_mouse_swipe_threshold,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_MOUSE_SWIPE_THRESHOLD,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_MOUSE_SWIPE_THRESHOLD,
-               DEFAULT_INPUT_OVERLAY_MOUSE_SWIPE_THRESHOLD,
-               "%.1f%%",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0.0, 10.0, 0.1, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.input_overlay_mouse_alt_two_touch_input,
-               MENU_ENUM_LABEL_INPUT_OVERLAY_MOUSE_ALT_TWO_TOUCH_INPUT,
-               MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_MOUSE_ALT_TWO_TOUCH_INPUT,
-               DEFAULT_INPUT_OVERLAY_MOUSE_ALT_TWO_TOUCH_INPUT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_overlay_mouse_btn;
-         menu_settings_list_current_add_range(list, list_info,
-               OVERLAY_MOUSE_BTN_NONE, OVERLAY_MOUSE_BTN_END - 1, 1, true, true);
+         {
+            static const setting_desc_t overlay_mouse_desc_0[] = {
+               SDESC_FLOAT_ROW_EX(input_overlay_mouse_speed, INPUT_OVERLAY_MOUSE_SPEED,
+                     DEFAULT_INPUT_OVERLAY_MOUSE_SPEED, "%.1fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.1, 5.0, 0.1,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(input_overlay_mouse_hold_to_drag, INPUT_OVERLAY_MOUSE_HOLD_TO_DRAG,
+                     DEFAULT_INPUT_OVERLAY_MOUSE_HOLD_TO_DRAG, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(input_overlay_mouse_hold_msec, INPUT_OVERLAY_MOUSE_HOLD_MSEC,
+                     DEFAULT_INPUT_OVERLAY_MOUSE_HOLD_MSEC,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 1000, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(input_overlay_mouse_dtap_to_drag, INPUT_OVERLAY_MOUSE_DTAP_TO_DRAG,
+                     DEFAULT_INPUT_OVERLAY_MOUSE_DTAP_TO_DRAG, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(input_overlay_mouse_dtap_msec, INPUT_OVERLAY_MOUSE_DTAP_MSEC,
+                     DEFAULT_INPUT_OVERLAY_MOUSE_DTAP_MSEC,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 500, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(input_overlay_mouse_swipe_threshold, INPUT_OVERLAY_MOUSE_SWIPE_THRESHOLD,
+                     DEFAULT_INPUT_OVERLAY_MOUSE_SWIPE_THRESHOLD, "%.1f%%",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.0, 10.0, 0.1,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(input_overlay_mouse_alt_two_touch_input, INPUT_OVERLAY_MOUSE_ALT_TWO_TOUCH_INPUT,
+                     DEFAULT_INPUT_OVERLAY_MOUSE_ALT_TWO_TOUCH_INPUT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     OVERLAY_MOUSE_BTN_NONE, OVERLAY_MOUSE_BTN_END - 1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_overlay_mouse_btn,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  overlay_mouse_desc_0, ARRAY_SIZE(overlay_mouse_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
 
@@ -18898,398 +17104,289 @@ static bool setting_append_list(
          if (   string_is_not_equal(settings->arrays.menu_driver, "rgui")
              && string_is_not_equal(settings->arrays.menu_driver, "ozone"))
          {
-            CONFIG_PATH(
-                  list, list_info,
-                  settings->paths.path_menu_wallpaper,
-                  sizeof(settings->paths.path_menu_wallpaper),
-                  MENU_ENUM_LABEL_MENU_WALLPAPER,
-                  MENU_ENUM_LABEL_VALUE_MENU_WALLPAPER,
-                  settings->paths.directory_assets,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            MENU_SETTINGS_LIST_CURRENT_ADD_VALUES(list, list_info, "png");
+         {
+            static const setting_desc_t menu2_desc_0[] = {
+/* GENERATED: rows come from settings_def_menu_wallpaper_path.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_menu_wallpaper_path.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu2_desc_0, ARRAY_SIZE(menu2_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.menu_wallpaper_opacity,
-                  MENU_ENUM_LABEL_MENU_WALLPAPER_OPACITY,
-                  MENU_ENUM_LABEL_VALUE_MENU_WALLPAPER_OPACITY,
-                  DEFAULT_MENU_WALLPAPER_OPACITY,
-                  "%.3f",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.0, 1.0, 0.010, true, true);
+         {
+            static const setting_desc_t menu_desc_0[] = {
+               SDESC_FLOAT_ROW_EX(menu_wallpaper_opacity, MENU_WALLPAPER_OPACITY,
+                     DEFAULT_MENU_WALLPAPER_OPACITY, "%.3f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.0, 1.0, 0.010,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_0, ARRAY_SIZE(menu_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
          if (   string_is_not_equal(settings->arrays.menu_driver, "rgui")
              && string_is_not_equal(settings->arrays.menu_driver, "xmb"))
          {
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.menu_framebuffer_opacity,
-                  MENU_ENUM_LABEL_MENU_FRAMEBUFFER_OPACITY,
-                  MENU_ENUM_LABEL_VALUE_MENU_FRAMEBUFFER_OPACITY,
-                  DEFAULT_MENU_FRAMEBUFFER_OPACITY,
-                  "%.3f",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.0, 1.0, 0.010, true, true);
+         {
+            static const setting_desc_t menu_desc_1[] = {
+               SDESC_FLOAT_ROW_EX(menu_framebuffer_opacity, MENU_FRAMEBUFFER_OPACITY,
+                     DEFAULT_MENU_FRAMEBUFFER_OPACITY, "%.3f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.0, 1.0, 0.010,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_1, ARRAY_SIZE(menu_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
          if (string_is_equal(settings->arrays.menu_driver, "xmb"))
          {
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_dynamic_wallpaper_enable,
-                  MENU_ENUM_LABEL_DYNAMIC_WALLPAPER,
-                  MENU_ENUM_LABEL_VALUE_DYNAMIC_WALLPAPER,
-                  DEFAULT_MENU_DYNAMIC_WALLPAPER_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
+         {
+            static const setting_desc_t menu_desc_2[] = {
+/* GENERATED: rows come from settings_def_menu_wallpaper.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_wallpaper.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_2, ARRAY_SIZE(menu_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_pause_libretro,
-               MENU_ENUM_LABEL_PAUSE_LIBRETRO,
-               MENU_ENUM_LABEL_VALUE_PAUSE_LIBRETRO,
-               true,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_CMD_APPLY_AUTO
-               );
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_MENU_PAUSE_LIBRETRO);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_savestate_resume,
-               MENU_ENUM_LABEL_MENU_SAVESTATE_RESUME,
-               MENU_ENUM_LABEL_VALUE_MENU_SAVESTATE_RESUME,
-               DEFAULT_MENU_SAVESTATE_RESUME,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_insert_disk_resume,
-               MENU_ENUM_LABEL_MENU_INSERT_DISK_RESUME,
-               MENU_ENUM_LABEL_VALUE_MENU_INSERT_DISK_RESUME,
-               DEFAULT_MENU_INSERT_DISK_RESUME,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED
-               );
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.quit_on_close_content,
-               MENU_ENUM_LABEL_QUIT_ON_CLOSE_CONTENT,
-               MENU_ENUM_LABEL_VALUE_QUIT_ON_CLOSE_CONTENT,
-               DEFAULT_QUIT_ON_CLOSE_CONTENT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_quit_on_close_content;
-         menu_settings_list_current_add_range(list, list_info, 0, QUIT_ON_CLOSE_CONTENT_LAST-1, 1, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.menu_screensaver_timeout,
-               MENU_ENUM_LABEL_MENU_SCREENSAVER_TIMEOUT,
-               MENU_ENUM_LABEL_VALUE_MENU_SCREENSAVER_TIMEOUT,
-               DEFAULT_MENU_SCREENSAVER_TIMEOUT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint_special;
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_menu_screensaver_timeout;
-         menu_settings_list_current_add_range(list, list_info, 0, 1800, 10, true, true);
+         {
+            static const setting_desc_t menu_desc_3[] = {
+               SDESC_BOOL_ROW(menu_pause_libretro, PAUSE_LIBRETRO,
+                     true, SD_FLAG_CMD_APPLY_AUTO, 0, CMD_EVENT_MENU_PAUSE_LIBRETRO),
+               SDESC_BOOL_ROW(menu_savestate_resume, MENU_SAVESTATE_RESUME,
+                     DEFAULT_MENU_SAVESTATE_RESUME, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW(menu_insert_disk_resume, MENU_INSERT_DISK_RESUME,
+                     DEFAULT_MENU_INSERT_DISK_RESUME, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_UINT_ROW_EX(quit_on_close_content, QUIT_ON_CLOSE_CONTENT,
+                     DEFAULT_QUIT_ON_CLOSE_CONTENT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, QUIT_ON_CLOSE_CONTENT_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_quit_on_close_content,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(menu_screensaver_timeout, MENU_SCREENSAVER_TIMEOUT,
+                     DEFAULT_MENU_SCREENSAVER_TIMEOUT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 1800, 10, 0,
+                     setting_action_ok_uint_special, setting_get_string_representation_uint_menu_screensaver_timeout,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_3, ARRAY_SIZE(menu_desc_3),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #if (defined(HAVE_MATERIALUI) || defined(HAVE_XMB) || defined(HAVE_OZONE)) && !defined(_3DS)
          if (     memcmp(settings->arrays.menu_driver, "glui", 5) == 0
                || memcmp(settings->arrays.menu_driver, "xmb", 4) == 0
                || memcmp(settings->arrays.menu_driver, "ozone", 6) == 0)
          {
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_screensaver_animation,
-                  MENU_ENUM_LABEL_MENU_SCREENSAVER_ANIMATION,
-                  MENU_ENUM_LABEL_VALUE_MENU_SCREENSAVER_ANIMATION,
-                  DEFAULT_MENU_SCREENSAVER_ANIMATION,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok    = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].action_left  = &setting_uint_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right = &setting_uint_action_right_with_refresh;
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_menu_screensaver_animation;
-            menu_settings_list_current_add_range(list, list_info, 0, MENU_SCREENSAVER_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type      = ST_UI_TYPE_UINT_COMBOBOX;
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.menu_screensaver_animation_speed,
-                  MENU_ENUM_LABEL_MENU_SCREENSAVER_ANIMATION_SPEED,
-                  MENU_ENUM_LABEL_VALUE_MENU_SCREENSAVER_ANIMATION_SPEED,
-                  DEFAULT_MENU_SCREENSAVER_ANIMATION_SPEED,
-                  "%.1fx",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.1, 10.0, 0.1, true, true);
+         {
+            static const setting_desc_t menu_desc_4[] = {
+               SDESC_UINT_ROW_EX(menu_screensaver_animation, MENU_SCREENSAVER_ANIMATION,
+                     DEFAULT_MENU_SCREENSAVER_ANIMATION,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, MENU_SCREENSAVER_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_menu_screensaver_animation,
+                     NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_FLOAT_ROW_EX(menu_screensaver_animation_speed, MENU_SCREENSAVER_ANIMATION_SPEED,
+                     DEFAULT_MENU_SCREENSAVER_ANIMATION_SPEED, "%.1fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.1, 10.0, 0.1,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_4, ARRAY_SIZE(menu_desc_4),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 #endif
 
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.menu_remember_selection,
-               MENU_ENUM_LABEL_MENU_REMEMBER_SELECTION,
-               MENU_ENUM_LABEL_VALUE_MENU_REMEMBER_SELECTION,
-               DEFAULT_MENU_REMEMBER_SELECTION,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok    = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].action_left  = &setting_uint_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right = &setting_uint_action_right_with_refresh;
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_menu_remember_selection;
-         menu_settings_list_current_add_range(list, list_info, 0, MENU_REMEMBER_SELECTION_LAST-1, 1, true, true);
-         (*list)[list_info->index - 1].ui_type      = ST_UI_TYPE_UINT_COMBOBOX;
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.menu_startup_page,
-               MENU_ENUM_LABEL_MENU_STARTUP_PAGE,
-               MENU_ENUM_LABEL_VALUE_MENU_STARTUP_PAGE,
-               DEFAULT_MENU_STARTUP_PAGE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok    = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].action_left  = &setting_uint_action_left_default;
-         (*list)[list_info->index - 1].action_right = &setting_uint_action_right_default;
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_menu_startup_page;
-         menu_settings_list_current_add_range(list, list_info, 0, MENU_STARTUP_PAGE_LAST-1, 1, true, true);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_mouse_enable,
-               MENU_ENUM_LABEL_MOUSE_ENABLE,
-               MENU_ENUM_LABEL_VALUE_MOUSE_ENABLE,
-               DEFAULT_MOUSE_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_pointer_enable,
-               MENU_ENUM_LABEL_POINTER_ENABLE,
-               MENU_ENUM_LABEL_VALUE_POINTER_ENABLE,
-               DEFAULT_POINTER_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED
-               );
+         {
+            static const setting_desc_t menu_desc_5[] = {
+               SDESC_UINT_ROW_EX(menu_remember_selection, MENU_REMEMBER_SELECTION,
+                     DEFAULT_MENU_REMEMBER_SELECTION,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, MENU_REMEMBER_SELECTION_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_menu_remember_selection,
+                     NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_UINT_ROW_EX(menu_startup_page, MENU_STARTUP_PAGE,
+                     DEFAULT_MENU_STARTUP_PAGE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, MENU_STARTUP_PAGE_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_menu_startup_page,
+                     NULL, NULL, setting_uint_action_left_default, setting_uint_action_right_default, 0),
+               SDESC_BOOL_ROW(menu_mouse_enable, MOUSE_ENABLE,
+                     DEFAULT_MOUSE_ENABLE, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW(menu_pointer_enable, POINTER_ENABLE,
+                     DEFAULT_POINTER_ENABLE, SD_FLAG_ADVANCED, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_5, ARRAY_SIZE(menu_desc_5),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          if (string_is_equal(settings->arrays.menu_driver, "rgui"))
          {
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_rgui_border_filler_enable,
-                  MENU_ENUM_LABEL_MENU_RGUI_BORDER_FILLER_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_BORDER_FILLER_ENABLE,
-                  true,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_rgui_background_filler_thickness_enable,
-                  MENU_ENUM_LABEL_MENU_RGUI_BACKGROUND_FILLER_THICKNESS_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_BACKGROUND_FILLER_THICKNESS_ENABLE,
-                  true,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_rgui_border_filler_thickness_enable,
-                  MENU_ENUM_LABEL_MENU_RGUI_BORDER_FILLER_THICKNESS_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_BORDER_FILLER_THICKNESS_ENABLE,
-                  true,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_rgui_full_width_layout,
-                  MENU_ENUM_LABEL_MENU_RGUI_FULL_WIDTH_LAYOUT,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_FULL_WIDTH_LAYOUT,
-                  DEFAULT_RGUI_FULL_WIDTH_LAYOUT,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_6[] = {
+/* GENERATED: rows come from settings_def_menu_rgui_layout.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_rgui_layout.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_6, ARRAY_SIZE(menu_desc_6),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             if (video_driver_test_all_flags(GFX_CTX_FLAGS_MENU_FRAME_FILTERING))
             {
-               CONFIG_BOOL(
-                     list, list_info,
-                     &settings->bools.menu_linear_filter,
-                     MENU_ENUM_LABEL_MENU_LINEAR_FILTER,
-                     MENU_ENUM_LABEL_VALUE_MENU_LINEAR_FILTER,
-                     true,
-                     MENU_ENUM_LABEL_VALUE_OFF,
-                     MENU_ENUM_LABEL_VALUE_ON,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler,
-                     SD_FLAG_NONE
-                     );
-
-               CONFIG_UINT(
-                     list, list_info,
-                     &settings->uints.menu_rgui_internal_upscale_level,
-                     MENU_ENUM_LABEL_MENU_RGUI_INTERNAL_UPSCALE_LEVEL,
-                     MENU_ENUM_LABEL_VALUE_MENU_RGUI_INTERNAL_UPSCALE_LEVEL,
+         {
+            static const setting_desc_t menu_desc_7[] = {
+               SDESC_BOOL_ROW(menu_linear_filter, MENU_LINEAR_FILTER,
+                     true, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(menu_rgui_internal_upscale_level, MENU_RGUI_INTERNAL_UPSCALE_LEVEL,
                      DEFAULT_RGUI_INTERNAL_UPSCALE_LEVEL,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler);
-                  (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-                  (*list)[list_info->index - 1].get_string_representation =
-                     &setting_get_string_representation_uint_rgui_internal_upscale_level;
-               menu_settings_list_current_add_range(list, list_info, 0, RGUI_UPSCALE_LAST-1, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-               (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     0, RGUI_UPSCALE_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_rgui_internal_upscale_level,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_7, ARRAY_SIZE(menu_desc_7),
+                  &group_info, &subgroup_info, parent_group);
+         }
             }
 
 #if !defined(DINGUX)
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_rgui_aspect_ratio,
-                  MENU_ENUM_LABEL_MENU_RGUI_ASPECT_RATIO,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_ASPECT_RATIO,
-                  DEFAULT_RGUI_ASPECT,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_rgui_aspect_ratio;
-            menu_settings_list_current_add_range(list, list_info, 0, RGUI_ASPECT_RATIO_LAST-1, 1, true, true);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_rgui_aspect_ratio_lock,
-                  MENU_ENUM_LABEL_MENU_RGUI_ASPECT_RATIO_LOCK,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_ASPECT_RATIO_LOCK,
-                  DEFAULT_RGUI_ASPECT_LOCK,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_rgui_aspect_ratio_lock;
+         {
+            static const setting_desc_t menu_desc_8[] = {
+               SDESC_UINT_ROW_EX(menu_rgui_aspect_ratio, MENU_RGUI_ASPECT_RATIO,
+                     DEFAULT_RGUI_ASPECT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, RGUI_ASPECT_RATIO_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_rgui_aspect_ratio,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(menu_rgui_aspect_ratio_lock, MENU_RGUI_ASPECT_RATIO_LOCK,
+                     DEFAULT_RGUI_ASPECT_LOCK,
+                     SD_FLAG_NONE, 0, 0,
+                     0, 0, 0, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_rgui_aspect_ratio_lock,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_8, ARRAY_SIZE(menu_desc_8),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #if defined(GEKKO)
             menu_settings_list_current_add_range(list, list_info, 0, RGUI_ASPECT_RATIO_LOCK_LAST-3, 1, true, true);
 #else
@@ -19298,38 +17395,83 @@ static bool setting_append_list(
             (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
 #endif
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_rgui_color_theme,
-                  MENU_ENUM_LABEL_RGUI_MENU_COLOR_THEME,
-                  MENU_ENUM_LABEL_VALUE_RGUI_MENU_COLOR_THEME,
-                  DEFAULT_RGUI_COLOR_THEME,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].action_left  = &setting_uint_action_left_with_refresh;
-               (*list)[list_info->index - 1].action_right = &setting_uint_action_right_with_refresh;
-               (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_rgui_menu_color_theme;
-            menu_settings_list_current_add_range(list, list_info, 0, RGUI_THEME_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+         {
+            static const setting_desc_t menu_desc_9[] = {
+               SDESC_UINT_ROW_EX(menu_rgui_color_theme, RGUI_MENU_COLOR_THEME,
+                     DEFAULT_RGUI_COLOR_THEME,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, RGUI_THEME_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_rgui_menu_color_theme,
+                     NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, ST_UI_TYPE_UINT_COMBOBOX),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_9, ARRAY_SIZE(menu_desc_9),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_PATH(
-                  list, list_info,
-                  settings->paths.path_rgui_theme_preset,
-                  sizeof(settings->paths.path_rgui_theme_preset),
-                  MENU_ENUM_LABEL_RGUI_MENU_THEME_PRESET,
-                  MENU_ENUM_LABEL_VALUE_RGUI_MENU_THEME_PRESET,
-                  settings->paths.directory_assets,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            MENU_SETTINGS_LIST_CURRENT_ADD_VALUES(list, list_info, "cfg");
+         {
+            static const setting_desc_t menu2_desc_1[] = {
+/* GENERATED: rows come from settings_def_rgui_theme_path.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_rgui_theme_path.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu2_desc_1, ARRAY_SIZE(menu2_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             /* ps2 and sdl_dingux/sdl_rs90 gfx drivers do
              * not support menu framebuffer transparency */
@@ -19337,136 +17479,106 @@ static bool setting_append_list(
                 && !string_is_equal(settings->arrays.video_driver, "sdl_dingux")
                 && !string_is_equal(settings->arrays.video_driver, "sdl_rs90"))
             {
-               CONFIG_BOOL(
-                     list, list_info,
-                     &settings->bools.menu_rgui_transparency,
-                     MENU_ENUM_LABEL_MENU_RGUI_TRANSPARENCY,
-                     MENU_ENUM_LABEL_VALUE_MENU_RGUI_TRANSPARENCY,
-                     DEFAULT_RGUI_TRANSPARENCY,
-                     MENU_ENUM_LABEL_VALUE_OFF,
-                     MENU_ENUM_LABEL_VALUE_ON,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler,
-                     SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_10[] = {
+/* GENERATED: rows come from settings_def_menu_rgui_transparency.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_rgui_transparency.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_10, ARRAY_SIZE(menu_desc_10),
+                  &group_info, &subgroup_info, parent_group);
+         }
             }
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_rgui_shadows,
-                  MENU_ENUM_LABEL_MENU_RGUI_SHADOWS,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_SHADOWS,
-                  DEFAULT_RGUI_SHADOWS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_rgui_particle_effect,
-                  MENU_ENUM_LABEL_MENU_RGUI_PARTICLE_EFFECT,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_PARTICLE_EFFECT,
-                  DEFAULT_RGUI_PARTICLE_EFFECT,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-               (*list)[list_info->index - 1].action_ok    = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].action_left  = &setting_uint_action_left_with_refresh;
-               (*list)[list_info->index - 1].action_right = &setting_uint_action_right_with_refresh;
-               (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_rgui_particle_effect;
-            menu_settings_list_current_add_range(list, list_info, 0, RGUI_PARTICLE_EFFECT_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.menu_rgui_particle_effect_speed,
-                  MENU_ENUM_LABEL_MENU_RGUI_PARTICLE_EFFECT_SPEED,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_PARTICLE_EFFECT_SPEED,
-                  DEFAULT_RGUI_PARTICLE_EFFECT_SPEED,
-                  "%.1fx",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.1, 10.0, 0.1, true, true);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_rgui_particle_effect_screensaver,
-                  MENU_ENUM_LABEL_MENU_RGUI_PARTICLE_EFFECT_SCREENSAVER,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_PARTICLE_EFFECT_SCREENSAVER,
-                  DEFAULT_RGUI_PARTICLE_EFFECT_SCREENSAVER,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_rgui_extended_ascii,
-                  MENU_ENUM_LABEL_MENU_RGUI_EXTENDED_ASCII,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_EXTENDED_ASCII,
-                  DEFAULT_RGUI_EXTENDED_ASCII,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_rgui_switch_icons,
-                  MENU_ENUM_LABEL_MENU_RGUI_SWITCH_ICONS,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_SWITCH_ICONS,
-                  DEFAULT_RGUI_SWITCH_ICONS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_11[] = {
+               SDESC_BOOL_ROW(menu_rgui_shadows, MENU_RGUI_SHADOWS,
+                     DEFAULT_RGUI_SHADOWS, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(menu_rgui_particle_effect, MENU_RGUI_PARTICLE_EFFECT,
+                     DEFAULT_RGUI_PARTICLE_EFFECT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, RGUI_PARTICLE_EFFECT_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_rgui_particle_effect,
+                     NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_FLOAT_ROW_EX(menu_rgui_particle_effect_speed, MENU_RGUI_PARTICLE_EFFECT_SPEED,
+                     DEFAULT_RGUI_PARTICLE_EFFECT_SPEED, "%.1fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.1, 10.0, 0.1,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(menu_rgui_particle_effect_screensaver, MENU_RGUI_PARTICLE_EFFECT_SCREENSAVER,
+                     DEFAULT_RGUI_PARTICLE_EFFECT_SCREENSAVER, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(menu_rgui_extended_ascii, MENU_RGUI_EXTENDED_ASCII,
+                     DEFAULT_RGUI_EXTENDED_ASCII, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(menu_rgui_switch_icons, MENU_RGUI_SWITCH_ICONS,
+                     DEFAULT_RGUI_SWITCH_ICONS, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_11, ARRAY_SIZE(menu_desc_11),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
 #if defined(HAVE_XMB) || defined (HAVE_OZONE)
          if (     string_is_equal(settings->arrays.menu_driver, "xmb")
                || string_is_equal(settings->arrays.menu_driver, "ozone"))
          {
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_horizontal_animation,
-                  MENU_ENUM_LABEL_MENU_HORIZONTAL_ANIMATION,
-                  MENU_ENUM_LABEL_VALUE_MENU_HORIZONTAL_ANIMATION,
-                  DEFAULT_MENU_HORIZONTAL_ANIMATION,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED
-                  );
+         {
+            static const setting_desc_t menu_desc_12[] = {
+/* GENERATED: rows come from settings_def_menu_horizontal_animation.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_horizontal_animation.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_12, ARRAY_SIZE(menu_desc_12),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #ifdef RARCH_MOBILE
             /* We don't want mobile users being able to switch this off. */
             (*list)[list_info->index - 1].action_left   = NULL;
@@ -19481,196 +17593,208 @@ static bool setting_append_list(
 
          if (string_is_equal(settings->arrays.menu_driver, "xmb"))
          {
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_xmb_animation_horizontal_highlight,
-                  MENU_ENUM_LABEL_MENU_XMB_ANIMATION_HORIZONTAL_HIGHLIGHT,
-                  MENU_ENUM_LABEL_VALUE_MENU_XMB_ANIMATION_HORIZONTAL_HIGHLIGHT,
-                  DEFAULT_XMB_ANIMATION,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_menu_xmb_animation_horizontal_highlight;
-            menu_settings_list_current_add_range(list, list_info, 0, 2, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_RADIO_BUTTONS;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_xmb_animation_move_up_down,
-                  MENU_ENUM_LABEL_MENU_XMB_ANIMATION_MOVE_UP_DOWN,
-                  MENU_ENUM_LABEL_VALUE_MENU_XMB_ANIMATION_MOVE_UP_DOWN,
-                  DEFAULT_XMB_ANIMATION,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_menu_xmb_animation_move_up_down;
-            menu_settings_list_current_add_range(list, list_info, 0, 2, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_RADIO_BUTTONS;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_xmb_animation_opening_main_menu,
-                  MENU_ENUM_LABEL_MENU_XMB_ANIMATION_OPENING_MAIN_MENU,
-                  MENU_ENUM_LABEL_VALUE_MENU_XMB_ANIMATION_OPENING_MAIN_MENU,
-                  DEFAULT_XMB_ANIMATION,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_menu_xmb_animation_opening_main_menu;
-            menu_settings_list_current_add_range(list, list_info, 0, 3, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_RADIO_BUTTONS;
+         {
+            static const setting_desc_t menu_desc_13[] = {
+               SDESC_UINT_ROW_EX(menu_xmb_animation_horizontal_highlight, MENU_XMB_ANIMATION_HORIZONTAL_HIGHLIGHT,
+                     DEFAULT_XMB_ANIMATION,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 2, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_menu_xmb_animation_horizontal_highlight,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_RADIO_BUTTONS),
+               SDESC_UINT_ROW_EX(menu_xmb_animation_move_up_down, MENU_XMB_ANIMATION_MOVE_UP_DOWN,
+                     DEFAULT_XMB_ANIMATION,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 2, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_menu_xmb_animation_move_up_down,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_RADIO_BUTTONS),
+               SDESC_UINT_ROW_EX(menu_xmb_animation_opening_main_menu, MENU_XMB_ANIMATION_OPENING_MAIN_MENU,
+                     DEFAULT_XMB_ANIMATION,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 3, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_menu_xmb_animation_opening_main_menu,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_RADIO_BUTTONS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_13, ARRAY_SIZE(menu_desc_13),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 #endif
 
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.menu_ticker_type,
-               MENU_ENUM_LABEL_MENU_TICKER_TYPE,
-               MENU_ENUM_LABEL_VALUE_MENU_TICKER_TYPE,
-               DEFAULT_MENU_TICKER_TYPE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_menu_ticker_type;
-         menu_settings_list_current_add_range(list, list_info, 0, TICKER_TYPE_LAST-1, 1, true, true);
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_RADIO_BUTTONS;
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.menu_ticker_speed,
-               MENU_ENUM_LABEL_MENU_TICKER_SPEED,
-               MENU_ENUM_LABEL_VALUE_MENU_TICKER_SPEED,
-               DEFAULT_MENU_TICKER_SPEED,
-               "%.1fx",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0.1, 10.0, 0.1, true, true);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_ticker_smooth,
-               MENU_ENUM_LABEL_MENU_TICKER_SMOOTH,
-               MENU_ENUM_LABEL_VALUE_MENU_TICKER_SMOOTH,
-               DEFAULT_MENU_TICKER_SMOOTH,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_14[] = {
+               SDESC_UINT_ROW_EX(menu_ticker_type, MENU_TICKER_TYPE,
+                     DEFAULT_MENU_TICKER_TYPE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, TICKER_TYPE_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_menu_ticker_type,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_RADIO_BUTTONS),
+               SDESC_FLOAT_ROW_EX(menu_ticker_speed, MENU_TICKER_SPEED,
+                     DEFAULT_MENU_TICKER_SPEED, "%.1fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.1, 10.0, 0.1,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(menu_ticker_smooth, MENU_TICKER_SMOOTH,
+                     DEFAULT_MENU_TICKER_SMOOTH, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_14, ARRAY_SIZE(menu_desc_14),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
 
          START_SUB_GROUP(list, list_info, "Navigation", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_navigation_wraparound_enable,
-               MENU_ENUM_LABEL_NAVIGATION_WRAPAROUND,
-               MENU_ENUM_LABEL_VALUE_NAVIGATION_WRAPAROUND,
-               true,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED
-               );
+         {
+            static const setting_desc_t menu_desc_15[] = {
+/* GENERATED: rows come from settings_def_menu_wraparound.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_wraparound.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_15, ARRAY_SIZE(menu_desc_15),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
          START_SUB_GROUP(list, list_info, "Settings View", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_show_advanced_settings,
-               MENU_ENUM_LABEL_SHOW_ADVANCED_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_SHOW_ADVANCED_SETTINGS,
-               DEFAULT_SHOW_ADVANCED_SETTINGS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_16[] = {
+               SDESC_BOOL_ROW(menu_show_advanced_settings, SHOW_ADVANCED_SETTINGS,
+                     DEFAULT_SHOW_ADVANCED_SETTINGS, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW_EX(kiosk_mode_enable, MENU_ENABLE_KIOSK_MODE,
+                     DEFAULT_KIOSK_MODE_ENABLE, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_16, ARRAY_SIZE(menu_desc_16),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.kiosk_mode_enable,
-               MENU_ENUM_LABEL_MENU_ENABLE_KIOSK_MODE,
-               MENU_ENUM_LABEL_VALUE_MENU_ENABLE_KIOSK_MODE,
-               DEFAULT_KIOSK_MODE_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-
-         CONFIG_STRING(
-               list, list_info,
-               settings->paths.kiosk_mode_password,
-               sizeof(settings->paths.kiosk_mode_password),
-               MENU_ENUM_LABEL_MENU_KIOSK_MODE_PASSWORD,
-               MENU_ENUM_LABEL_VALUE_MENU_KIOSK_MODE_PASSWORD,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_PASSWORD_LINE_EDIT;
-         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
+         {
+            static const setting_desc_t menu2_desc_2[] = {
+/* GENERATED: rows come from settings_def_kiosk_password.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_kiosk_password.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu2_desc_2, ARRAY_SIZE(menu2_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef HAVE_THREADS
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.threaded_data_runloop_enable,
-               MENU_ENUM_LABEL_THREADED_DATA_RUNLOOP_ENABLE,
-               MENU_ENUM_LABEL_VALUE_THREADED_DATA_RUNLOOP_ENABLE,
-               DEFAULT_THREADED_DATA_RUNLOOP_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED
-               );
+         {
+            static const setting_desc_t menu_desc_17[] = {
+/* GENERATED: rows come from settings_def_menu_threaded_data.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_threaded_data.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_17, ARRAY_SIZE(menu_desc_17),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
-
          END_SUB_GROUP(list, list_info, parent_group);
 
          START_SUB_GROUP(list, list_info, "Display", &group_info, &subgroup_info, parent_group);
@@ -19680,20 +17804,18 @@ static bool setting_append_list(
                || memcmp(settings->arrays.menu_driver, "xmb", 4) == 0
                || memcmp(settings->arrays.menu_driver, "ozone", 6) == 0)
          {
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.menu_scale_factor,
-                  MENU_ENUM_LABEL_MENU_SCALE_FACTOR,
-                  MENU_ENUM_LABEL_VALUE_MENU_SCALE_FACTOR,
-                  DEFAULT_MENU_SCALE_FACTOR,
-                  "%.2fx",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.2, 5.0, 0.01, true, true);
+         {
+            static const setting_desc_t menu_desc_18[] = {
+               SDESC_FLOAT_ROW_EX(menu_scale_factor, MENU_SCALE_FACTOR,
+                     DEFAULT_MENU_SCALE_FACTOR, "%.2fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.2, 5.0, 0.01,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_18, ARRAY_SIZE(menu_desc_18),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
 #ifdef HAVE_XMB
@@ -19701,257 +17823,155 @@ static bool setting_append_list(
          {
             /* only XMB uses these values, don't show
              * them on other drivers. */
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_xmb_alpha_factor,
-                  MENU_ENUM_LABEL_XMB_ALPHA_FACTOR,
-                  MENU_ENUM_LABEL_VALUE_XMB_ALPHA_FACTOR,
-                  DEFAULT_XMB_ALPHA_FACTOR,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0, 100, 1, true, true);
+         {
+            static const setting_desc_t menu_desc_19[] = {
+               SDESC_UINT_ROW_EX(menu_xmb_alpha_factor, XMB_ALPHA_FACTOR,
+                     DEFAULT_XMB_ALPHA_FACTOR,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 100, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(menu_xmb_vertical_fade_factor, MENU_XMB_VERTICAL_FADE_FACTOR,
+                     DEFAULT_XMB_VERTICAL_FADE_FACTOR,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 500, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, 0),
+               SDESC_UINT_ROW_EX(menu_xmb_current_menu_icon, XMB_CURRENT_MENU_ICON,
+                     DEFAULT_XMB_CURRENT_MENU_ICON,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, XMB_CURRENT_MENU_ICON_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_xmb_current_menu_icon,
+                     NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, 0),
+               SDESC_BOOL_ROW(menu_xmb_show_horizontal_list, MENU_XMB_SHOW_HORIZONTAL_LIST,
+                     DEFAULT_XMB_SHOW_HORIZONTAL_LIST, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(menu_xmb_show_title_header, MENU_XMB_SHOW_TITLE_HEADER,
+                     DEFAULT_XMB_SHOW_TITLE_HEADER, SD_FLAG_NONE, 0, 0),
+               SDESC_INT_ROW_EX(menu_xmb_title_margin, MENU_XMB_TITLE_MARGIN,
+                     DEFAULT_XMB_TITLE_MARGIN,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     -MAXIMUM_XMB_TITLE_MARGIN, MAXIMUM_XMB_TITLE_MARGIN, 1, -MAXIMUM_XMB_TITLE_MARGIN,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_INT_ROW_EX(menu_xmb_title_margin_horizontal_offset, MENU_XMB_TITLE_MARGIN_HORIZONTAL_OFFSET,
+                     DEFAULT_XMB_TITLE_MARGIN_HORIZONTAL_OFFSET,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     -MAXIMUM_XMB_TITLE_MARGIN, MAXIMUM_XMB_TITLE_MARGIN, 1, -MAXIMUM_XMB_TITLE_MARGIN,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_19, ARRAY_SIZE(menu_desc_19),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_xmb_vertical_fade_factor,
-                  MENU_ENUM_LABEL_MENU_XMB_VERTICAL_FADE_FACTOR,
-                  MENU_ENUM_LABEL_VALUE_MENU_XMB_VERTICAL_FADE_FACTOR,
-                  DEFAULT_XMB_VERTICAL_FADE_FACTOR,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok    = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].action_left  = &setting_uint_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right = &setting_uint_action_right_with_refresh;
-            menu_settings_list_current_add_range(list, list_info, 0, 500, 1, true, true);
+         {
+            static const setting_desc_t menu2_desc_3[] = {
+/* GENERATED: rows come from settings_def_xmb_font_path.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_xmb_font_path.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu2_desc_3, ARRAY_SIZE(menu2_desc_3),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_xmb_current_menu_icon,
-                  MENU_ENUM_LABEL_XMB_CURRENT_MENU_ICON,
-                  MENU_ENUM_LABEL_VALUE_XMB_CURRENT_MENU_ICON,
-                  DEFAULT_XMB_CURRENT_MENU_ICON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok    = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].action_left  = &setting_uint_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right = &setting_uint_action_right_with_refresh;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_xmb_current_menu_icon;
-            menu_settings_list_current_add_range(list, list_info, 0, XMB_CURRENT_MENU_ICON_LAST-1, 1, true, true);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_xmb_show_horizontal_list,
-                  MENU_ENUM_LABEL_MENU_XMB_SHOW_HORIZONTAL_LIST,
-                  MENU_ENUM_LABEL_VALUE_MENU_XMB_SHOW_HORIZONTAL_LIST,
-                  DEFAULT_XMB_SHOW_HORIZONTAL_LIST,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_xmb_show_title_header,
-                  MENU_ENUM_LABEL_MENU_XMB_SHOW_TITLE_HEADER,
-                  MENU_ENUM_LABEL_VALUE_MENU_XMB_SHOW_TITLE_HEADER,
-                  DEFAULT_XMB_SHOW_TITLE_HEADER,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_INT(
-                  list, list_info,
-                  &settings->ints.menu_xmb_title_margin,
-                  MENU_ENUM_LABEL_MENU_XMB_TITLE_MARGIN,
-                  MENU_ENUM_LABEL_VALUE_MENU_XMB_TITLE_MARGIN,
-                  DEFAULT_XMB_TITLE_MARGIN,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].offset_by = -MAXIMUM_XMB_TITLE_MARGIN;
-            menu_settings_list_current_add_range(list, list_info, -MAXIMUM_XMB_TITLE_MARGIN, MAXIMUM_XMB_TITLE_MARGIN, 1, true, true);
-
-            CONFIG_INT(
-                  list, list_info,
-                  &settings->ints.menu_xmb_title_margin_horizontal_offset,
-                  MENU_ENUM_LABEL_MENU_XMB_TITLE_MARGIN_HORIZONTAL_OFFSET,
-                  MENU_ENUM_LABEL_VALUE_MENU_XMB_TITLE_MARGIN_HORIZONTAL_OFFSET,
-                  DEFAULT_XMB_TITLE_MARGIN_HORIZONTAL_OFFSET,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].offset_by = -MAXIMUM_XMB_TITLE_MARGIN;
-            menu_settings_list_current_add_range(list, list_info, -MAXIMUM_XMB_TITLE_MARGIN, MAXIMUM_XMB_TITLE_MARGIN, 1, true, true);
-
-            CONFIG_PATH(
-                  list, list_info,
-                  settings->paths.path_menu_xmb_font,
-                  sizeof(settings->paths.path_menu_xmb_font),
-                  MENU_ENUM_LABEL_XMB_FONT,
-                  MENU_ENUM_LABEL_VALUE_XMB_FONT,
-                  settings->paths.directory_assets,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].get_string_representation = &setting_get_string_representation_video_font_path;
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_FONT_SELECTOR;
-            MENU_SETTINGS_LIST_CURRENT_ADD_VALUES(list, list_info, "ttf");
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_font_color_red,
-                  MENU_ENUM_LABEL_MENU_FONT_COLOR_RED,
-                  MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_RED,
-                  DEFAULT_MENU_FONT_COLOR_RED,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0, 255, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_font_color_green,
-                  MENU_ENUM_LABEL_MENU_FONT_COLOR_GREEN,
-                  MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_GREEN,
-                  DEFAULT_MENU_FONT_COLOR_GREEN,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0, 255, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_font_color_blue,
-                  MENU_ENUM_LABEL_MENU_FONT_COLOR_BLUE,
-                  MENU_ENUM_LABEL_VALUE_MENU_FONT_COLOR_BLUE,
-                  DEFAULT_MENU_FONT_COLOR_BLUE,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0, 255, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_xmb_layout,
-                  MENU_ENUM_LABEL_XMB_LAYOUT,
-                  MENU_ENUM_LABEL_VALUE_XMB_LAYOUT,
-                  DEFAULT_XMB_MENU_LAYOUT,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_xmb_layout;
-            menu_settings_list_current_add_range(list, list_info, 0, 2, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_xmb_theme,
-                  MENU_ENUM_LABEL_XMB_THEME,
-                  MENU_ENUM_LABEL_VALUE_XMB_THEME,
-                  DEFAULT_XMB_ICON_THEME,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_xmb_icon_theme;
-            menu_settings_list_current_add_range(list, list_info, 0, XMB_ICON_THEME_LAST - 1, 1, true, true);
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_CMD_APPLY_AUTO);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_xmb_entry_icons,
-                  MENU_ENUM_LABEL_XMB_ENTRY_ICONS,
-                  MENU_ENUM_LABEL_VALUE_XMB_ENTRY_ICONS,
-                  DEFAULT_XMB_ENTRY_ICONS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_xmb_switch_icons,
-                  MENU_ENUM_LABEL_XMB_SWITCH_ICONS,
-                  MENU_ENUM_LABEL_VALUE_XMB_SWITCH_ICONS,
-                  DEFAULT_XMB_SWITCH_ICONS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_xmb_shadows_enable,
-                  MENU_ENUM_LABEL_XMB_SHADOWS_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_XMB_SHADOWS_ENABLE,
-                  DEFAULT_XMB_SHADOWS_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_20[] = {
+               SDESC_UINT_ROW_EX(menu_font_color_red, MENU_FONT_COLOR_RED,
+                     DEFAULT_MENU_FONT_COLOR_RED,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     0, 255, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(menu_font_color_green, MENU_FONT_COLOR_GREEN,
+                     DEFAULT_MENU_FONT_COLOR_GREEN,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     0, 255, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(menu_font_color_blue, MENU_FONT_COLOR_BLUE,
+                     DEFAULT_MENU_FONT_COLOR_BLUE,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     0, 255, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(menu_xmb_layout, XMB_LAYOUT,
+                     DEFAULT_XMB_MENU_LAYOUT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 2, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_xmb_layout,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_UINT_ROW_EX(menu_xmb_theme, XMB_THEME,
+                     DEFAULT_XMB_ICON_THEME,
+                     SD_FLAG_CMD_APPLY_AUTO, SDESC_RANGE_MINMAX, CMD_EVENT_REINIT,
+                     0, XMB_ICON_THEME_LAST - 1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_xmb_icon_theme,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_BOOL_ROW(menu_xmb_entry_icons, XMB_ENTRY_ICONS,
+                     DEFAULT_XMB_ENTRY_ICONS, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(menu_xmb_switch_icons, XMB_SWITCH_ICONS,
+                     DEFAULT_XMB_SWITCH_ICONS, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(menu_xmb_shadows_enable, XMB_SHADOWS_ENABLE,
+                     DEFAULT_XMB_SHADOWS_ENABLE, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_20, ARRAY_SIZE(menu_desc_20),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
 #ifdef HAVE_SHADERPIPELINE
@@ -19966,1086 +17986,662 @@ static bool setting_append_list(
                      || BIT32_GET(flags.flags, GFX_CTX_FLAGS_SHADERS_CG)
                      || BIT32_GET(flags.flags, GFX_CTX_FLAGS_SHADERS_HLSL))
                {
-                  CONFIG_UINT(
-                        list, list_info,
-                        &settings->uints.menu_xmb_shader_pipeline,
-                        MENU_ENUM_LABEL_XMB_RIBBON_ENABLE,
-                        MENU_ENUM_LABEL_VALUE_XMB_RIBBON_ENABLE,
-                        DEFAULT_MENU_SHADER_PIPELINE,
-                        &group_info,
-                        &subgroup_info,
-                        parent_group,
-                        general_write_handler,
-                        general_read_handler);
-                  (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-                  (*list)[list_info->index - 1].get_string_representation =
-                     &setting_get_string_representation_uint_xmb_shader_pipeline;
-                  menu_settings_list_current_add_range(list, list_info, 0, XMB_SHADER_PIPELINE_LAST-1, 1, true, true);
-                  (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+         {
+            static const setting_desc_t menu_desc_21[] = {
+               SDESC_UINT_ROW_EX(menu_xmb_shader_pipeline, XMB_RIBBON_ENABLE,
+                     DEFAULT_MENU_SHADER_PIPELINE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, XMB_SHADER_PIPELINE_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_xmb_shader_pipeline,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_21, ARRAY_SIZE(menu_desc_21),
+                  &group_info, &subgroup_info, parent_group);
+         }
                }
             }
 #endif
 #endif
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_xmb_color_theme,
-                  MENU_ENUM_LABEL_XMB_MENU_COLOR_THEME,
-                  MENU_ENUM_LABEL_VALUE_XMB_MENU_COLOR_THEME,
-                  DEFAULT_XMB_THEME,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].action_left = &setting_uint_action_left_with_refresh;
-               (*list)[list_info->index - 1].action_right = &setting_uint_action_right_with_refresh;
-               (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_xmb_menu_color_theme;
-            menu_settings_list_current_add_range(list, list_info, 0, XMB_THEME_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+         {
+            static const setting_desc_t menu_desc_22[] = {
+               SDESC_UINT_ROW_EX(menu_xmb_color_theme, XMB_MENU_COLOR_THEME,
+                     DEFAULT_XMB_THEME,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, XMB_THEME_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_xmb_menu_color_theme,
+                     NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, ST_UI_TYPE_UINT_COMBOBOX),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_22, ARRAY_SIZE(menu_desc_22),
+                  &group_info, &subgroup_info, parent_group);
+         }
        }
 #endif
          if (string_is_equal(settings->arrays.menu_driver, "ozone"))
          {
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_use_preferred_system_color_theme,
-                  MENU_ENUM_LABEL_MENU_USE_PREFERRED_SYSTEM_COLOR_THEME,
-                  MENU_ENUM_LABEL_VALUE_MENU_USE_PREFERRED_SYSTEM_COLOR_THEME,
-                  DEFAULT_MENU_USE_PREFERRED_SYSTEM_COLOR_THEME,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
+         {
+            static const setting_desc_t menu_desc_23[] = {
+               SDESC_BOOL_ROW_EX(menu_use_preferred_system_color_theme, MENU_USE_PREFERRED_SYSTEM_COLOR_THEME,
+                     DEFAULT_MENU_USE_PREFERRED_SYSTEM_COLOR_THEME, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_23, ARRAY_SIZE(menu_desc_23),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_load_core,
-                  MENU_ENUM_LABEL_MENU_SHOW_LOAD_CORE,
-                  MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CORE,
-                  DEFAULT_MENU_SHOW_LOAD_CORE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_load_content,
-                  MENU_ENUM_LABEL_MENU_SHOW_LOAD_CONTENT,
-                  MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_CONTENT,
-                  DEFAULT_MENU_SHOW_LOAD_CONTENT,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-#ifdef HAVE_CDROM
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_load_disc,
-                  MENU_ENUM_LABEL_MENU_SHOW_LOAD_DISC,
-                  MENU_ENUM_LABEL_VALUE_MENU_SHOW_LOAD_DISC,
-                  DEFAULT_MENU_SHOW_LOAD_DISC,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_dump_disc,
-                  MENU_ENUM_LABEL_MENU_SHOW_DUMP_DISC,
-                  MENU_ENUM_LABEL_VALUE_MENU_SHOW_DUMP_DISC,
-                  DEFAULT_MENU_SHOW_DUMP_DISC,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_24[] = {
+/* GENERATED: rows come from settings_def_menu_main_views.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_main_views.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_24, ARRAY_SIZE(menu_desc_24),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef HAVE_LAKKA
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_eject_disc,
-                  MENU_ENUM_LABEL_MENU_SHOW_EJECT_DISC,
-                  MENU_ENUM_LABEL_VALUE_MENU_SHOW_EJECT_DISC,
-                  DEFAULT_MENU_SHOW_EJECT_DISC,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-#endif /* HAVE_LAKKA */
-#endif
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_information,
-                  MENU_ENUM_LABEL_MENU_SHOW_INFORMATION,
-                  MENU_ENUM_LABEL_VALUE_MENU_SHOW_INFORMATION,
-                  DEFAULT_MENU_SHOW_INFORMATION,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_configurations,
-                  MENU_ENUM_LABEL_MENU_SHOW_CONFIGURATIONS,
-                  MENU_ENUM_LABEL_VALUE_MENU_SHOW_CONFIGURATIONS,
-                  DEFAULT_MENU_SHOW_CONFIGURATIONS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_LAKKA_ADVANCED);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_overlays,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_OVERLAYS,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_OVERLAYS,
-                  DEFAULT_QUICK_MENU_SHOW_OVERLAYS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_LAKKA_ADVANCED);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_latency,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_LATENCY,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_LATENCY,
-                  DEFAULT_QUICK_MENU_SHOW_LATENCY,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_LAKKA_ADVANCED);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_rewind,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_REWIND,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_REWIND,
-                  DEFAULT_QUICK_MENU_SHOW_REWIND,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_LAKKA_ADVANCED);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_help,
-                  MENU_ENUM_LABEL_MENU_SHOW_HELP,
-                  MENU_ENUM_LABEL_VALUE_MENU_SHOW_HELP,
-                  DEFAULT_MENU_SHOW_HELP,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_LAKKA_ADVANCED);
-
-#ifdef HAVE_LAKKA
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_quit_retroarch,
-                  MENU_ENUM_LABEL_MENU_SHOW_QUIT_RETROARCH,
-                  MENU_ENUM_LABEL_VALUE_MENU_SHOW_RESTART_RETROARCH,
-                  DEFAULT_MENU_SHOW_RESTART,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_quit_lakka_desc[] = {
+               SDESC_BOOL_ROW_LV(menu_show_quit_retroarch, MENU_SHOW_QUIT_RETROARCH,
+                     MENU_SHOW_RESTART_RETROARCH, DEFAULT_MENU_SHOW_RESTART,
+                     SD_FLAG_NONE, 0, 0)
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_quit_lakka_desc, ARRAY_SIZE(menu_quit_lakka_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #elif !defined(IOS)
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_quit_retroarch,
-                  MENU_ENUM_LABEL_MENU_SHOW_QUIT_RETROARCH,
-                  MENU_ENUM_LABEL_VALUE_MENU_SHOW_QUIT_RETROARCH,
-                  DEFAULT_MENU_SHOW_QUIT,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_25[] = {
+               SDESC_BOOL_ROW(menu_show_quit_retroarch, MENU_SHOW_QUIT_RETROARCH,
+                     DEFAULT_MENU_SHOW_QUIT, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_25, ARRAY_SIZE(menu_desc_25),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 
 #if defined(HAVE_LAKKA) || defined(HAVE_ODROIDGO2)
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_reboot,
-                  MENU_ENUM_LABEL_MENU_SHOW_REBOOT,
-                  MENU_ENUM_LABEL_VALUE_MENU_SHOW_REBOOT,
-                  DEFAULT_MENU_SHOW_REBOOT,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_show_shutdown,
-                  MENU_ENUM_LABEL_MENU_SHOW_SHUTDOWN,
-                  MENU_ENUM_LABEL_VALUE_MENU_SHOW_SHUTDOWN,
-                  DEFAULT_MENU_SHOW_SHUTDOWN,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_26[] = {
+/* GENERATED: rows come from settings_def_menu_power_views.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_power_views.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_26, ARRAY_SIZE(menu_desc_26),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #else
 #if !defined(IOS)
             if (frontend_driver_has_fork())
-               CONFIG_BOOL(
-                     list, list_info,
-                     &settings->bools.menu_show_restart_retroarch,
-                     MENU_ENUM_LABEL_MENU_SHOW_RESTART_RETROARCH,
-                     MENU_ENUM_LABEL_VALUE_MENU_SHOW_RESTART_RETROARCH,
-                     DEFAULT_MENU_SHOW_RESTART,
-                     MENU_ENUM_LABEL_VALUE_OFF,
-                     MENU_ENUM_LABEL_VALUE_ON,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler,
-                     SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_27[] = {
+/* GENERATED: rows come from settings_def_menu_restart_view.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_restart_view.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_27, ARRAY_SIZE(menu_desc_27),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 #endif
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_content_show_settings,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_SETTINGS,
-                  DEFAULT_CONTENT_SHOW_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+         {
+            static const setting_desc_t menu_desc_28[] = {
+/* GENERATED: rows come from settings_def_menu_content_settings_view.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_content_settings_view.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_28, ARRAY_SIZE(menu_desc_28),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_STRING(
-               list, list_info,
-               settings->paths.menu_content_show_settings_password,
-               sizeof(settings->paths.menu_content_show_settings_password),
-               MENU_ENUM_LABEL_CONTENT_SHOW_SETTINGS_PASSWORD,
-               MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_SETTINGS_PASSWORD,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT | SD_FLAG_LAKKA_ADVANCED);
-            (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_PASSWORD_LINE_EDIT;
-            (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
+         {
+            static const setting_desc_t menu2_desc_4[] = {
+/* GENERATED: rows come from settings_def_settings_password.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_settings_password.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu2_desc_4, ARRAY_SIZE(menu2_desc_4),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_content_show_favorites,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_FAVORITES,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_FAVORITES,
-                  DEFAULT_CONTENT_SHOW_FAVORITES,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_content_show_favorites_first,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_FAVORITES_FIRST,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_FAVORITES_FIRST,
-                  DEFAULT_CONTENT_SHOW_FAVORITES_FIRST,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
+         {
+            static const setting_desc_t menu_desc_29[] = {
+               SDESC_BOOL_ROW(menu_content_show_favorites, CONTENT_SHOW_FAVORITES,
+                     DEFAULT_CONTENT_SHOW_FAVORITES, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(menu_content_show_favorites_first, CONTENT_SHOW_FAVORITES_FIRST,
+                     DEFAULT_CONTENT_SHOW_FAVORITES_FIRST, SD_FLAG_NONE, 0, 0),
 #ifdef HAVE_IMAGEVIEWER
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_content_show_images,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_IMAGES,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_IMAGES,
-                  DEFAULT_CONTENT_SHOW_IMAGES,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+               SDESC_BOOL_ROW(menu_content_show_images, CONTENT_SHOW_IMAGES,
+                     DEFAULT_CONTENT_SHOW_IMAGES, SD_FLAG_NONE, 0, 0),
 #endif
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_content_show_music,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_MUSIC,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_MUSIC,
-                  DEFAULT_CONTENT_SHOW_MUSIC,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
+               SDESC_BOOL_ROW(menu_content_show_music, CONTENT_SHOW_MUSIC,
+                     DEFAULT_CONTENT_SHOW_MUSIC, SD_FLAG_NONE, 0, 0),
 #if defined(HAVE_FFMPEG) || defined(HAVE_MPV)
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_content_show_video,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_VIDEO,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_VIDEO,
-                  DEFAULT_CONTENT_SHOW_VIDEO,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+               SDESC_BOOL_ROW(menu_content_show_video, CONTENT_SHOW_VIDEO,
+                     DEFAULT_CONTENT_SHOW_VIDEO, SD_FLAG_NONE, 0, 0),
 #endif
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_content_show_history,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_HISTORY,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_HISTORY,
-                  DEFAULT_CONTENT_SHOW_HISTORY,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
+               SDESC_BOOL_ROW(menu_content_show_history, CONTENT_SHOW_HISTORY,
+                     DEFAULT_CONTENT_SHOW_HISTORY, SD_FLAG_NONE, 0, 0),
 #ifdef HAVE_NETWORKING
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_content_show_netplay,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_NETPLAY,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_NETPLAY,
-                  DEFAULT_CONTENT_SHOW_NETPLAY,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_menu_add_content_entry_display_type;
-            menu_settings_list_current_add_range(list, list_info, 0, MENU_ADD_CONTENT_ENTRY_DISPLAY_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+               SDESC_UINT_ROW_EX(menu_content_show_netplay, CONTENT_SHOW_NETPLAY,
+                     DEFAULT_CONTENT_SHOW_NETPLAY,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, MENU_ADD_CONTENT_ENTRY_DISPLAY_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_menu_add_content_entry_display_type,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
 #endif
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_content_show_add_entry,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_ADD_ENTRY,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_ADD_ENTRY,
-                  DEFAULT_MENU_CONTENT_SHOW_ADD_ENTRY,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_menu_add_content_entry_display_type;
-            menu_settings_list_current_add_range(list, list_info, 0, MENU_ADD_CONTENT_ENTRY_DISPLAY_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_content_show_playlists,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_PLAYLISTS,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_PLAYLISTS,
-                  DEFAULT_CONTENT_SHOW_PLAYLISTS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_content_show_playlist_tabs,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_PLAYLIST_TABS,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_PLAYLIST_TABS,
-                  DEFAULT_CONTENT_SHOW_PLAYLIST_TABS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
+               SDESC_UINT_ROW_EX(menu_content_show_add_entry, CONTENT_SHOW_ADD_ENTRY,
+                     DEFAULT_MENU_CONTENT_SHOW_ADD_ENTRY,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, MENU_ADD_CONTENT_ENTRY_DISPLAY_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_menu_add_content_entry_display_type,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_BOOL_ROW(menu_content_show_playlists, CONTENT_SHOW_PLAYLISTS,
+                     DEFAULT_CONTENT_SHOW_PLAYLISTS, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(menu_content_show_playlist_tabs, CONTENT_SHOW_PLAYLIST_TABS,
+                     DEFAULT_CONTENT_SHOW_PLAYLIST_TABS, SD_FLAG_NONE, 0, 0),
 #if defined(HAVE_LIBRETRODB)
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_content_show_explore,
-                  MENU_ENUM_LABEL_CONTENT_SHOW_EXPLORE,
-                  MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_EXPLORE,
-                  DEFAULT_MENU_CONTENT_SHOW_EXPLORE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+               SDESC_BOOL_ROW(menu_content_show_explore, CONTENT_SHOW_EXPLORE,
+                     DEFAULT_MENU_CONTENT_SHOW_EXPLORE, SD_FLAG_NONE, 0, 0),
 #endif
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.menu_content_show_contentless_cores,
-               MENU_ENUM_LABEL_CONTENT_SHOW_CONTENTLESS_CORES,
-               MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_CONTENTLESS_CORES,
-               DEFAULT_MENU_CONTENT_SHOW_CONTENTLESS_CORES,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_menu_contentless_cores_display_type;
-         menu_settings_list_current_add_range(list, list_info, 0, MENU_CONTENTLESS_CORES_DISPLAY_LAST-1, 1, true, true);
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+               SDESC_UINT_ROW_EX(menu_content_show_contentless_cores, CONTENT_SHOW_CONTENTLESS_CORES,
+                     DEFAULT_MENU_CONTENT_SHOW_CONTENTLESS_CORES,
+                     SD_FLAG_LAKKA_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     0, MENU_CONTENTLESS_CORES_DISPLAY_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_menu_contentless_cores_display_type,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_29, ARRAY_SIZE(menu_desc_29),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef HAVE_MATERIALUI
          if (string_is_equal(settings->arrays.menu_driver, "glui"))
          {
             /* only MaterialUI uses these values, don't show
              * them on other drivers. */
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_materialui_icons_enable,
-                  MENU_ENUM_LABEL_MATERIALUI_ICONS_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_MATERIALUI_ICONS_ENABLE,
-                  DEFAULT_MATERIALUI_ICONS_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED);
-            (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_materialui_switch_icons,
-                  MENU_ENUM_LABEL_MATERIALUI_SWITCH_ICONS,
-                  MENU_ENUM_LABEL_VALUE_MATERIALUI_SWITCH_ICONS,
-                  DEFAULT_MATERIALUI_SWITCH_ICONS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_materialui_playlist_icons_enable,
-                  MENU_ENUM_LABEL_MATERIALUI_PLAYLIST_ICONS_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_MATERIALUI_PLAYLIST_ICONS_ENABLE,
-                  DEFAULT_MATERIALUI_PLAYLIST_ICONS_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_materialui_color_theme,
-                  MENU_ENUM_LABEL_MATERIALUI_MENU_COLOR_THEME,
-                  MENU_ENUM_LABEL_VALUE_MATERIALUI_MENU_COLOR_THEME,
-                  DEFAULT_MATERIALUI_THEME,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_materialui_menu_color_theme;
-            menu_settings_list_current_add_range(list, list_info, 0, MATERIALUI_THEME_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_materialui_transition_animation,
-                  MENU_ENUM_LABEL_MATERIALUI_MENU_TRANSITION_ANIMATION,
-                  MENU_ENUM_LABEL_VALUE_MATERIALUI_MENU_TRANSITION_ANIMATION,
-                  DEFAULT_MATERIALUI_TRANSITION_ANIM,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_materialui_menu_transition_animation;
-            menu_settings_list_current_add_range(list, list_info, 0, MATERIALUI_TRANSITION_ANIM_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_materialui_landscape_layout_optimization,
-                  MENU_ENUM_LABEL_MATERIALUI_LANDSCAPE_LAYOUT_OPTIMIZATION,
-                  MENU_ENUM_LABEL_VALUE_MATERIALUI_LANDSCAPE_LAYOUT_OPTIMIZATION,
-                  DEFAULT_MATERIALUI_LANDSCAPE_LAYOUT_OPTIMIZATION,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_materialui_landscape_layout_optimization;
-            menu_settings_list_current_add_range(list, list_info, 0, MATERIALUI_LANDSCAPE_LAYOUT_OPTIMIZATION_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_materialui_show_nav_bar,
-                  MENU_ENUM_LABEL_MATERIALUI_SHOW_NAV_BAR,
-                  MENU_ENUM_LABEL_VALUE_MATERIALUI_SHOW_NAV_BAR,
-                  DEFAULT_MATERIALUI_SHOW_NAV_BAR,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_materialui_auto_rotate_nav_bar,
-                  MENU_ENUM_LABEL_MATERIALUI_AUTO_ROTATE_NAV_BAR,
-                  MENU_ENUM_LABEL_VALUE_MATERIALUI_AUTO_ROTATE_NAV_BAR,
-                  DEFAULT_MATERIALUI_AUTO_ROTATE_NAV_BAR,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_materialui_thumbnail_view_portrait,
-                  MENU_ENUM_LABEL_MATERIALUI_MENU_THUMBNAIL_VIEW_PORTRAIT,
-                  MENU_ENUM_LABEL_VALUE_MATERIALUI_MENU_THUMBNAIL_VIEW_PORTRAIT,
-                  DEFAULT_MATERIALUI_THUMBNAIL_VIEW_PORTRAIT,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_materialui_menu_thumbnail_view_portrait;
-            menu_settings_list_current_add_range(list, list_info, 0, MATERIALUI_THUMBNAIL_VIEW_PORTRAIT_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_materialui_thumbnail_view_landscape,
-                  MENU_ENUM_LABEL_MATERIALUI_MENU_THUMBNAIL_VIEW_LANDSCAPE,
-                  MENU_ENUM_LABEL_VALUE_MATERIALUI_MENU_THUMBNAIL_VIEW_LANDSCAPE,
-                  DEFAULT_MATERIALUI_THUMBNAIL_VIEW_LANDSCAPE,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_materialui_menu_thumbnail_view_landscape;
-            menu_settings_list_current_add_range(list, list_info, 0, MATERIALUI_THUMBNAIL_VIEW_LANDSCAPE_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_materialui_dual_thumbnail_list_view_enable,
-                  MENU_ENUM_LABEL_MATERIALUI_DUAL_THUMBNAIL_LIST_VIEW_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_MATERIALUI_DUAL_THUMBNAIL_LIST_VIEW_ENABLE,
-                  DEFAULT_MATERIALUI_DUAL_THUMBNAIL_LIST_VIEW_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_materialui_thumbnail_background_enable,
-                  MENU_ENUM_LABEL_MATERIALUI_THUMBNAIL_BACKGROUND_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_MATERIALUI_THUMBNAIL_BACKGROUND_ENABLE,
-                  DEFAULT_MATERIALUI_THUMBNAIL_BACKGROUND_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_30[] = {
+               SDESC_BOOL_ROW_EX(menu_materialui_icons_enable, MATERIALUI_ICONS_ENABLE,
+                     DEFAULT_MATERIALUI_ICONS_ENABLE, SD_FLAG_ADVANCED, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_BOOL_ROW(menu_materialui_switch_icons, MATERIALUI_SWITCH_ICONS,
+                     DEFAULT_MATERIALUI_SWITCH_ICONS, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(menu_materialui_playlist_icons_enable, MATERIALUI_PLAYLIST_ICONS_ENABLE,
+                     DEFAULT_MATERIALUI_PLAYLIST_ICONS_ENABLE, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(menu_materialui_color_theme, MATERIALUI_MENU_COLOR_THEME,
+                     DEFAULT_MATERIALUI_THEME,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, MATERIALUI_THEME_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_materialui_menu_color_theme,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_UINT_ROW_EX(menu_materialui_transition_animation, MATERIALUI_MENU_TRANSITION_ANIMATION,
+                     DEFAULT_MATERIALUI_TRANSITION_ANIM,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, MATERIALUI_TRANSITION_ANIM_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_materialui_menu_transition_animation,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_UINT_ROW_EX(menu_materialui_landscape_layout_optimization, MATERIALUI_LANDSCAPE_LAYOUT_OPTIMIZATION,
+                     DEFAULT_MATERIALUI_LANDSCAPE_LAYOUT_OPTIMIZATION,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, MATERIALUI_LANDSCAPE_LAYOUT_OPTIMIZATION_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_materialui_landscape_layout_optimization,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_BOOL_ROW_EX(menu_materialui_show_nav_bar, MATERIALUI_SHOW_NAV_BAR,
+                     DEFAULT_MATERIALUI_SHOW_NAV_BAR, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_BOOL_ROW(menu_materialui_auto_rotate_nav_bar, MATERIALUI_AUTO_ROTATE_NAV_BAR,
+                     DEFAULT_MATERIALUI_AUTO_ROTATE_NAV_BAR, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(menu_materialui_thumbnail_view_portrait, MATERIALUI_MENU_THUMBNAIL_VIEW_PORTRAIT,
+                     DEFAULT_MATERIALUI_THUMBNAIL_VIEW_PORTRAIT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, MATERIALUI_THUMBNAIL_VIEW_PORTRAIT_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_materialui_menu_thumbnail_view_portrait,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_UINT_ROW_EX(menu_materialui_thumbnail_view_landscape, MATERIALUI_MENU_THUMBNAIL_VIEW_LANDSCAPE,
+                     DEFAULT_MATERIALUI_THUMBNAIL_VIEW_LANDSCAPE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, MATERIALUI_THUMBNAIL_VIEW_LANDSCAPE_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_materialui_menu_thumbnail_view_landscape,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_BOOL_ROW(menu_materialui_dual_thumbnail_list_view_enable, MATERIALUI_DUAL_THUMBNAIL_LIST_VIEW_ENABLE,
+                     DEFAULT_MATERIALUI_DUAL_THUMBNAIL_LIST_VIEW_ENABLE, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(menu_materialui_thumbnail_background_enable, MATERIALUI_THUMBNAIL_BACKGROUND_ENABLE,
+                     DEFAULT_MATERIALUI_THUMBNAIL_BACKGROUND_ENABLE, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_30, ARRAY_SIZE(menu_desc_30),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 #endif
 
 #ifdef HAVE_OZONE
          if (string_is_equal(settings->arrays.menu_driver, "ozone"))
          {
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_ozone_color_theme,
-                  MENU_ENUM_LABEL_OZONE_MENU_COLOR_THEME,
-                  MENU_ENUM_LABEL_VALUE_OZONE_MENU_COLOR_THEME,
-                  DEFAULT_OZONE_COLOR_THEME,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_ozone_menu_color_theme;
-            menu_settings_list_current_add_range(list, list_info, 0, OZONE_COLOR_THEME_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+         {
+            static const setting_desc_t menu_desc_31[] = {
+               SDESC_UINT_ROW_EX(menu_ozone_color_theme, OZONE_MENU_COLOR_THEME,
+                     DEFAULT_OZONE_COLOR_THEME,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, OZONE_COLOR_THEME_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_ozone_menu_color_theme,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_BOOL_ROW(ozone_show_sidebar, OZONE_SHOW_SIDEBAR,
+                     DEFAULT_OZONE_SHOW_SIDEBAR, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(ozone_collapse_sidebar, OZONE_COLLAPSE_SIDEBAR,
+                     DEFAULT_OZONE_COLLAPSE_SIDEBAR, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_31, ARRAY_SIZE(menu_desc_31),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.ozone_show_sidebar,
-                  MENU_ENUM_LABEL_OZONE_SHOW_SIDEBAR,
-                  MENU_ENUM_LABEL_VALUE_OZONE_SHOW_SIDEBAR,
-                  DEFAULT_OZONE_SHOW_SIDEBAR,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu2_desc_5[] = {
+/* GENERATED: rows come from settings_def_ozone_font_path.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_ozone_font_path.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu2_desc_5, ARRAY_SIZE(menu2_desc_5),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.ozone_collapse_sidebar,
-                  MENU_ENUM_LABEL_OZONE_COLLAPSE_SIDEBAR,
-                  MENU_ENUM_LABEL_VALUE_OZONE_COLLAPSE_SIDEBAR,
-                  DEFAULT_OZONE_COLLAPSE_SIDEBAR,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_PATH(
-                  list, list_info,
-                  settings->paths.path_menu_ozone_font,
-                  sizeof(settings->paths.path_menu_ozone_font),
-                  MENU_ENUM_LABEL_OZONE_FONT,
-                  MENU_ENUM_LABEL_VALUE_OZONE_FONT,
-                  settings->paths.directory_assets,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].get_string_representation = &setting_get_string_representation_video_font_path;
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_FONT_SELECTOR;
-            MENU_SETTINGS_LIST_CURRENT_ADD_VALUES(list, list_info, "ttf");
-            MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_ozone_font_scale,
-                  MENU_ENUM_LABEL_OZONE_FONT_SCALE,
-                  MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE,
-                  DEFAULT_OZONE_FONT_SCALE,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].action_left   = setting_uint_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = setting_uint_action_right_with_refresh;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_ozone_font_scale;
-            menu_settings_list_current_add_range(list, list_info, 0, OZONE_FONT_SCALE_LAST-1, 1, true, true);
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.ozone_font_scale_factor_global,
-                  MENU_ENUM_LABEL_OZONE_FONT_SCALE_FACTOR_GLOBAL,
-                  MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_GLOBAL,
-                  DEFAULT_OZONE_FONT_SCALE_FACTOR_GLOBAL,
-                  "%.2fx",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.0, 3.0, 0.05, true, true);
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.ozone_font_scale_factor_title,
-                  MENU_ENUM_LABEL_OZONE_FONT_SCALE_FACTOR_TITLE,
-                  MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_TITLE,
-                  DEFAULT_OZONE_FONT_SCALE_FACTOR_TITLE,
-                  "%.2fx",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.0, 3.0, 0.05, true, true);
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.ozone_font_scale_factor_sidebar,
-                  MENU_ENUM_LABEL_OZONE_FONT_SCALE_FACTOR_SIDEBAR,
-                  MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_SIDEBAR,
-                  DEFAULT_OZONE_FONT_SCALE_FACTOR_SIDEBAR,
-                  "%.2fx",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.0, 3.0, 0.05, true, true);
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.ozone_font_scale_factor_label,
-                  MENU_ENUM_LABEL_OZONE_FONT_SCALE_FACTOR_LABEL,
-                  MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_LABEL,
-                  DEFAULT_OZONE_FONT_SCALE_FACTOR_LABEL,
-                  "%.2fx",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.0, 3.0, 0.05, true, true);
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.ozone_font_scale_factor_sublabel,
-                  MENU_ENUM_LABEL_OZONE_FONT_SCALE_FACTOR_SUBLABEL,
-                  MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_SUBLABEL,
-                  DEFAULT_OZONE_FONT_SCALE_FACTOR_SUBLABEL,
-                  "%.2fx",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.0, 3.0, 0.05, true, true);
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.ozone_font_scale_factor_time,
-                  MENU_ENUM_LABEL_OZONE_FONT_SCALE_FACTOR_TIME,
-                  MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_TIME,
-                  DEFAULT_OZONE_FONT_SCALE_FACTOR_TIME,
-                  "%.2fx",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.0, 3.0, 0.05, true, true);
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.ozone_font_scale_factor_footer,
-                  MENU_ENUM_LABEL_OZONE_FONT_SCALE_FACTOR_FOOTER,
-                  MENU_ENUM_LABEL_VALUE_OZONE_FONT_SCALE_FACTOR_FOOTER,
-                  DEFAULT_OZONE_FONT_SCALE_FACTOR_FOOTER,
-                  "%.2fx",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.0, 3.0, 0.05, true, true);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.ozone_scroll_content_metadata,
-                  MENU_ENUM_LABEL_OZONE_SCROLL_CONTENT_METADATA,
-                  MENU_ENUM_LABEL_VALUE_OZONE_SCROLL_CONTENT_METADATA,
-                  DEFAULT_OZONE_SCROLL_CONTENT_METADATA,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.ozone_thumbnail_scale_factor,
-                  MENU_ENUM_LABEL_OZONE_THUMBNAIL_SCALE_FACTOR,
-                  MENU_ENUM_LABEL_VALUE_OZONE_THUMBNAIL_SCALE_FACTOR,
-                  DEFAULT_OZONE_THUMBNAIL_SCALE_FACTOR,
-                  "%.2fx",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 1.0, 2.0, 0.05, true, true);
-
-            CONFIG_FLOAT(
-                  list, list_info,
-                  &settings->floats.ozone_padding_factor,
-                  MENU_ENUM_LABEL_OZONE_PADDING_FACTOR,
-                  MENU_ENUM_LABEL_VALUE_OZONE_PADDING_FACTOR,
-                  DEFAULT_OZONE_PADDING_FACTOR,
-                  "%.2fx",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0.0, 2.0, 0.01, true, true);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_ozone_header_icon,
-                  MENU_ENUM_LABEL_OZONE_HEADER_ICON,
-                  MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON,
-                  DEFAULT_OZONE_HEADER_ICON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok    = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].action_left  = &setting_uint_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right = &setting_uint_action_right_with_refresh;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_ozone_header_icon;
-            menu_settings_list_current_add_range(list, list_info, 0, OZONE_HEADER_ICON_LAST-1, 1, true, true);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_ozone_header_separator,
-                  MENU_ENUM_LABEL_OZONE_HEADER_SEPARATOR,
-                  MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR,
-                  DEFAULT_OZONE_HEADER_SEPARATOR,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_ozone_header_separator;
-            menu_settings_list_current_add_range(list, list_info, 0, OZONE_HEADER_SEPARATOR_LAST-1, 1, true, true);
+         {
+            static const setting_desc_t menu_desc_32[] = {
+               SDESC_UINT_ROW_EX(menu_ozone_font_scale, OZONE_FONT_SCALE,
+                     DEFAULT_OZONE_FONT_SCALE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, OZONE_FONT_SCALE_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_ozone_font_scale,
+                     NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, 0),
+               SDESC_FLOAT_ROW_EX(ozone_font_scale_factor_global, OZONE_FONT_SCALE_FACTOR_GLOBAL,
+                     DEFAULT_OZONE_FONT_SCALE_FACTOR_GLOBAL, "%.2fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.0, 3.0, 0.05,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(ozone_font_scale_factor_title, OZONE_FONT_SCALE_FACTOR_TITLE,
+                     DEFAULT_OZONE_FONT_SCALE_FACTOR_TITLE, "%.2fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.0, 3.0, 0.05,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(ozone_font_scale_factor_sidebar, OZONE_FONT_SCALE_FACTOR_SIDEBAR,
+                     DEFAULT_OZONE_FONT_SCALE_FACTOR_SIDEBAR, "%.2fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.0, 3.0, 0.05,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(ozone_font_scale_factor_label, OZONE_FONT_SCALE_FACTOR_LABEL,
+                     DEFAULT_OZONE_FONT_SCALE_FACTOR_LABEL, "%.2fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.0, 3.0, 0.05,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(ozone_font_scale_factor_sublabel, OZONE_FONT_SCALE_FACTOR_SUBLABEL,
+                     DEFAULT_OZONE_FONT_SCALE_FACTOR_SUBLABEL, "%.2fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.0, 3.0, 0.05,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(ozone_font_scale_factor_time, OZONE_FONT_SCALE_FACTOR_TIME,
+                     DEFAULT_OZONE_FONT_SCALE_FACTOR_TIME, "%.2fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.0, 3.0, 0.05,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(ozone_font_scale_factor_footer, OZONE_FONT_SCALE_FACTOR_FOOTER,
+                     DEFAULT_OZONE_FONT_SCALE_FACTOR_FOOTER, "%.2fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.0, 3.0, 0.05,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(ozone_scroll_content_metadata, OZONE_SCROLL_CONTENT_METADATA,
+                     DEFAULT_OZONE_SCROLL_CONTENT_METADATA, SD_FLAG_NONE, 0, 0),
+               SDESC_FLOAT_ROW_EX(ozone_thumbnail_scale_factor, OZONE_THUMBNAIL_SCALE_FACTOR,
+                     DEFAULT_OZONE_THUMBNAIL_SCALE_FACTOR, "%.2fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1.0, 2.0, 0.05,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(ozone_padding_factor, OZONE_PADDING_FACTOR,
+                     DEFAULT_OZONE_PADDING_FACTOR, "%.2fx",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.0, 2.0, 0.01,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(menu_ozone_header_icon, OZONE_HEADER_ICON,
+                     DEFAULT_OZONE_HEADER_ICON,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, OZONE_HEADER_ICON_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_ozone_header_icon,
+                     NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, 0),
+               SDESC_UINT_ROW_EX(menu_ozone_header_separator, OZONE_HEADER_SEPARATOR,
+                     DEFAULT_OZONE_HEADER_SEPARATOR,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, OZONE_HEADER_SEPARATOR_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_ozone_header_separator,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_32, ARRAY_SIZE(menu_desc_32),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 #endif
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_show_start_screen,
-               MENU_ENUM_LABEL_RGUI_SHOW_START_SCREEN,
-               MENU_ENUM_LABEL_VALUE_RGUI_SHOW_START_SCREEN,
-               DEFAULT_MENU_SHOW_START_SCREEN,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED);
+         {
+            static const setting_desc_t menu_desc_33[] = {
+/* GENERATED: rows come from settings_def_menu_start_screen.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_start_screen.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_33, ARRAY_SIZE(menu_desc_33),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          if (string_is_equal(settings->arrays.menu_driver, "rgui"))
          {
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_rgui_inline_thumbnails,
-                  MENU_ENUM_LABEL_MENU_RGUI_INLINE_THUMBNAILS,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_INLINE_THUMBNAILS,
-                  DEFAULT_RGUI_INLINE_THUMBNAILS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_rgui_swap_thumbnails,
-                  MENU_ENUM_LABEL_MENU_RGUI_SWAP_THUMBNAILS,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_SWAP_THUMBNAILS,
-                  DEFAULT_RGUI_SWAP_THUMBNAILS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_34[] = {
+/* GENERATED: rows come from settings_def_menu_rgui_thumbnails.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_rgui_thumbnails.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_34, ARRAY_SIZE(menu_desc_34),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
          if (     memcmp(settings->arrays.menu_driver, "rgui", 5) == 0
                || memcmp(settings->arrays.menu_driver, "xmb", 4) == 0
                || memcmp(settings->arrays.menu_driver, "ozone", 6) == 0)
          {
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_thumbnail_background_enable,
-                  MENU_ENUM_LABEL_MENU_THUMBNAIL_BACKGROUND_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_MENU_THUMBNAIL_BACKGROUND_ENABLE,
-                  DEFAULT_MENU_THUMBNAIL_BACKGROUND_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_35[] = {
+/* GENERATED: rows come from settings_def_menu_thumbnail_background.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_thumbnail_background.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_35, ARRAY_SIZE(menu_desc_35),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
          if (   string_is_equal(settings->arrays.menu_driver, "xmb")
@@ -21077,6 +18673,7 @@ static bool setting_append_list(
                left_thumbnails_label_value = MENU_ENUM_LABEL_VALUE_LEFT_THUMBNAILS;
             }
 
+            /* Descriptor holdout: poke tail outside the descriptor grammar. */
             CONFIG_UINT(
                   list, list_info,
                   &settings->uints.gfx_thumbnails,
@@ -21114,37 +18711,21 @@ static bool setting_append_list(
 
          if (string_is_equal(settings->arrays.menu_driver, "xmb"))
          {
-             CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_icon_thumbnails,
-                  MENU_ENUM_LABEL_ICON_THUMBNAILS,
-                  MENU_ENUM_LABEL_VALUE_ICON_THUMBNAILS,
-                  DEFAULT_MENU_ICON_THUMBNAILS_DEFAULT,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_menu_thumbnails;
-            menu_settings_list_current_add_range(list, list_info, 0, PLAYLIST_THUMBNAIL_MODE_LAST - PLAYLIST_THUMBNAIL_MODE_OFF - 1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_RADIO_BUTTONS;
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.menu_xmb_vertical_thumbnails,
-                  MENU_ENUM_LABEL_XMB_VERTICAL_THUMBNAILS,
-                  MENU_ENUM_LABEL_VALUE_XMB_VERTICAL_THUMBNAILS,
-                  DEFAULT_XMB_VERTICAL_THUMBNAILS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_36[] = {
+               SDESC_UINT_ROW_EX(menu_icon_thumbnails, ICON_THUMBNAILS,
+                     DEFAULT_MENU_ICON_THUMBNAILS_DEFAULT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, PLAYLIST_THUMBNAIL_MODE_LAST - PLAYLIST_THUMBNAIL_MODE_OFF - 1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_menu_thumbnails,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_RADIO_BUTTONS),
+               SDESC_BOOL_ROW(menu_xmb_vertical_thumbnails, XMB_VERTICAL_THUMBNAILS,
+                     DEFAULT_XMB_VERTICAL_THUMBNAILS, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_36, ARRAY_SIZE(menu_desc_36),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             CONFIG_UINT(
                   list, list_info,
@@ -21166,163 +18747,74 @@ static bool setting_append_list(
                || memcmp(settings->arrays.menu_driver, "xmb", 4) == 0
                || memcmp(settings->arrays.menu_driver, "ozone", 6) == 0)
          {
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.gfx_thumbnail_upscale_threshold,
-                  MENU_ENUM_LABEL_MENU_THUMBNAIL_UPSCALE_THRESHOLD,
-                  MENU_ENUM_LABEL_VALUE_MENU_THUMBNAIL_UPSCALE_THRESHOLD,
-                  DEFAULT_GFX_THUMBNAIL_UPSCALE_THRESHOLD,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint_special;
-            menu_settings_list_current_add_range(list, list_info, 0, 1024, 256, true, true);
+         {
+            static const setting_desc_t menu_desc_37[] = {
+               SDESC_UINT_ROW_EX(gfx_thumbnail_upscale_threshold, MENU_THUMBNAIL_UPSCALE_THRESHOLD,
+                     DEFAULT_GFX_THUMBNAIL_UPSCALE_THRESHOLD,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 1024, 256, 0,
+                     setting_action_ok_uint_special, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_37, ARRAY_SIZE(menu_desc_37),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
          if (string_is_equal(settings->arrays.menu_driver, "rgui"))
          {
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_rgui_thumbnail_downscaler,
-                  MENU_ENUM_LABEL_MENU_RGUI_THUMBNAIL_DOWNSCALER,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_THUMBNAIL_DOWNSCALER,
-                  DEFAULT_RGUI_THUMBNAIL_DOWNSCALER,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-               (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-               (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_rgui_thumbnail_scaler;
-            menu_settings_list_current_add_range(list, list_info, 0, RGUI_THUMB_SCALE_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_RADIO_BUTTONS;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.menu_rgui_thumbnail_delay,
-                  MENU_ENUM_LABEL_MENU_RGUI_THUMBNAIL_DELAY,
-                  MENU_ENUM_LABEL_VALUE_MENU_RGUI_THUMBNAIL_DELAY,
-                  DEFAULT_RGUI_THUMBNAIL_DELAY,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 0.0f, 1024.0f, 64.0f, true, true);
+         {
+            static const setting_desc_t menu_desc_38[] = {
+               SDESC_UINT_ROW_EX(menu_rgui_thumbnail_downscaler, MENU_RGUI_THUMBNAIL_DOWNSCALER,
+                     DEFAULT_RGUI_THUMBNAIL_DOWNSCALER,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, RGUI_THUMB_SCALE_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_rgui_thumbnail_scaler,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_RADIO_BUTTONS),
+               SDESC_UINT_ROW_EX(menu_rgui_thumbnail_delay, MENU_RGUI_THUMBNAIL_DELAY,
+                     DEFAULT_RGUI_THUMBNAIL_DELAY,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.0f, 1024.0f, 64.0f, 0,
+                     NULL, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_38, ARRAY_SIZE(menu_desc_38),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_timedate_enable,
-               MENU_ENUM_LABEL_TIMEDATE_ENABLE,
-               MENU_ENUM_LABEL_VALUE_TIMEDATE_ENABLE,
-               DEFAULT_MENU_TIMEDATE_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED);
-
-         CONFIG_UINT(list, list_info,
-            &settings->uints.menu_timedate_style,
-            MENU_ENUM_LABEL_TIMEDATE_STYLE,
-            MENU_ENUM_LABEL_VALUE_TIMEDATE_STYLE,
-            DEFAULT_MENU_TIMEDATE_STYLE,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_menu_timedate_style;
-         menu_settings_list_current_add_range(list, list_info, 0, MENU_TIMEDATE_STYLE_LAST - 1, 1, true, true);
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-         CONFIG_UINT(list, list_info,
-            &settings->uints.menu_timedate_date_separator,
-            MENU_ENUM_LABEL_TIMEDATE_DATE_SEPARATOR,
-            MENU_ENUM_LABEL_VALUE_TIMEDATE_DATE_SEPARATOR,
-            DEFAULT_MENU_TIMEDATE_DATE_SEPARATOR,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_menu_timedate_date_separator;
-         menu_settings_list_current_add_range(list, list_info, 0, MENU_TIMEDATE_DATE_SEPARATOR_LAST - 1, 1, true, true);
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_battery_level_enable,
-               MENU_ENUM_LABEL_BATTERY_LEVEL_ENABLE,
-               MENU_ENUM_LABEL_VALUE_BATTERY_LEVEL_ENABLE,
-               true,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_core_enable,
-               MENU_ENUM_LABEL_CORE_ENABLE,
-               MENU_ENUM_LABEL_VALUE_CORE_ENABLE,
-               true,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_show_sublabels,
-               MENU_ENUM_LABEL_MENU_SHOW_SUBLABELS,
-               MENU_ENUM_LABEL_VALUE_MENU_SHOW_SUBLABELS,
-               DEFAULT_MENU_SHOW_SUBLABELS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_show_confirm,
-               MENU_ENUM_LABEL_MENU_SHOW_CONFIRM,
-               MENU_ENUM_LABEL_VALUE_MENU_SHOW_CONFIRM,
-               DEFAULT_MENU_SHOW_CONFIRM,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+         {
+            static const setting_desc_t menu_desc_39[] = {
+               SDESC_BOOL_ROW(menu_timedate_enable, TIMEDATE_ENABLE,
+                     DEFAULT_MENU_TIMEDATE_ENABLE, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_UINT_ROW_EX(menu_timedate_style, TIMEDATE_STYLE,
+                     DEFAULT_MENU_TIMEDATE_STYLE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, MENU_TIMEDATE_STYLE_LAST - 1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_menu_timedate_style,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_UINT_ROW_EX(menu_timedate_date_separator, TIMEDATE_DATE_SEPARATOR,
+                     DEFAULT_MENU_TIMEDATE_DATE_SEPARATOR,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, MENU_TIMEDATE_DATE_SEPARATOR_LAST - 1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_menu_timedate_date_separator,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_BOOL_ROW(menu_battery_level_enable, BATTERY_LEVEL_ENABLE,
+                     true, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW(menu_core_enable, CORE_ENABLE,
+                     true, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW_EX(menu_show_sublabels, MENU_SHOW_SUBLABELS,
+                     DEFAULT_MENU_SHOW_SUBLABELS, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_BOOL_ROW(menu_show_confirm, MENU_SHOW_CONFIRM,
+                     DEFAULT_MENU_SHOW_CONFIRM, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_desc_39, ARRAY_SIZE(menu_desc_39),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 
          END_SUB_GROUP(list, list_info, parent_group);
@@ -21337,68 +18829,39 @@ static bool setting_append_list(
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_navigation_browser_filter_supported_extensions_enable,
-               MENU_ENUM_LABEL_NAVIGATION_BROWSER_FILTER_SUPPORTED_EXTENSIONS_ENABLE,
-               MENU_ENUM_LABEL_VALUE_NAVIGATION_BROWSER_FILTER_SUPPORTED_EXTENSIONS_ENABLE,
-               true,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.filter_by_current_core,
-               MENU_ENUM_LABEL_FILTER_BY_CURRENT_CORE,
-               MENU_ENUM_LABEL_VALUE_FILTER_BY_CURRENT_CORE,
-               DEFAULT_FILTER_BY_CURRENT_CORE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.use_last_start_directory,
-               MENU_ENUM_LABEL_USE_LAST_START_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_USE_LAST_START_DIRECTORY,
-               DEFAULT_USE_LAST_START_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-#ifdef HAVE_DYNAMIC
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.core_suggest_always,
-               MENU_ENUM_LABEL_CORE_SUGGEST_ALWAYS,
-               MENU_ENUM_LABEL_VALUE_CORE_SUGGEST_ALWAYS,
-               DEFAULT_CORE_SUGGEST_ALWAYS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-#endif
-
+         {
+            static const setting_desc_t menu_file_brow_desc_0[] = {
+/* GENERATED: rows come from settings_def_menu_filebrowser.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_filebrowser.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  menu_file_brow_desc_0, ARRAY_SIZE(menu_file_brow_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
          break;
@@ -21407,42 +18870,43 @@ static bool setting_append_list(
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MULTIMEDIA_SETTINGS),
                parent_group);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.multimedia_builtin_mediaplayer_enable,
-               MENU_ENUM_LABEL_USE_BUILTIN_PLAYER,
-               MENU_ENUM_LABEL_VALUE_USE_BUILTIN_PLAYER,
-               DEFAULT_BUILTIN_MEDIAPLAYER_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-#ifdef HAVE_IMAGEVIEWER
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.multimedia_builtin_imageviewer_enable,
-               MENU_ENUM_LABEL_USE_BUILTIN_IMAGE_VIEWER,
-               MENU_ENUM_LABEL_VALUE_USE_BUILTIN_IMAGE_VIEWER,
-               DEFAULT_BUILTIN_IMAGEVIEWER_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-#endif
-
+         {
+            static const setting_desc_t multimedia_desc_0[] = {
+/* GENERATED: rows come from settings_def_multimedia.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_multimedia.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  multimedia_desc_0, ARRAY_SIZE(multimedia_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
          break;
@@ -21455,47 +18919,85 @@ static bool setting_append_list(
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
 #ifdef ANDROID
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.sustained_performance_mode,
-               MENU_ENUM_LABEL_SUSTAINED_PERFORMANCE_MODE,
-               MENU_ENUM_LABEL_VALUE_SUSTAINED_PERFORMANCE_MODE,
-               DEFAULT_SUSTAINED_PERFORMANCE_MODE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_CMD_APPLY_AUTO);
+         {
+            static const setting_desc_t power_manageme_desc_0_s0[] = {
+/* GENERATED: rows come from settings_def_sustained_performance.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_sustained_performance.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  power_manageme_desc_0_s0, ARRAY_SIZE(power_manageme_desc_0_s0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
-
 #ifdef HAVE_LAKKA
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_CPU_PERFPOWER,
-               MENU_ENUM_LABEL_VALUE_CPU_PERFPOWER,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+         {
+            static const setting_desc_t power_manageme_desc_0_s1[] = {
+               SDESC_ACTION_ROW(CPU_PERFPOWER),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  power_manageme_desc_0_s1, ARRAY_SIZE(power_manageme_desc_0_s1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 #ifndef HAVE_LAKKA
          if (frontend_driver_has_gamemode())
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.gamemode_enable,
-                  MENU_ENUM_LABEL_GAMEMODE_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_GAMEMODE_ENABLE,
-                  DEFAULT_GAMEMODE_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t power_manageme_desc_1[] = {
+/* GENERATED: rows come from settings_def_gamemode.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_gamemode.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  power_manageme_desc_1, ARRAY_SIZE(power_manageme_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
@@ -21505,43 +19007,22 @@ static bool setting_append_list(
          START_GROUP(list, list_info, &group_info,
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_WIFI_SETTINGS),
                parent_group);
-         parent_group = MENU_ENUM_LABEL_WIFI_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_WIFI_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.wifi_enabled,
-               MENU_ENUM_LABEL_WIFI_ENABLED,
-               MENU_ENUM_LABEL_VALUE_WIFI_ENABLED,
-               DEFAULT_WIFI_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_WIFI_NETWORK_SCAN,
-               MENU_ENUM_LABEL_VALUE_WIFI_NETWORK_SCAN,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_WIFI_DISCONNECT,
-               MENU_ENUM_LABEL_VALUE_WIFI_DISCONNECT,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+         {
+            static const setting_desc_t wifi_managemen_desc_0[] = {
+               SDESC_BOOL_ROW_EX(wifi_enabled, WIFI_ENABLED,
+                     DEFAULT_WIFI_ENABLE, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_ACTION_ROW(WIFI_NETWORK_SCAN),
+               SDESC_ACTION_ROW(WIFI_DISCONNECT),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  wifi_managemen_desc_0, ARRAY_SIZE(wifi_managemen_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
@@ -21555,56 +19036,30 @@ static bool setting_append_list(
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.accessibility_enable,
-               MENU_ENUM_LABEL_ACCESSIBILITY_ENABLED,
-               MENU_ENUM_LABEL_VALUE_ACCESSIBILITY_ENABLED,
-               DEFAULT_ACCESSIBILITY_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.accessibility_narrator_speech_speed,
-               MENU_ENUM_LABEL_ACCESSIBILITY_NARRATOR_SPEECH_SPEED,
-               MENU_ENUM_LABEL_VALUE_ACCESSIBILITY_NARRATOR_SPEECH_SPEED,
-               DEFAULT_ACCESSIBILITY_NARRATOR_SPEECH_SPEED,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         menu_settings_list_current_add_range(list, list_info, 1, 10, 1, true, true);
-
+         {
+            static const setting_desc_t accessibility_desc_0[] = {
+               SDESC_BOOL_ROW_EX(accessibility_enable, ACCESSIBILITY_ENABLED,
+                     DEFAULT_ACCESSIBILITY_ENABLE, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_UINT_ROW_EX(accessibility_narrator_speech_speed, ACCESSIBILITY_NARRATOR_SPEECH_SPEED,
+                     DEFAULT_ACCESSIBILITY_NARRATOR_SPEECH_SPEED,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1, 10, 1, 0,
+                     NULL, NULL,
+                     NULL, NULL, NULL, NULL, 0),
 #if defined(__linux__) && !defined(ANDROID)
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.accessibility_narrator_engine,
-               MENU_ENUM_LABEL_ACCESSIBILITY_NARRATOR_ENGINE,
-               MENU_ENUM_LABEL_VALUE_ACCESSIBILITY_NARRATOR_ENGINE,
-               DEFAULT_ACCESSIBILITY_NARRATOR_ENGINE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_accessibility_narrator_engine;
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0,
-               ACCESSIBILITY_NARRATOR_ENGINE_LAST - 1, 1, true, true);
+               SDESC_UINT_ROW_EX(accessibility_narrator_engine, ACCESSIBILITY_NARRATOR_ENGINE,
+                     DEFAULT_ACCESSIBILITY_NARRATOR_ENGINE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, ACCESSIBILITY_NARRATOR_ENGINE_LAST - 1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_accessibility_narrator_engine,
+                     NULL, NULL, NULL, NULL, 0),
 #endif
-
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  accessibility_desc_0, ARRAY_SIZE(accessibility_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
          break;
@@ -21618,21 +19073,19 @@ static bool setting_append_list(
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.ai_service_mode,
-               MENU_ENUM_LABEL_AI_SERVICE_MODE,
-               MENU_ENUM_LABEL_VALUE_AI_SERVICE_MODE,
-               DEFAULT_AI_SERVICE_MODE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_ai_service_mode;
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0, 2, 1, true, true);
+         {
+            static const setting_desc_t ai_service_desc_0[] = {
+               SDESC_UINT_ROW_EX(ai_service_mode, AI_SERVICE_MODE,
+                     DEFAULT_AI_SERVICE_MODE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 2, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_ai_service_mode,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ai_service_desc_0, ARRAY_SIZE(ai_service_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          CONFIG_STRING_OPTIONS(
                list, list_info,
@@ -21651,6 +19104,7 @@ static bool setting_append_list(
          (*list)[list_info->index - 1].action_left  = setting_string_action_left_driver;
          (*list)[list_info->index - 1].action_right = setting_string_action_right_driver;
 
+         /* Descriptor holdout: poke tail outside the descriptor grammar. */
          CONFIG_STRING(
                list, list_info,
                settings->arrays.ai_service_url,
@@ -21667,70 +19121,30 @@ static bool setting_append_list(
          (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
          (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.ai_service_enable,
-               MENU_ENUM_LABEL_AI_SERVICE_ENABLE,
-               MENU_ENUM_LABEL_VALUE_AI_SERVICE_ENABLE,
-               DEFAULT_AI_SERVICE_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.ai_service_pause,
-               MENU_ENUM_LABEL_AI_SERVICE_PAUSE,
-               MENU_ENUM_LABEL_VALUE_AI_SERVICE_PAUSE,
-               DEFAULT_AI_SERVICE_PAUSE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.ai_service_source_lang,
-               MENU_ENUM_LABEL_AI_SERVICE_SOURCE_LANG,
-               MENU_ENUM_LABEL_VALUE_AI_SERVICE_SOURCE_LANG,
-               DEFAULT_AI_SERVICE_SOURCE_LANG,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_ai_service_lang;
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, TRANSLATION_LANG_DONT_CARE, (TRANSLATION_LANG_LAST-1), 1, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.ai_service_target_lang,
-               MENU_ENUM_LABEL_AI_SERVICE_TARGET_LANG,
-               MENU_ENUM_LABEL_VALUE_AI_SERVICE_TARGET_LANG,
-               DEFAULT_AI_SERVICE_TARGET_LANG,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_ai_service_lang;
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, TRANSLATION_LANG_DONT_CARE, (TRANSLATION_LANG_LAST-1), 1, true, true);
+         {
+            static const setting_desc_t ai_service_desc_1[] = {
+               SDESC_BOOL_ROW_EX(ai_service_enable, AI_SERVICE_ENABLE,
+                     DEFAULT_AI_SERVICE_ENABLE, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_BOOL_ROW(ai_service_pause, AI_SERVICE_PAUSE,
+                     DEFAULT_AI_SERVICE_PAUSE, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(ai_service_source_lang, AI_SERVICE_SOURCE_LANG,
+                     DEFAULT_AI_SERVICE_SOURCE_LANG,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     TRANSLATION_LANG_DONT_CARE, (TRANSLATION_LANG_LAST-1), 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_ai_service_lang,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(ai_service_target_lang, AI_SERVICE_TARGET_LANG,
+                     DEFAULT_AI_SERVICE_TARGET_LANG,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     TRANSLATION_LANG_DONT_CARE, (TRANSLATION_LANG_LAST-1), 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_ai_service_lang,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ai_service_desc_1, ARRAY_SIZE(ai_service_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 
          END_SUB_GROUP(list, list_info, parent_group);
@@ -21765,41 +19179,39 @@ static bool setting_append_list(
             (*list)[list_info->index - 1].change_handler = appicon_change_handler;
          }
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.pause_nonactive,
-               MENU_ENUM_LABEL_PAUSE_NONACTIVE,
-               MENU_ENUM_LABEL_VALUE_PAUSE_NONACTIVE,
-               DEFAULT_PAUSE_NONACTIVE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-
-#if !defined(RARCH_MOBILE)
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.video_disable_composition,
-               MENU_ENUM_LABEL_VIDEO_DISABLE_COMPOSITION,
-               MENU_ENUM_LABEL_VALUE_VIDEO_DISABLE_COMPOSITION,
-               DEFAULT_DISABLE_COMPOSITION,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_CMD_APPLY_AUTO);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
-#endif
-
+                  {
+            static const setting_desc_t ui_desc_0[] = {
+/* GENERATED: rows come from settings_def_ui_focus.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_ui_focus.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_0, ARRAY_SIZE(ui_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #ifdef _3DS
          {
             u8 device_model = 0xFF;
@@ -21810,25 +19222,24 @@ static bool setting_append_list(
              * CTR_VIDEO_MODE_2D_400X240 and CTR_VIDEO_MODE_2D_800X240) */
             CFGU_GetSystemModel(&device_model); /* (0 = O3DS, 1 = O3DSXL, 2 = N3DS, 3 = 2DS, 4 = N3DSXL, 5 = N2DSXL) */
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.video_3ds_display_mode,
-                  MENU_ENUM_LABEL_VIDEO_3DS_DISPLAY_MODE,
-                  MENU_ENUM_LABEL_VALUE_VIDEO_3DS_DISPLAY_MODE,
-                  DEFAULT_VIDEO_3DS_DISPLAY_MODE,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_video_3ds_display_mode;
-            menu_settings_list_current_add_range(list, list_info, 0,
-                  CTR_VIDEO_MODE_LAST - ((device_model != 3) ? 1 : 3),
-                  1, true, true);
+                     {
+            /* NB: max depends on the runtime system model, so this table
+             * cannot be 'static const' (the initializer is non-constant). */
+            const setting_desc_t ui_desc_1[] = {
+               SDESC_UINT_ROW_EX(video_3ds_display_mode, VIDEO_3DS_DISPLAY_MODE,
+                     DEFAULT_VIDEO_3DS_DISPLAY_MODE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, CTR_VIDEO_MODE_LAST - ((device_model != 3) ? 1 : 3), 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_video_3ds_display_mode,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_1, ARRAY_SIZE(ui_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
+         /* Descriptor holdout: change_handler poke; descriptor slot deferred to the single-source phase. */
          CONFIG_BOOL(
                list, list_info,
                &settings->bools.new3ds_speedup_enable,
@@ -21845,25 +19256,21 @@ static bool setting_append_list(
                SD_FLAG_CMD_APPLY_AUTO);
          (*list)[list_info->index - 1].change_handler = new3ds_speedup_change_handler;
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.video_3ds_lcd_bottom,
-               MENU_ENUM_LABEL_VIDEO_3DS_LCD_BOTTOM,
-               MENU_ENUM_LABEL_VALUE_VIDEO_3DS_LCD_BOTTOM,
-               DEFAULT_VIDEO_3DS_LCD_BOTTOM,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_CMD_APPLY_AUTO);
-         (*list)[list_info->index - 1].action_ok = &setting_bool_action_left_with_refresh;
+                  {
+            static const setting_desc_t ui_desc_2[] = {
+               SDESC_BOOL_ROW_EX(video_3ds_lcd_bottom, VIDEO_3DS_LCD_BOTTOM,
+                     DEFAULT_VIDEO_3DS_LCD_BOTTOM, SD_FLAG_CMD_APPLY_AUTO, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_2, ARRAY_SIZE(ui_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #ifdef CONSOLE_LOG
          MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT_FROM_TOGGLE);
 #endif
 
+         /* Descriptor holdout: runtime default value. */
          CONFIG_DIR(
                list, list_info,
                settings->paths.directory_bottom_assets,
@@ -21880,777 +19287,293 @@ static bool setting_append_list(
          (*list)[list_info->index - 1].action_start = directory_action_start_generic;
          MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_REINIT);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.bottom_font_enable,
-               MENU_ENUM_LABEL_BOTTOM_FONT_ENABLE,
-               MENU_ENUM_LABEL_VALUE_BOTTOM_FONT_ENABLE,
-               DEFAULT_BOTTOM_FONT_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_INT(
-               list, list_info,
-               &settings->ints.bottom_font_color_red,
-               MENU_ENUM_LABEL_BOTTOM_FONT_COLOR_RED,
-               MENU_ENUM_LABEL_VALUE_BOTTOM_FONT_COLOR_RED,
-               DEFAULT_BOTTOM_FONT_COLOR,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0, 255, 1, true, true);
-
-         CONFIG_INT(
-               list, list_info,
-               &settings->ints.bottom_font_color_green,
-               MENU_ENUM_LABEL_BOTTOM_FONT_COLOR_GREEN,
-               MENU_ENUM_LABEL_VALUE_BOTTOM_FONT_COLOR_GREEN,
-               DEFAULT_BOTTOM_FONT_COLOR,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0, 255, 1, true, true);
-
-         CONFIG_INT(
-               list, list_info,
-               &settings->ints.bottom_font_color_blue,
-               MENU_ENUM_LABEL_BOTTOM_FONT_COLOR_BLUE,
-               MENU_ENUM_LABEL_VALUE_BOTTOM_FONT_COLOR_BLUE,
-               DEFAULT_BOTTOM_FONT_COLOR,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0, 255, 1, true, true);
-
-         CONFIG_INT(
-               list, list_info,
-               &settings->ints.bottom_font_color_opacity,
-               MENU_ENUM_LABEL_BOTTOM_FONT_COLOR_OPACITY,
-               MENU_ENUM_LABEL_VALUE_BOTTOM_FONT_COLOR_OPACITY,
-               DEFAULT_BOTTOM_FONT_COLOR,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0, 255, 1, true, true);
-
-         CONFIG_FLOAT(
-               list, list_info,
-               &settings->floats.bottom_font_scale,
-               MENU_ENUM_LABEL_BOTTOM_FONT_SCALE,
-               MENU_ENUM_LABEL_VALUE_BOTTOM_FONT_SCALE,
-               DEFAULT_BOTTOM_FONT_SCALE,
-               "%.2f",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 1, 2, 0.01, true, true);
+                  {
+            static const setting_desc_t ui_desc_3[] = {
+               SDESC_BOOL_ROW(bottom_font_enable, BOTTOM_FONT_ENABLE,
+                     DEFAULT_BOTTOM_FONT_ENABLE, SD_FLAG_NONE, 0, 0),
+               SDESC_INT_ROW_EX(bottom_font_color_red, BOTTOM_FONT_COLOR_RED,
+                     DEFAULT_BOTTOM_FONT_COLOR,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 255, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_INT_ROW_EX(bottom_font_color_green, BOTTOM_FONT_COLOR_GREEN,
+                     DEFAULT_BOTTOM_FONT_COLOR,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 255, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_INT_ROW_EX(bottom_font_color_blue, BOTTOM_FONT_COLOR_BLUE,
+                     DEFAULT_BOTTOM_FONT_COLOR,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 255, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_INT_ROW_EX(bottom_font_color_opacity, BOTTOM_FONT_COLOR_OPACITY,
+                     DEFAULT_BOTTOM_FONT_COLOR,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 255, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_FLOAT_ROW_EX(bottom_font_scale, BOTTOM_FONT_SCALE,
+                     DEFAULT_BOTTOM_FONT_SCALE, "%.2f",
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1, 2, 0.01,
+                     setting_action_ok_uint, NULL, NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_3, ARRAY_SIZE(ui_desc_3),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 
 #ifdef HAVE_NETWORKING
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_show_online_updater,
-               MENU_ENUM_LABEL_MENU_SHOW_ONLINE_UPDATER,
-               MENU_ENUM_LABEL_VALUE_MENU_SHOW_ONLINE_UPDATER,
-               DEFAULT_MENU_SHOW_ONLINE_UPDATER,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+                  {
+            static const setting_desc_t ui_desc_4[] = {
+/* GENERATED: rows come from settings_def_menu_online_updater_view.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_online_updater_view.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_4, ARRAY_SIZE(ui_desc_4),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #if !defined(HAVE_LAKKA)
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_show_core_updater,
-               MENU_ENUM_LABEL_MENU_SHOW_CORE_UPDATER,
-               MENU_ENUM_LABEL_VALUE_MENU_SHOW_CORE_UPDATER,
-               DEFAULT_MENU_SHOW_ONLINE_UPDATER,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+                  {
+            static const setting_desc_t ui_desc_5[] = {
+/* GENERATED: rows come from settings_def_menu_core_updater_view.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_core_updater_view.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_5, ARRAY_SIZE(ui_desc_5),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 #endif
 
 #ifdef HAVE_MIST
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.menu_show_core_manager_steam,
-               MENU_ENUM_LABEL_MENU_SHOW_CORE_MANAGER_STEAM,
-               MENU_ENUM_LABEL_VALUE_MENU_SHOW_CORE_MANAGER_STEAM,
-               DEFAULT_MENU_SHOW_CORE_MANAGER_STEAM,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+                  {
+            static const setting_desc_t ui_desc_6[] = {
+/* GENERATED: rows come from settings_def_menu_steam.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_steam.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_6, ARRAY_SIZE(ui_desc_6),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_drivers,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_DRIVERS,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_DRIVERS,
-               DEFAULT_SETTINGS_SHOW_DRIVERS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_video,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_VIDEO,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_VIDEO,
-               DEFAULT_SETTINGS_SHOW_VIDEO,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_audio,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_AUDIO,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_AUDIO,
-               DEFAULT_SETTINGS_SHOW_AUDIO,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_input,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_INPUT,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_INPUT,
-               DEFAULT_SETTINGS_SHOW_INPUT,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_latency,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_LATENCY,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_LATENCY,
-               DEFAULT_SETTINGS_SHOW_LATENCY,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_core,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_CORE,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_CORE,
-               DEFAULT_SETTINGS_SHOW_CORE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_configuration,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_CONFIGURATION,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_CONFIGURATION,
-               DEFAULT_SETTINGS_SHOW_CONFIGURATION,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_saving,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_SAVING,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_SAVING,
-               DEFAULT_SETTINGS_SHOW_SAVING,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_logging,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_LOGGING,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_LOGGING,
-               DEFAULT_SETTINGS_SHOW_LOGGING,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_file_browser,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_FILE_BROWSER,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_FILE_BROWSER,
-               DEFAULT_SETTINGS_SHOW_FILE_BROWSER,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_frame_throttle,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_FRAME_THROTTLE,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_FRAME_THROTTLE,
-               DEFAULT_SETTINGS_SHOW_FRAME_THROTTLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_recording,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_RECORDING,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_RECORDING,
-               DEFAULT_SETTINGS_SHOW_RECORDING,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_onscreen_display,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_ONSCREEN_DISPLAY,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_ONSCREEN_DISPLAY,
-               DEFAULT_SETTINGS_SHOW_ONSCREEN_DISPLAY,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_user_interface,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_USER_INTERFACE,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_USER_INTERFACE,
-               DEFAULT_SETTINGS_SHOW_USER_INTERFACE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_ai_service,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_AI_SERVICE,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_AI_SERVICE,
-               DEFAULT_SETTINGS_SHOW_AI_SERVICE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_accessibility,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_ACCESSIBILITY,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_ACCESSIBILITY,
-               DEFAULT_SETTINGS_SHOW_ACCESSIBILITY,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_power_management,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_POWER_MANAGEMENT,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_POWER_MANAGEMENT,
-               DEFAULT_SETTINGS_SHOW_POWER_MANAGEMENT,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_achievements,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_ACHIEVEMENTS,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_ACHIEVEMENTS,
-               DEFAULT_SETTINGS_SHOW_ACHIEVEMENTS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_network,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_NETWORK,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_NETWORK,
-               DEFAULT_SETTINGS_SHOW_NETWORK,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_playlists,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_PLAYLISTS,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_PLAYLISTS,
-               DEFAULT_SETTINGS_SHOW_PLAYLISTS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_user,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_USER,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_USER,
-               DEFAULT_SETTINGS_SHOW_USER,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_directory,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_DIRECTORY,
-               DEFAULT_SETTINGS_SHOW_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+                  {
+            static const setting_desc_t ui_desc_7[] = {
+/* GENERATED: rows come from settings_def_menu_settings_views.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_settings_views.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_7, ARRAY_SIZE(ui_desc_7),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef HAVE_MIST
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_steam,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_STEAM,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_STEAM,
-               DEFAULT_SETTINGS_SHOW_STEAM,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+                  {
+            static const setting_desc_t ui_desc_8[] = {
+/* GENERATED: rows come from settings_def_settings_show_steam.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_settings_show_steam.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_8, ARRAY_SIZE(ui_desc_8),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 
 #ifdef HAVE_SMBCLIENT
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.settings_show_smb_client,
-               MENU_ENUM_LABEL_SETTINGS_SHOW_SMB_CLIENT,
-               MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_SMB_CLIENT,
-               DEFAULT_SETTINGS_SHOW_SMB_CLIENT,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+                  {
+            static const setting_desc_t ui_desc_9[] = {
+/* GENERATED: rows come from settings_def_settings_show_smb.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_settings_show_smb.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_9, ARRAY_SIZE(ui_desc_9),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_take_screenshot,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_TAKE_SCREENSHOT,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_TAKE_SCREENSHOT,
-               DEFAULT_QUICK_MENU_SHOW_TAKE_SCREENSHOT,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_savestate_submenu,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_SAVESTATE_SUBMENU,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVESTATE_SUBMENU,
-               DEFAULT_QUICK_MENU_SHOW_SAVESTATE_SUBMENU,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_save_load_state,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_SAVE_LOAD_STATE,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVE_LOAD_STATE,
-               DEFAULT_QUICK_MENU_SHOW_SAVE_LOAD_STATE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_replay,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_REPLAY,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_REPLAY,
-               DEFAULT_QUICK_MENU_SHOW_REPLAY,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_undo_save_load_state,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_UNDO_SAVE_LOAD_STATE,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_UNDO_SAVE_LOAD_STATE,
-               DEFAULT_QUICK_MENU_SHOW_UNDO_SAVE_LOAD_STATE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_add_to_favorites,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_ADD_TO_FAVORITES,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_ADD_TO_FAVORITES,
-               DEFAULT_QUICK_MENU_SHOW_ADD_TO_FAVORITES,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_add_to_playlist,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_ADD_TO_PLAYLIST,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_ADD_TO_PLAYLIST,
-               DEFAULT_QUICK_MENU_SHOW_ADD_TO_PLAYLIST,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_start_recording,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_START_RECORDING,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_START_RECORDING,
-               DEFAULT_QUICK_MENU_SHOW_START_RECORDING,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_start_streaming,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_START_STREAMING,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_START_STREAMING,
-               DEFAULT_QUICK_MENU_SHOW_START_STREAMING,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_set_core_association,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_SET_CORE_ASSOCIATION,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SET_CORE_ASSOCIATION,
-               DEFAULT_QUICK_MENU_SHOW_SET_CORE_ASSOCIATION,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_reset_core_association,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_RESET_CORE_ASSOCIATION,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESET_CORE_ASSOCIATION,
-               DEFAULT_QUICK_MENU_SHOW_RESET_CORE_ASSOCIATION,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_resume_content,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_RESUME_CONTENT,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESUME_CONTENT,
-               DEFAULT_QUICK_MENU_SHOW_RESUME_CONTENT,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_restart_content,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_RESTART_CONTENT,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESTART_CONTENT,
-               DEFAULT_QUICK_MENU_SHOW_RESTART_CONTENT,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_close_content,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_CLOSE_CONTENT,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_CLOSE_CONTENT,
-               DEFAULT_QUICK_MENU_SHOW_CLOSE_CONTENT,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_options,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_OPTIONS,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_OPTIONS,
-               DEFAULT_QUICK_MENU_SHOW_CORE_OPTIONS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_core_options_flush,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_CORE_OPTIONS_FLUSH,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_CORE_OPTIONS_FLUSH,
-               DEFAULT_QUICK_MENU_SHOW_CORE_OPTIONS_FLUSH,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_controls,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_CONTROLS,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_CONTROLS,
-               DEFAULT_QUICK_MENU_SHOW_CONTROLS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_cheats,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_CHEATS,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_CHEATS,
-               DEFAULT_QUICK_MENU_SHOW_CHEATS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+                  {
+            static const setting_desc_t ui_desc_10[] = {
+/* GENERATED: rows come from settings_def_menu_quick_views.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_quick_views.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_10, ARRAY_SIZE(ui_desc_10),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
          {
@@ -22664,101 +19587,77 @@ static bool setting_append_list(
                   || BIT32_GET(flags.flags, GFX_CTX_FLAGS_SHADERS_CG)
                   || BIT32_GET(flags.flags, GFX_CTX_FLAGS_SHADERS_HLSL))
             {
-               CONFIG_BOOL(
-                     list, list_info,
-                     &settings->bools.quick_menu_show_shaders,
-                     MENU_ENUM_LABEL_QUICK_MENU_SHOW_SHADERS,
-                     MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SHADERS,
-                     DEFAULT_QUICK_MENU_SHOW_SHADERS,
-                     MENU_ENUM_LABEL_VALUE_OFF,
-                     MENU_ENUM_LABEL_VALUE_ON,
-                     &group_info,
-                     &subgroup_info,
-                     parent_group,
-                     general_write_handler,
-                     general_read_handler,
-                     SD_FLAG_NONE);
+                        {
+            static const setting_desc_t ui_desc_11[] = {
+/* GENERATED: rows come from settings_def_quick_menu_shaders_view.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_quick_menu_shaders_view.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_11, ARRAY_SIZE(ui_desc_11),
+                  &group_info, &subgroup_info, parent_group);
+         }
             }
          }
 #endif
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_save_core_overrides,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_SAVE_CORE_OVERRIDES,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVE_CORE_OVERRIDES,
-               DEFAULT_QUICK_MENU_SHOW_SAVE_CORE_OVERRIDES,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_save_content_dir_overrides,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_SAVE_CONTENT_DIR_OVERRIDES,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVE_CONTENT_DIR_OVERRIDES,
-               DEFAULT_QUICK_MENU_SHOW_SAVE_CONTENT_DIR_OVERRIDES,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_save_game_overrides,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_SAVE_GAME_OVERRIDES,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVE_GAME_OVERRIDES,
-               DEFAULT_QUICK_MENU_SHOW_SAVE_GAME_OVERRIDES,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_information,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_INFORMATION,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_INFORMATION,
-               DEFAULT_QUICK_MENU_SHOW_INFORMATION,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-#ifdef HAVE_NETWORKING
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.quick_menu_show_download_thumbnails,
-               MENU_ENUM_LABEL_QUICK_MENU_SHOW_DOWNLOAD_THUMBNAILS,
-               MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_DOWNLOAD_THUMBNAILS,
-               DEFAULT_QUICK_MENU_SHOW_DOWNLOAD_THUMBNAILS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-#endif
-
+                  {
+            static const setting_desc_t ui_desc_12[] = {
+/* GENERATED: rows come from settings_def_menu_desktop.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_menu_desktop.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_12, ARRAY_SIZE(ui_desc_12),
+                  &group_info, &subgroup_info, parent_group);
+         }
+         /* Descriptor holdout: poke tail outside the descriptor grammar. */
          CONFIG_BOOL(
                list, list_info,
                &settings->bools.menu_scroll_fast,
@@ -22774,86 +19673,30 @@ static bool setting_append_list(
                general_read_handler,
                SD_FLAG_NONE);
 
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.menu_scroll_delay,
-               MENU_ENUM_LABEL_MENU_SCROLL_DELAY,
-               MENU_ENUM_LABEL_VALUE_MENU_SCROLL_DELAY,
-               DEFAULT_MENU_SCROLL_DELAY,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].offset_by     = 1;
-         menu_settings_list_current_add_range(list, list_info, 1, 999, 1, true, true);
-
+                  {
+            static const setting_desc_t ui_desc_13[] = {
+               SDESC_UINT_ROW_EX(menu_scroll_delay, MENU_SCROLL_DELAY,
+                     DEFAULT_MENU_SCROLL_DELAY,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1, 999, 1, 1,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
 #if defined(HAVE_QT) || defined(HAVE_COCOA)
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.ui_companion_enable,
-               MENU_ENUM_LABEL_UI_COMPANION_ENABLE,
-               MENU_ENUM_LABEL_VALUE_UI_COMPANION_ENABLE,
-               DEFAULT_UI_COMPANION_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.ui_companion_start_on_boot,
-               MENU_ENUM_LABEL_UI_COMPANION_START_ON_BOOT,
-               MENU_ENUM_LABEL_VALUE_UI_COMPANION_START_ON_BOOT,
-               DEFAULT_UI_COMPANION_START_ON_BOOT,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.desktop_menu_enable,
-               MENU_ENUM_LABEL_DESKTOP_MENU_ENABLE,
-               MENU_ENUM_LABEL_VALUE_DESKTOP_MENU_ENABLE,
-               DEFAULT_DESKTOP_MENU_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.ui_companion_toggle,
-               MENU_ENUM_LABEL_UI_COMPANION_TOGGLE,
-               MENU_ENUM_LABEL_VALUE_UI_COMPANION_TOGGLE,
-               DEFAULT_UI_COMPANION_TOGGLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+               SDESC_BOOL_ROW(ui_companion_enable, UI_COMPANION_ENABLE,
+                     DEFAULT_UI_COMPANION_ENABLE, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW(ui_companion_start_on_boot, UI_COMPANION_START_ON_BOOT,
+                     DEFAULT_UI_COMPANION_START_ON_BOOT, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_BOOL_ROW_EX(desktop_menu_enable, DESKTOP_MENU_ENABLE,
+                     DEFAULT_DESKTOP_MENU_ENABLE, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_BOOL_ROW(ui_companion_toggle, UI_COMPANION_TOGGLE,
+                     DEFAULT_UI_COMPANION_TOGGLE, SD_FLAG_NONE, 0, 0),
 #endif
-
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  ui_desc_13, ARRAY_SIZE(ui_desc_13),
+                  &group_info, &subgroup_info, parent_group);
+         }
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
          break;
@@ -22863,43 +19706,26 @@ static bool setting_append_list(
                parent_group);
          SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "History", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.history_list_enable,
-               MENU_ENUM_LABEL_HISTORY_LIST_ENABLE,
-               MENU_ENUM_LABEL_VALUE_HISTORY_LIST_ENABLE,
-               DEFAULT_HISTORY_LIST_ENABLE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED
-               );
-         (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.content_history_size,
-               MENU_ENUM_LABEL_CONTENT_HISTORY_SIZE,
-               MENU_ENUM_LABEL_VALUE_CONTENT_HISTORY_SIZE,
-               DEFAULT_CONTENT_HISTORY_SIZE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].offset_by     = 1;
-         menu_settings_list_current_add_range(list, list_info, 1.0f, 9999.0f, 1.0f, true, true);
+                  {
+            static const setting_desc_t pl_desc_0[] = {
+               SDESC_BOOL_ROW_EX(history_list_enable, HISTORY_LIST_ENABLE,
+                     DEFAULT_HISTORY_LIST_ENABLE, SD_FLAG_ADVANCED, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_UINT_ROW_EX(content_history_size, CONTENT_HISTORY_SIZE,
+                     DEFAULT_CONTENT_HISTORY_SIZE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1.0f, 9999.0f, 1.0f, 1,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  pl_desc_0, ARRAY_SIZE(pl_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
 
@@ -22909,337 +19735,115 @@ static bool setting_append_list(
           * history size, but they are in fact unrelated. We
           * therefore place this entry outside the "History"
           * sub group. */
-         CONFIG_INT(
-               list, list_info,
-               &settings->ints.content_favorites_size,
-               MENU_ENUM_LABEL_CONTENT_FAVORITES_SIZE,
-               MENU_ENUM_LABEL_VALUE_CONTENT_FAVORITES_SIZE,
-               DEFAULT_CONTENT_FAVORITES_SIZE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].offset_by     = -1;
-         menu_settings_list_current_add_range(list, list_info, -1.0f, 9999.0f, 1.0f, true, true);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.playlist_entry_rename,
-               MENU_ENUM_LABEL_PLAYLIST_ENTRY_RENAME,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_ENTRY_RENAME,
-               DEFAULT_PLAYLIST_ENTRY_RENAME,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.playlist_entry_remove_enable,
-               MENU_ENUM_LABEL_PLAYLIST_ENTRY_REMOVE,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_ENTRY_REMOVE,
-               DEFAULT_PLAYLIST_ENTRY_REMOVE_ENABLE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_playlist_entry_remove_enable;
-         menu_settings_list_current_add_range(list, list_info, 0, PLAYLIST_ENTRY_REMOVE_ENABLE_LAST-1, 1, true, true);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.playlist_sort_alphabetical,
-               MENU_ENUM_LABEL_PLAYLIST_SORT_ALPHABETICAL,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_SORT_ALPHABETICAL,
-               DEFAULT_PLAYLIST_SORT_ALPHABETICAL,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.playlist_use_old_format,
-               MENU_ENUM_LABEL_PLAYLIST_USE_OLD_FORMAT,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_USE_OLD_FORMAT,
-               DEFAULT_PLAYLIST_USE_OLD_FORMAT,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
+                  {
+            static const setting_desc_t pl_desc_1[] = {
+               SDESC_INT_ROW_EX(content_favorites_size, CONTENT_FAVORITES_SIZE,
+                     DEFAULT_CONTENT_FAVORITES_SIZE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     -1.0f, 9999.0f, 1.0f, -1,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(playlist_entry_rename, PLAYLIST_ENTRY_RENAME,
+                     DEFAULT_PLAYLIST_ENTRY_RENAME, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(playlist_entry_remove_enable, PLAYLIST_ENTRY_REMOVE,
+                     DEFAULT_PLAYLIST_ENTRY_REMOVE_ENABLE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, PLAYLIST_ENTRY_REMOVE_ENABLE_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_playlist_entry_remove_enable,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(playlist_sort_alphabetical, PLAYLIST_SORT_ALPHABETICAL,
+                     DEFAULT_PLAYLIST_SORT_ALPHABETICAL, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(playlist_use_old_format, PLAYLIST_USE_OLD_FORMAT,
+                     DEFAULT_PLAYLIST_USE_OLD_FORMAT, SD_FLAG_NONE, 0, 0),
 #if defined(HAVE_ZLIB)
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.playlist_compression,
-               MENU_ENUM_LABEL_PLAYLIST_COMPRESSION,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_COMPRESSION,
-               DEFAULT_PLAYLIST_COMPRESSION,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
+               SDESC_BOOL_ROW(playlist_compression, PLAYLIST_COMPRESSION,
+                     DEFAULT_PLAYLIST_COMPRESSION, SD_FLAG_NONE, 0, 0),
 #endif
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.playlist_show_sublabels,
-               MENU_ENUM_LABEL_PLAYLIST_SHOW_SUBLABELS,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_SHOW_SUBLABELS,
-               DEFAULT_PLAYLIST_SHOW_SUBLABELS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-         (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
+               SDESC_BOOL_ROW_EX(playlist_show_sublabels, PLAYLIST_SHOW_SUBLABELS,
+                     DEFAULT_PLAYLIST_SHOW_SUBLABELS, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  pl_desc_1, ARRAY_SIZE(pl_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          /* Playlist entry index display and content specific history icon
           * are currently supported only by Ozone & XMB */
          if (   string_is_equal(settings->arrays.menu_driver, "xmb")
              || string_is_equal(settings->arrays.menu_driver, "ozone"))
          {
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.playlist_show_history_icons,
-                  MENU_ENUM_LABEL_PLAYLIST_SHOW_HISTORY_ICONS,
-                  MENU_ENUM_LABEL_VALUE_PLAYLIST_SHOW_HISTORY_ICONS,
-                  DEFAULT_PLAYLIST_SHOW_HISTORY_ICONS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-                  &setting_get_string_representation_uint_playlist_show_history_icons;
-            menu_settings_list_current_add_range(list, list_info, 0, PLAYLIST_SHOW_HISTORY_ICONS_LAST-1, 1, true, true);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.playlist_show_entry_idx,
-                  MENU_ENUM_LABEL_PLAYLIST_SHOW_ENTRY_IDX,
-                  MENU_ENUM_LABEL_VALUE_PLAYLIST_SHOW_ENTRY_IDX,
-                  DEFAULT_PLAYLIST_SHOW_ENTRY_IDX,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
+                     {
+            static const setting_desc_t pl_desc_2[] = {
+               SDESC_UINT_ROW_EX(playlist_show_history_icons, PLAYLIST_SHOW_HISTORY_ICONS,
+                     DEFAULT_PLAYLIST_SHOW_HISTORY_ICONS,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, PLAYLIST_SHOW_HISTORY_ICONS_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_playlist_show_history_icons,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(playlist_show_entry_idx, PLAYLIST_SHOW_ENTRY_IDX,
+                     DEFAULT_PLAYLIST_SHOW_ENTRY_IDX, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  pl_desc_2, ARRAY_SIZE(pl_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.playlist_sublabel_runtime_type,
-               MENU_ENUM_LABEL_PLAYLIST_SUBLABEL_RUNTIME_TYPE,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_RUNTIME_TYPE,
-               DEFAULT_PLAYLIST_SUBLABEL_RUNTIME_TYPE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_playlist_sublabel_runtime_type;
-         menu_settings_list_current_add_range(list, list_info, 0, PLAYLIST_RUNTIME_LAST-1, 1, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.playlist_sublabel_last_played_style,
-               MENU_ENUM_LABEL_PLAYLIST_SUBLABEL_LAST_PLAYED_STYLE,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_LAST_PLAYED_STYLE,
-               DEFAULT_PLAYLIST_SUBLABEL_LAST_PLAYED_STYLE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_playlist_sublabel_last_played_style;
-         menu_settings_list_current_add_range(list, list_info, 0, PLAYLIST_LAST_PLAYED_STYLE_LAST-1, 1, true, true);
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.playlist_show_inline_core_name,
-               MENU_ENUM_LABEL_PLAYLIST_SHOW_INLINE_CORE_NAME,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_SHOW_INLINE_CORE_NAME,
-               DEFAULT_PLAYLIST_SHOW_INLINE_CORE_NAME,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_uint_playlist_inline_core_display_type;
-         menu_settings_list_current_add_range(list, list_info, 0, PLAYLIST_INLINE_CORE_DISPLAY_LAST-1, 1, true, true);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.playlist_fuzzy_archive_match,
-               MENU_ENUM_LABEL_PLAYLIST_FUZZY_ARCHIVE_MATCH,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_FUZZY_ARCHIVE_MATCH,
-               DEFAULT_PLAYLIST_FUZZY_ARCHIVE_MATCH,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.scan_without_core_match,
-               MENU_ENUM_LABEL_SCAN_WITHOUT_CORE_MATCH,
-               MENU_ENUM_LABEL_VALUE_SCAN_WITHOUT_CORE_MATCH,
-               DEFAULT_SCAN_WITHOUT_CORE_MATCH,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.scan_serial_and_crc,
-               MENU_ENUM_LABEL_SCAN_SERIAL_AND_CRC,
-               MENU_ENUM_LABEL_VALUE_SCAN_SERIAL_AND_CRC,
-               DEFAULT_SCAN_SERIAL_AND_CRC,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.playlist_portable_paths,
-               MENU_ENUM_LABEL_PLAYLIST_PORTABLE_PATHS,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_PORTABLE_PATHS,
-               DEFAULT_PLAYLIST_PORTABLE_PATHS,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-            );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.playlist_use_filename,
-               MENU_ENUM_LABEL_PLAYLIST_USE_FILENAME,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_USE_FILENAME,
-               DEFAULT_PLAYLIST_USE_FILENAME,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-            );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.playlist_allow_non_png,
-               MENU_ENUM_LABEL_PLAYLIST_ALLOW_NON_PNG,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_ALLOW_NON_PNG,
-               DEFAULT_PLAYLIST_ALLOW_NON_PNG,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-            );
+                  {
+            static const setting_desc_t pl_desc_3[] = {
+               SDESC_UINT_ROW_EX(playlist_sublabel_runtime_type, PLAYLIST_SUBLABEL_RUNTIME_TYPE,
+                     DEFAULT_PLAYLIST_SUBLABEL_RUNTIME_TYPE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, PLAYLIST_RUNTIME_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_playlist_sublabel_runtime_type,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(playlist_sublabel_last_played_style, PLAYLIST_SUBLABEL_LAST_PLAYED_STYLE,
+                     DEFAULT_PLAYLIST_SUBLABEL_LAST_PLAYED_STYLE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, PLAYLIST_LAST_PLAYED_STYLE_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_playlist_sublabel_last_played_style,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(playlist_show_inline_core_name, PLAYLIST_SHOW_INLINE_CORE_NAME,
+                     DEFAULT_PLAYLIST_SHOW_INLINE_CORE_NAME,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, PLAYLIST_INLINE_CORE_DISPLAY_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_playlist_inline_core_display_type,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_BOOL_ROW(playlist_fuzzy_archive_match, PLAYLIST_FUZZY_ARCHIVE_MATCH,
+                     DEFAULT_PLAYLIST_FUZZY_ARCHIVE_MATCH, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(scan_without_core_match, SCAN_WITHOUT_CORE_MATCH,
+                     DEFAULT_SCAN_WITHOUT_CORE_MATCH, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(scan_serial_and_crc, SCAN_SERIAL_AND_CRC,
+                     DEFAULT_SCAN_SERIAL_AND_CRC, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(playlist_portable_paths, PLAYLIST_PORTABLE_PATHS,
+                     DEFAULT_PLAYLIST_PORTABLE_PATHS, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(playlist_use_filename, PLAYLIST_USE_FILENAME,
+                     DEFAULT_PLAYLIST_USE_FILENAME, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(playlist_allow_non_png, PLAYLIST_ALLOW_NON_PNG,
+                     DEFAULT_PLAYLIST_ALLOW_NON_PNG, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  pl_desc_3, ARRAY_SIZE(pl_desc_3),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #if defined(HAVE_OZONE) || defined(HAVE_XMB)
          if (   string_is_equal(settings->arrays.menu_driver, "ozone")
              || string_is_equal(settings->arrays.menu_driver, "xmb"))
          {
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.ozone_truncate_playlist_name,
-                  MENU_ENUM_LABEL_OZONE_TRUNCATE_PLAYLIST_NAME,
-                  MENU_ENUM_LABEL_VALUE_OZONE_TRUNCATE_PLAYLIST_NAME,
-                  DEFAULT_OZONE_TRUNCATE_PLAYLIST_NAME,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            (*list)[list_info->index - 1].action_ok     = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.ozone_sort_after_truncate_playlist_name,
-                  MENU_ENUM_LABEL_OZONE_SORT_AFTER_TRUNCATE_PLAYLIST_NAME,
-                  MENU_ENUM_LABEL_VALUE_OZONE_SORT_AFTER_TRUNCATE_PLAYLIST_NAME,
-                  DEFAULT_OZONE_SORT_AFTER_TRUNCATE_PLAYLIST_NAME,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+                     {
+            static const setting_desc_t pl_desc_4[] = {
+               SDESC_BOOL_ROW_EX(ozone_truncate_playlist_name, OZONE_TRUNCATE_PLAYLIST_NAME,
+                     DEFAULT_OZONE_TRUNCATE_PLAYLIST_NAME, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_BOOL_ROW(ozone_sort_after_truncate_playlist_name, OZONE_SORT_AFTER_TRUNCATE_PLAYLIST_NAME,
+                     DEFAULT_OZONE_SORT_AFTER_TRUNCATE_PLAYLIST_NAME, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  pl_desc_4, ARRAY_SIZE(pl_desc_4),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 #endif
 
@@ -23255,6 +19859,7 @@ static bool setting_append_list(
          parent_group = MENU_ENUM_LABEL_RETRO_ACHIEVEMENTS_SETTINGS_STR;
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
+         /* Descriptor holdout: non-general read/write handler. */
          CONFIG_BOOL(
                list, list_info,
                &settings->bools.cheevos_enable,
@@ -23274,103 +19879,39 @@ static bool setting_append_list(
          (*list)[list_info->index - 1].action_left   = setting_bool_action_left_with_refresh;
          (*list)[list_info->index - 1].action_right  = setting_bool_action_right_with_refresh;
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.cheevos_test_unofficial,
-               MENU_ENUM_LABEL_CHEEVOS_TEST_UNOFFICIAL,
-               MENU_ENUM_LABEL_VALUE_CHEEVOS_TEST_UNOFFICIAL,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.cheevos_richpresence_enable,
-               MENU_ENUM_LABEL_CHEEVOS_RICHPRESENCE_ENABLE,
-               MENU_ENUM_LABEL_VALUE_CHEEVOS_RICHPRESENCE_ENABLE,
-               true,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.cheevos_badges_enable,
-               MENU_ENUM_LABEL_CHEEVOS_BADGES_ENABLE,
-               MENU_ENUM_LABEL_VALUE_CHEEVOS_BADGES_ENABLE,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED
-               );
-
-#ifdef HAVE_AUDIOMIXER
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.cheevos_unlock_sound_enable,
-               MENU_ENUM_LABEL_CHEEVOS_UNLOCK_SOUND_ENABLE,
-               MENU_ENUM_LABEL_VALUE_CHEEVOS_UNLOCK_SOUND_ENABLE,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-            );
-#endif
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.cheevos_auto_screenshot,
-               MENU_ENUM_LABEL_CHEEVOS_AUTO_SCREENSHOT,
-               MENU_ENUM_LABEL_VALUE_CHEEVOS_AUTO_SCREENSHOT,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
-
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.cheevos_start_active,
-               MENU_ENUM_LABEL_CHEEVOS_START_ACTIVE,
-               MENU_ENUM_LABEL_VALUE_CHEEVOS_START_ACTIVE,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_ADVANCED
-               );
+         {
+            static const setting_desc_t cheevos_desc_0[] = {
+/* GENERATED: rows come from settings_def_cheevos.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_cheevos.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  cheevos_desc_0, ARRAY_SIZE(cheevos_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          CONFIG_BOOL(
                list, list_info,
@@ -23483,136 +20024,33 @@ static bool setting_append_list(
          parent_group = MENU_ENUM_LABEL_CHEEVOS_VISIBILITY_SETTINGS_STR;
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_UINT(
-            list, list_info,
-            &settings->uints.cheevos_visibility_summary,
-            MENU_ENUM_LABEL_CHEEVOS_VISIBILITY_SUMMARY,
-            MENU_ENUM_LABEL_VALUE_CHEEVOS_VISIBILITY_SUMMARY,
-            DEFAULT_CHEEVOS_VISIBILITY_SUMMARY,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].action_left = &setting_uint_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right = &setting_uint_action_right_with_refresh;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_uint_cheevos_visibility_summary;
-         menu_settings_list_current_add_range(list, list_info, 0, RCHEEVOS_SUMMARY_LAST - 1, 1, true, true);
-         (*list)[list_info->index - 1].ui_type = ST_UI_TYPE_UINT_COMBOBOX;
-
-         CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.cheevos_visibility_unlock,
-            MENU_ENUM_LABEL_CHEEVOS_VISIBILITY_UNLOCK,
-            MENU_ENUM_LABEL_VALUE_CHEEVOS_VISIBILITY_UNLOCK,
-            DEFAULT_CHEEVOS_VISIBILITY_UNLOCK,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE
-         );
-
-         CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.cheevos_visibility_mastery,
-            MENU_ENUM_LABEL_CHEEVOS_VISIBILITY_MASTERY,
-            MENU_ENUM_LABEL_VALUE_CHEEVOS_VISIBILITY_MASTERY,
-            DEFAULT_CHEEVOS_VISIBILITY_MASTERY,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE
-         );
-
-         CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.cheevos_challenge_indicators,
-            MENU_ENUM_LABEL_CHEEVOS_CHALLENGE_INDICATORS,
-            MENU_ENUM_LABEL_VALUE_CHEEVOS_CHALLENGE_INDICATORS,
-            true,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE
-         );
-
-         CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.cheevos_visibility_progress_tracker,
-            MENU_ENUM_LABEL_CHEEVOS_VISIBILITY_PROGRESS_TRACKER,
-            MENU_ENUM_LABEL_VALUE_CHEEVOS_VISIBILITY_PROGRESS_TRACKER,
-            DEFAULT_CHEEVOS_VISIBILITY_PROGRESS_TRACKER,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE
-         );
-
-         CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.cheevos_visibility_lboard_start,
-            MENU_ENUM_LABEL_CHEEVOS_VISIBILITY_LBOARD_START,
-            MENU_ENUM_LABEL_VALUE_CHEEVOS_VISIBILITY_LBOARD_START,
-            DEFAULT_CHEEVOS_VISIBILITY_LBOARD_START,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE
-         );
-
-         CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.cheevos_visibility_lboard_submit,
-            MENU_ENUM_LABEL_CHEEVOS_VISIBILITY_LBOARD_SUBMIT,
-            MENU_ENUM_LABEL_VALUE_CHEEVOS_VISIBILITY_LBOARD_SUBMIT,
-            DEFAULT_CHEEVOS_VISIBILITY_LBOARD_SUBMIT,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE
-         );
-
-         CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.cheevos_visibility_lboard_cancel,
-            MENU_ENUM_LABEL_CHEEVOS_VISIBILITY_LBOARD_CANCEL,
-            MENU_ENUM_LABEL_VALUE_CHEEVOS_VISIBILITY_LBOARD_CANCEL,
-            DEFAULT_CHEEVOS_VISIBILITY_LBOARD_CANCEL,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE
-         );
+                  {
+            static const setting_desc_t chv_desc_0[] = {
+               SDESC_UINT_ROW_EX(cheevos_visibility_summary, CHEEVOS_VISIBILITY_SUMMARY,
+                     DEFAULT_CHEEVOS_VISIBILITY_SUMMARY,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, RCHEEVOS_SUMMARY_LAST - 1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_uint_cheevos_visibility_summary,
+                     NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_BOOL_ROW(cheevos_visibility_unlock, CHEEVOS_VISIBILITY_UNLOCK,
+                     DEFAULT_CHEEVOS_VISIBILITY_UNLOCK, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(cheevos_visibility_mastery, CHEEVOS_VISIBILITY_MASTERY,
+                     DEFAULT_CHEEVOS_VISIBILITY_MASTERY, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(cheevos_challenge_indicators, CHEEVOS_CHALLENGE_INDICATORS,
+                     true, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(cheevos_visibility_progress_tracker, CHEEVOS_VISIBILITY_PROGRESS_TRACKER,
+                     DEFAULT_CHEEVOS_VISIBILITY_PROGRESS_TRACKER, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(cheevos_visibility_lboard_start, CHEEVOS_VISIBILITY_LBOARD_START,
+                     DEFAULT_CHEEVOS_VISIBILITY_LBOARD_START, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(cheevos_visibility_lboard_submit, CHEEVOS_VISIBILITY_LBOARD_SUBMIT,
+                     DEFAULT_CHEEVOS_VISIBILITY_LBOARD_SUBMIT, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(cheevos_visibility_lboard_cancel, CHEEVOS_VISIBILITY_LBOARD_CANCEL,
+                     DEFAULT_CHEEVOS_VISIBILITY_LBOARD_CANCEL, SD_FLAG_NONE, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  chv_desc_0, ARRAY_SIZE(chv_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          CONFIG_BOOL(
             list, list_info,
@@ -23630,37 +20068,39 @@ static bool setting_append_list(
             SD_FLAG_NONE
          );
 
-         CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.cheevos_verbose_enable,
-            MENU_ENUM_LABEL_CHEEVOS_VERBOSE_ENABLE,
-            MENU_ENUM_LABEL_VALUE_CHEEVOS_VERBOSE_ENABLE,
-            true,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_ADVANCED
-         );
-
-         CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.cheevos_visibility_account,
-            MENU_ENUM_LABEL_CHEEVOS_VISIBILITY_ACCOUNT,
-            MENU_ENUM_LABEL_VALUE_CHEEVOS_VISIBILITY_ACCOUNT,
-            DEFAULT_CHEEVOS_VISIBILITY_ACCOUNT,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_ADVANCED
-         );
+                  {
+            static const setting_desc_t chv_desc_1[] = {
+/* GENERATED: rows come from settings_def_cheevos_visibility.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_cheevos_visibility.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  chv_desc_1, ARRAY_SIZE(chv_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 
          END_SUB_GROUP(list, list_info, parent_group);
@@ -23683,6 +20123,7 @@ static bool setting_append_list(
 #endif
          {
 
+            /* Descriptor holdout: poke tail outside the descriptor grammar. */
             CONFIG_STRING(
                   list, list_info,
                   settings->paths.network_buildbot_url,
@@ -23718,38 +20159,74 @@ static bool setting_append_list(
          (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
          (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.network_buildbot_auto_extract_archive,
-               MENU_ENUM_LABEL_CORE_UPDATER_AUTO_EXTRACT_ARCHIVE,
-               MENU_ENUM_LABEL_VALUE_CORE_UPDATER_AUTO_EXTRACT_ARCHIVE,
-               DEFAULT_NETWORK_BUILDBOT_AUTO_EXTRACT_ARCHIVE,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
+         {
+            static const setting_desc_t core_updater_desc_0[] = {
+/* GENERATED: rows come from settings_def_updater_extract.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_updater_extract.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  core_updater_desc_0, ARRAY_SIZE(core_updater_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef HAVE_UPDATE_CORES
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.network_buildbot_show_experimental_cores,
-               MENU_ENUM_LABEL_CORE_UPDATER_SHOW_EXPERIMENTAL_CORES,
-               MENU_ENUM_LABEL_VALUE_CORE_UPDATER_SHOW_EXPERIMENTAL_CORES,
-               DEFAULT_NETWORK_BUILDBOT_SHOW_EXPERIMENTAL_CORES,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE
-               );
+         {
+            static const setting_desc_t core_updater_desc_1[] = {
+/* GENERATED: rows come from settings_def_updater_experimental.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_updater_experimental.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  core_updater_desc_1, ARRAY_SIZE(core_updater_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #if defined(ANDROID)
          /* Play Store builds do not support automatic
@@ -23757,21 +20234,39 @@ static bool setting_append_list(
          if (!play_feature_delivery_enabled())
 #endif
          {
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.core_updater_auto_backup,
-                  MENU_ENUM_LABEL_CORE_UPDATER_AUTO_BACKUP,
-                  MENU_ENUM_LABEL_VALUE_CORE_UPDATER_AUTO_BACKUP,
-                  DEFAULT_CORE_UPDATER_AUTO_BACKUP,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE
-                  );
+         {
+            static const setting_desc_t core_updater_desc_2[] = {
+/* GENERATED: rows come from settings_def_updater_backup.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_updater_backup.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  core_updater_desc_2, ARRAY_SIZE(core_updater_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
                CONFIG_UINT(
                      list, list_info,
@@ -23804,13 +20299,14 @@ static bool setting_append_list(
 #ifdef HAVE_SMBCLIENT
          if (settings->bools.settings_show_smb_client)
          {
-            CONFIG_ACTION(
-                  list, list_info,
-                  MENU_ENUM_LABEL_SMB_CLIENT_SETTINGS,
-                  MENU_ENUM_LABEL_VALUE_SMB_CLIENT_SETTINGS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group);
+         {
+            static const setting_desc_t np_desc_0[] = {
+               SDESC_ACTION_ROW(SMB_CLIENT_SETTINGS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  np_desc_0, ARRAY_SIZE(np_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 #endif
 
@@ -23822,84 +20318,26 @@ static bool setting_append_list(
             char dev_req_label[64];
             char dev_req_value[64];
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.netplay_show_only_connectable,
-                  MENU_ENUM_LABEL_NETPLAY_SHOW_ONLY_CONNECTABLE,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_SHOW_ONLY_CONNECTABLE,
-                  DEFAULT_NETPLAY_SHOW_ONLY_CONNECTABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t np_desc_1[] = {
+               SDESC_BOOL_ROW(netplay_show_only_connectable, NETPLAY_SHOW_ONLY_CONNECTABLE,
+                     DEFAULT_NETPLAY_SHOW_ONLY_CONNECTABLE, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(netplay_show_only_installed_cores, NETPLAY_SHOW_ONLY_INSTALLED_CORES,
+                     DEFAULT_NETPLAY_SHOW_ONLY_INSTALLED_CORES, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(netplay_show_passworded, NETPLAY_SHOW_PASSWORDED,
+                     DEFAULT_NETPLAY_SHOW_PASSWORDED, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(netplay_public_announce, NETPLAY_PUBLIC_ANNOUNCE,
+                     DEFAULT_NETPLAY_PUBLIC_ANNOUNCE, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW_EX(netplay_use_mitm_server, NETPLAY_USE_MITM_SERVER,
+                     DEFAULT_NETPLAY_USE_MITM_SERVER, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  np_desc_1, ARRAY_SIZE(np_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.netplay_show_only_installed_cores,
-                  MENU_ENUM_LABEL_NETPLAY_SHOW_ONLY_INSTALLED_CORES,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_SHOW_ONLY_INSTALLED_CORES,
-                  DEFAULT_NETPLAY_SHOW_ONLY_INSTALLED_CORES,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.netplay_show_passworded,
-                  MENU_ENUM_LABEL_NETPLAY_SHOW_PASSWORDED,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_SHOW_PASSWORDED,
-                  DEFAULT_NETPLAY_SHOW_PASSWORDED,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.netplay_public_announce,
-                  MENU_ENUM_LABEL_NETPLAY_PUBLIC_ANNOUNCE,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_PUBLIC_ANNOUNCE,
-                  DEFAULT_NETPLAY_PUBLIC_ANNOUNCE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.netplay_use_mitm_server,
-                  MENU_ENUM_LABEL_NETPLAY_USE_MITM_SERVER,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_USE_MITM_SERVER,
-                  DEFAULT_NETPLAY_USE_MITM_SERVER,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
+            /* Descriptor holdout: poke tail outside the descriptor grammar. */
             CONFIG_STRING(
                   list, list_info,
                   settings->arrays.netplay_mitm_server,
@@ -23919,248 +20357,198 @@ static bool setting_append_list(
          (*list)[list_info->index - 1].get_string_representation =
             &setting_get_string_representation_netplay_mitm_server;
 
-            CONFIG_STRING(
-                  list, list_info,
-                  settings->paths.netplay_custom_mitm_server,
-                  sizeof(settings->paths.netplay_custom_mitm_server),
-                  MENU_ENUM_LABEL_NETPLAY_CUSTOM_MITM_SERVER,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_CUSTOM_MITM_SERVER,
-                  "",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
-            (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
+         {
+            static const setting_desc_t netplay2_desc_0[] = {
+/* GENERATED: rows come from settings_def_netplay_server.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_netplay_server.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  netplay2_desc_0, ARRAY_SIZE(netplay2_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_STRING(
-                  list, list_info,
-                  settings->paths.netplay_server,
-                  sizeof(settings->paths.netplay_server),
-                  MENU_ENUM_LABEL_NETPLAY_IP_ADDRESS,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_IP_ADDRESS,
-                  "",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-            (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
-            (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
+         {
+            static const setting_desc_t np_desc_2[] = {
+               SDESC_UINT_ROW_EX(netplay_port, NETPLAY_TCP_UDP_PORT,
+                     RARCH_DEFAULT_PORT,
+                     SD_FLAG_ALLOW_INPUT | SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     0, 65535, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(netplay_max_connections, NETPLAY_MAX_CONNECTIONS,
+                     DEFAULT_NETPLAY_MAX_CONNECTIONS,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     1, 31, 1, 1,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_SPINBOX),
+               SDESC_UINT_ROW_EX(netplay_max_ping, NETPLAY_MAX_PING,
+                     DEFAULT_NETPLAY_MAX_PING,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, 500, 10, 0,
+                     NULL, NULL,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_SPINBOX),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  np_desc_2, ARRAY_SIZE(np_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.netplay_port,
-                  MENU_ENUM_LABEL_NETPLAY_TCP_UDP_PORT,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_TCP_UDP_PORT,
-                  RARCH_DEFAULT_PORT,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            menu_settings_list_current_add_range(list, list_info, 0, 65535, 1, true, true);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
+         {
+            static const setting_desc_t netplay2_desc_1[] = {
+/* GENERATED: rows come from settings_def_netplay_passwords.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_netplay_passwords.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  netplay2_desc_1, ARRAY_SIZE(netplay2_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.netplay_max_connections,
-                  MENU_ENUM_LABEL_NETPLAY_MAX_CONNECTIONS,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_MAX_CONNECTIONS,
-                  DEFAULT_NETPLAY_MAX_CONNECTIONS,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_SPINBOX;
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].offset_by = 1;
-            menu_settings_list_current_add_range(list, list_info, 1, 31, 1, true, true);
+         {
+            static const setting_desc_t np_desc_3[] = {
+               SDESC_BOOL_ROW(netplay_start_as_spectator, NETPLAY_START_AS_SPECTATOR,
+                     DEFAULT_NETPLAY_START_AS_SPECTATOR, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(netplay_fade_chat, NETPLAY_FADE_CHAT,
+                     DEFAULT_NETPLAY_FADE_CHAT, SD_FLAG_NONE, 0, 0),
+               SDESC_UINT_ROW_EX(netplay_chat_color_name, NETPLAY_CHAT_COLOR_NAME,
+                     DEFAULT_NETPLAY_CHAT_COLOR_NAME,
+                     SD_FLAG_NONE, 0, 0,
+                     0, 0, 0, 0,
+                     setting_action_ok_color_rgb, setting_get_string_representation_color_rgb,
+                     NULL, setting_action_ok_color_rgb, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(netplay_chat_color_msg, NETPLAY_CHAT_COLOR_MSG,
+                     DEFAULT_NETPLAY_CHAT_COLOR_MSG,
+                     SD_FLAG_NONE, 0, 0,
+                     0, 0, 0, 0,
+                     setting_action_ok_color_rgb, setting_get_string_representation_color_rgb,
+                     NULL, setting_action_ok_color_rgb, NULL, NULL, 0),
+               SDESC_BOOL_ROW(netplay_allow_pausing, NETPLAY_ALLOW_PAUSING,
+                     DEFAULT_NETPLAY_ALLOW_PAUSING, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW_EX(netplay_allow_slaves, NETPLAY_ALLOW_SLAVES,
+                     DEFAULT_NETPLAY_ALLOW_SLAVES, SD_FLAG_ADVANCED, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_BOOL_ROW(netplay_require_slaves, NETPLAY_REQUIRE_SLAVES,
+                     DEFAULT_NETPLAY_REQUIRE_SLAVES, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_INT_ROW_EX(netplay_check_frames, NETPLAY_CHECK_FRAMES,
+                     DEFAULT_NETPLAY_CHECK_FRAMES,
+                     SD_FLAG_ALLOW_INPUT | SD_FLAG_ADVANCED, (SDESC_FLG_HAS_RANGE | SDESC_FLG_ENFORCE_MIN), 0,
+                     0, 5184000, 1, 0,
+                     NULL, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  np_desc_3, ARRAY_SIZE(np_desc_3),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.netplay_max_ping,
-                  MENU_ENUM_LABEL_NETPLAY_MAX_PING,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_MAX_PING,
-                  DEFAULT_NETPLAY_MAX_PING,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].ui_type = ST_UI_TYPE_UINT_SPINBOX;
-            menu_settings_list_current_add_range(list, list_info, 0, 500, 10, true, true);
-
-            CONFIG_STRING(
-                  list, list_info,
-                  settings->paths.netplay_password,
-                  sizeof(settings->paths.netplay_password),
-                  MENU_ENUM_LABEL_NETPLAY_PASSWORD,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_PASSWORD,
-                  "",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_PASSWORD_LINE_EDIT;
-            (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
-
-            CONFIG_STRING(
-                  list, list_info,
-                  settings->paths.netplay_spectate_password,
-                  sizeof(settings->paths.netplay_spectate_password),
-                  MENU_ENUM_LABEL_NETPLAY_SPECTATE_PASSWORD,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_SPECTATE_PASSWORD,
-                  "",
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_PASSWORD_LINE_EDIT;
-            (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.netplay_start_as_spectator,
-                  MENU_ENUM_LABEL_NETPLAY_START_AS_SPECTATOR,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_START_AS_SPECTATOR,
-                  DEFAULT_NETPLAY_START_AS_SPECTATOR,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.netplay_fade_chat,
-                  MENU_ENUM_LABEL_NETPLAY_FADE_CHAT,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_FADE_CHAT,
-                  DEFAULT_NETPLAY_FADE_CHAT,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.netplay_chat_color_name,
-                  MENU_ENUM_LABEL_NETPLAY_CHAT_COLOR_NAME,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_CHAT_COLOR_NAME,
-                  DEFAULT_NETPLAY_CHAT_COLOR_NAME,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok     = &setting_action_ok_color_rgb;
-            (*list)[list_info->index - 1].action_select = &setting_action_ok_color_rgb;
-            (*list)[list_info->index - 1].action_left   = NULL;
-            (*list)[list_info->index - 1].action_right  = NULL;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_color_rgb;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.netplay_chat_color_msg,
-                  MENU_ENUM_LABEL_NETPLAY_CHAT_COLOR_MSG,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_CHAT_COLOR_MSG,
-                  DEFAULT_NETPLAY_CHAT_COLOR_MSG,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok     = &setting_action_ok_color_rgb;
-            (*list)[list_info->index - 1].action_select = &setting_action_ok_color_rgb;
-            (*list)[list_info->index - 1].action_left   = NULL;
-            (*list)[list_info->index - 1].action_right  = NULL;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_color_rgb;
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.netplay_allow_pausing,
-                  MENU_ENUM_LABEL_NETPLAY_ALLOW_PAUSING,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_ALLOW_PAUSING,
-                  DEFAULT_NETPLAY_ALLOW_PAUSING,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.netplay_allow_slaves,
-                  MENU_ENUM_LABEL_NETPLAY_ALLOW_SLAVES,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_ALLOW_SLAVES,
-                  DEFAULT_NETPLAY_ALLOW_SLAVES,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-            (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.netplay_require_slaves,
-                  MENU_ENUM_LABEL_NETPLAY_REQUIRE_SLAVES,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_REQUIRE_SLAVES,
-                  DEFAULT_NETPLAY_REQUIRE_SLAVES,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
-            CONFIG_INT(
-                  list, list_info,
-                  &settings->ints.netplay_check_frames,
-                  MENU_ENUM_LABEL_NETPLAY_CHECK_FRAMES,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_CHECK_FRAMES,
-                  DEFAULT_NETPLAY_CHECK_FRAMES,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            menu_settings_list_current_add_range(list, list_info, 0, 5184000, 1, true, false);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
+            /* Descriptor holdout: value target outside settings_t. */
             CONFIG_INT(
                   list, list_info,
                   (int *) &settings->uints.netplay_input_latency_frames_min,
@@ -24191,55 +20579,27 @@ static bool setting_append_list(
             (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
             menu_settings_list_current_add_range(list, list_info, 0, 15, 1, true, true);
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.netplay_nat_traversal,
-                  MENU_ENUM_LABEL_NETPLAY_NAT_TRAVERSAL,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_NAT_TRAVERSAL,
-                  true,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.netplay_share_digital,
-                  MENU_ENUM_LABEL_NETPLAY_SHARE_DIGITAL,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_SHARE_DIGITAL,
-                  DEFAULT_NETPLAY_SHARE_DIGITAL,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_netplay_share_digital;
-            menu_settings_list_current_add_range(list, list_info, 0, RARCH_NETPLAY_SHARE_DIGITAL_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-
-            CONFIG_UINT(
-                  list, list_info,
-                  &settings->uints.netplay_share_analog,
-                  MENU_ENUM_LABEL_NETPLAY_SHARE_ANALOG,
-                  MENU_ENUM_LABEL_VALUE_NETPLAY_SHARE_ANALOG,
-                  DEFAULT_NETPLAY_SHARE_ANALOG,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler);
-            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-            (*list)[list_info->index - 1].get_string_representation =
-               &setting_get_string_representation_netplay_share_analog;
-            menu_settings_list_current_add_range(list, list_info, 0, RARCH_NETPLAY_SHARE_ANALOG_LAST-1, 1, true, true);
-            (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+         {
+            static const setting_desc_t np_desc_4[] = {
+               SDESC_BOOL_ROW(netplay_nat_traversal, NETPLAY_NAT_TRAVERSAL,
+                     true, SD_FLAG_ADVANCED, 0, 0),
+               SDESC_UINT_ROW_EX(netplay_share_digital, NETPLAY_SHARE_DIGITAL,
+                     DEFAULT_NETPLAY_SHARE_DIGITAL,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, RARCH_NETPLAY_SHARE_DIGITAL_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_netplay_share_digital,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+               SDESC_UINT_ROW_EX(netplay_share_analog, NETPLAY_SHARE_ANALOG,
+                     DEFAULT_NETPLAY_SHARE_ANALOG,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, RARCH_NETPLAY_SHARE_ANALOG_LAST-1, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_netplay_share_analog,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  np_desc_4, ARRAY_SIZE(np_desc_4),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             for (user = 0; user < MAX_USERS; user++)
             {
@@ -24247,6 +20607,7 @@ static bool setting_append_list(
                      msg_hash_to_str(MENU_ENUM_LABEL_NETPLAY_REQUEST_DEVICE_I), user + 1);
                snprintf(dev_req_value, sizeof(dev_req_value),
                      msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NETPLAY_REQUEST_DEVICE_I), user + 1);
+               /* Descriptor holdout: dynamic runtime label through the ALT macro. */
                CONFIG_BOOL_ALT(
                      list, list_info,
                      &settings->bools.netplay_request_devices[user],
@@ -24275,24 +20636,18 @@ static bool setting_append_list(
                   parent_group);
 
 #if defined(HAVE_NETWORK_CMD)
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.network_cmd_enable,
-                  MENU_ENUM_LABEL_NETWORK_CMD_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_NETWORK_CMD_ENABLE,
-                  DEFAULT_NETWORK_CMD_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED);
-            (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
+         {
+            static const setting_desc_t np_desc_5[] = {
+               SDESC_BOOL_ROW_EX(network_cmd_enable, NETWORK_CMD_ENABLE,
+                     DEFAULT_NETWORK_CMD_ENABLE, SD_FLAG_ADVANCED, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  np_desc_5, ARRAY_SIZE(np_desc_5),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
+            /* Descriptor holdout: non-general read/write handler. */
             CONFIG_UINT(
                   list, list_info,
                   &settings->uints.network_cmd_port,
@@ -24310,23 +20665,16 @@ static bool setting_append_list(
             SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
             SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.network_remote_enable,
-                  MENU_ENUM_LABEL_NETWORK_REMOTE_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_NETWORK_REMOTE_ENABLE,
-                  false,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED);
-            (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
+         {
+            static const setting_desc_t np_desc_6[] = {
+               SDESC_BOOL_ROW_EX(network_remote_enable, NETWORK_REMOTE_ENABLE,
+                     false, SD_FLAG_ADVANCED, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  np_desc_6, ARRAY_SIZE(np_desc_6),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
             CONFIG_UINT(
                   list, list_info,
@@ -24359,6 +20707,7 @@ static bool setting_append_list(
                   snprintf(s1 + _len, sizeof(s1) - _len, "_user_p%d", user + 1);
                   snprintf(s2, sizeof(s2), val_network_remote_enable, user + 1);
 
+                  /* Descriptor holdout: dynamic runtime label through the ALT macro. */
                   CONFIG_BOOL_ALT(
                         list, list_info,
                         &settings->bools.network_remote_enable_user[user],
@@ -24378,35 +20727,73 @@ static bool setting_append_list(
                }
             }
 
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.stdin_cmd_enable,
-                  MENU_ENUM_LABEL_STDIN_CMD_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_STDIN_CMD_ENABLE,
-                  DEFAULT_STDIN_CMD_ENABLE,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_ADVANCED);
+         {
+            static const setting_desc_t np_desc_7[] = {
+/* GENERATED: rows come from settings_def_network_stdin_cmd.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_network_stdin_cmd.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  np_desc_7, ARRAY_SIZE(np_desc_7),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.network_on_demand_thumbnails,
-                  MENU_ENUM_LABEL_NETWORK_ON_DEMAND_THUMBNAILS,
-                  MENU_ENUM_LABEL_VALUE_NETWORK_ON_DEMAND_THUMBNAILS,
-                  DEFAULT_NETWORK_ON_DEMAND_THUMBNAILS,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t np_desc_8[] = {
+/* GENERATED: rows come from settings_def_network_ondemand_thumbnails.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_network_ondemand_thumbnails.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  np_desc_8, ARRAY_SIZE(np_desc_8),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
          }
          END_SUB_GROUP(list, list_info, parent_group);
@@ -24419,11 +20806,12 @@ static bool setting_append_list(
                   msg_hash_to_str(MENU_ENUM_LABEL_VALUE_LAKKA_SERVICES),
                   parent_group);
 
-            parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+            parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
             START_SUB_GROUP(list, list_info,
                   msg_hash_to_str(MENU_ENUM_LABEL_VALUE_LAKKA_SERVICES),
                   &group_info, &subgroup_info, parent_group);
+            /* Descriptor holdout: change_handler poke; descriptor slot deferred to the single-source phase. */
             CONFIG_BOOL(
                   list, list_info,
                   &settings->bools.ssh_enable,
@@ -24538,7 +20926,7 @@ static bool setting_append_list(
                   msg_hash_to_str(MENU_ENUM_LABEL_VALUE_LAKKA_SWITCH_OPTIONS),
                   parent_group);
 
-            parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+            parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
             START_SUB_GROUP(list, list_info,
                   msg_hash_to_str(MENU_ENUM_LABEL_VALUE_LAKKA_SWITCH_OPTIONS),
@@ -24605,47 +20993,82 @@ static bool setting_append_list(
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_ACCOUNTS_LIST,
-               MENU_ENUM_LABEL_VALUE_ACCOUNTS_LIST,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_LAKKA_ADVANCED);
+         {
+            static const setting_desc_t user_desc_0[] = {
+               SDESC_ACTION_ROW_EX(ACCOUNTS_LIST, SD_FLAG_LAKKA_ADVANCED,
+                     NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  user_desc_0, ARRAY_SIZE(user_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-         CONFIG_STRING(
-               list, list_info,
-               settings->paths.username,
-               sizeof(settings->paths.username),
-               MENU_ENUM_LABEL_NETPLAY_NICKNAME,
-               MENU_ENUM_LABEL_VALUE_NETPLAY_NICKNAME,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
-         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
-
-         CONFIG_STRING(
-               list, list_info,
-               settings->paths.browse_url,
-               sizeof(settings->paths.browse_url),
-               MENU_ENUM_LABEL_BROWSE_URL,
-               MENU_ENUM_LABEL_VALUE_BROWSE_URL,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
+         {
+            static const setting_desc_t user2_desc_0[] = {
+/* GENERATED: rows come from settings_def_user_identity.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_STRING_P(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_P_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW_P(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_PATH(f, T, n, d, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_NS(f, T, n, d, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW(f, T, d, sd, c, vals, rp, ui),
+#define S_PATH_DS(f, T, n, df2, sd, c, vals, rp, ui, us, sub) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#define S_PATH_DS_NS(f, T, n, df2, sd, c, vals, rp, ui, us) \
+                  SDESC_PATH_ROW_DS(f, T, df2, sd, c, vals, rp, ui),
+#include "../settings/settings_def_user_identity.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+#undef S_STRING_P
+#undef S_STRING_P_NS
+#undef S_PATH
+#undef S_PATH_NS
+#undef S_PATH_DS
+#undef S_PATH_DS_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  user2_desc_0, ARRAY_SIZE(user2_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
 #ifdef HAVE_LANGEXTRA
+         /* Descriptor holdout: value target outside settings_t. */
          CONFIG_UINT(
                list, list_info,
                msg_hash_get_uint(MSG_HASH_USER_LANGUAGE),
@@ -24674,67 +21097,22 @@ static bool setting_append_list(
 #endif
 
 #ifdef HAVE_GAME_AI
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.quick_menu_show_game_ai,
-                  MENU_ENUM_LABEL_QUICK_MENU_SHOW_GAME_AI,
-                  MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_GAME_AI,
-                  1,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.game_ai_override_p1,
-                  MENU_ENUM_LABEL_GAME_AI_OVERRIDE_P1,
-                  MENU_ENUM_LABEL_VALUE_GAME_AI_OVERRIDE_P1,
-                  1,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_CMD_APPLY_AUTO);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.game_ai_override_p2,
-                  MENU_ENUM_LABEL_GAME_AI_OVERRIDE_P2,
-                  MENU_ENUM_LABEL_VALUE_GAME_AI_OVERRIDE_P2,
-                  1,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_CMD_APPLY_AUTO);
-
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.game_ai_show_debug,
-                  MENU_ENUM_LABEL_GAME_AI_SHOW_DEBUG,
-                  MENU_ENUM_LABEL_VALUE_GAME_AI_SHOW_DEBUG,
-                  1,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_CMD_APPLY_AUTO);
+         {
+            static const setting_desc_t user_desc_1[] = {
+               SDESC_BOOL_ROW(quick_menu_show_game_ai, QUICK_MENU_SHOW_GAME_AI,
+                     1, SD_FLAG_NONE, 0, 0),
+               SDESC_BOOL_ROW(game_ai_override_p1, GAME_AI_OVERRIDE_P1,
+                     1, SD_FLAG_CMD_APPLY_AUTO, 0, 0),
+               SDESC_BOOL_ROW(game_ai_override_p2, GAME_AI_OVERRIDE_P2,
+                     1, SD_FLAG_CMD_APPLY_AUTO, 0, 0),
+               SDESC_BOOL_ROW(game_ai_show_debug, GAME_AI_SHOW_DEBUG,
+                     1, SD_FLAG_CMD_APPLY_AUTO, 0, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  user_desc_1, ARRAY_SIZE(user_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
-
 
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
@@ -24744,56 +21122,35 @@ static bool setting_append_list(
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ACCOUNTS_LIST_END),
                parent_group);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
 #ifdef HAVE_CHEEVOS
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_ACCOUNTS_RETRO_ACHIEVEMENTS,
-               MENU_ENUM_LABEL_VALUE_ACCOUNTS_RETRO_ACHIEVEMENTS,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+         {
+            static const setting_desc_t user_accounts_desc_0_s0[] = {
+               SDESC_ACTION_ROW(ACCOUNTS_RETRO_ACHIEVEMENTS),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  user_accounts_desc_0_s0, ARRAY_SIZE(user_accounts_desc_0_s0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
-
 #ifdef HAVE_NETWORKING
 #if !IOS
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_ACCOUNTS_YOUTUBE,
-               MENU_ENUM_LABEL_VALUE_ACCOUNTS_YOUTUBE,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_ACCOUNTS_TWITCH,
-               MENU_ENUM_LABEL_VALUE_ACCOUNTS_TWITCH,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_ACCOUNTS_FACEBOOK,
-               MENU_ENUM_LABEL_VALUE_ACCOUNTS_FACEBOOK,
-               &group_info,
-               &subgroup_info,
-               parent_group);
-
-         CONFIG_ACTION(
-               list, list_info,
-               MENU_ENUM_LABEL_ACCOUNTS_KICK,
-               MENU_ENUM_LABEL_VALUE_ACCOUNTS_KICK,
-               &group_info,
-               &subgroup_info,
-               parent_group);
+         {
+            static const setting_desc_t user_accounts_desc_0_s1[] = {
+               SDESC_ACTION_ROW(ACCOUNTS_YOUTUBE),
+               SDESC_ACTION_ROW(ACCOUNTS_TWITCH),
+               SDESC_ACTION_ROW(ACCOUNTS_FACEBOOK),
+               SDESC_ACTION_ROW(ACCOUNTS_KICK),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  user_accounts_desc_0_s1, ARRAY_SIZE(user_accounts_desc_0_s1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 #endif
-
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
          break;
@@ -24802,10 +21159,11 @@ static bool setting_append_list(
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ACCOUNTS_YOUTUBE),
                parent_group);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
+         /* Descriptor holdout: non-general read/write handler. */
          CONFIG_STRING(
                list, list_info,
                settings->arrays.youtube_stream_key,
@@ -24830,7 +21188,7 @@ static bool setting_append_list(
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ACCOUNTS_TWITCH),
                parent_group);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
@@ -24858,7 +21216,7 @@ static bool setting_append_list(
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ACCOUNTS_FACEBOOK),
                parent_group);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
@@ -24886,7 +21244,7 @@ static bool setting_append_list(
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ACCOUNTS_KICK),
                parent_group);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
@@ -24914,44 +21272,30 @@ static bool setting_append_list(
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ACCOUNTS_CHEEVOS_SETTINGS),
                parent_group);
 
-         parent_group = MENU_ENUM_LABEL_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
 #ifdef HAVE_CHEEVOS
-         CONFIG_STRING(
-               list, list_info,
-               settings->arrays.cheevos_username,
-               sizeof(settings->arrays.cheevos_username),
-               MENU_ENUM_LABEL_CHEEVOS_USERNAME,
-               MENU_ENUM_LABEL_VALUE_ACCOUNTS_CHEEVOS_USERNAME,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
-         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
-
-         CONFIG_STRING(
-               list, list_info,
-               settings->arrays.cheevos_password,
-               sizeof(settings->arrays.cheevos_password),
-               MENU_ENUM_LABEL_CHEEVOS_PASSWORD,
-               MENU_ENUM_LABEL_VALUE_ACCOUNTS_CHEEVOS_PASSWORD,
-               "",
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_password;
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
-         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_PASSWORD_LINE_EDIT;
-         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
+         {
+            static const setting_desc_t cheevos_acct_desc[] = {
+               SDESC_STRING_ROW_LV(cheevos_username, CHEEVOS_USERNAME,
+                     ACCOUNTS_CHEEVOS_USERNAME, "",
+                     SD_FLAG_ALLOW_INPUT, 0,
+                     NULL, NULL,
+                     setting_generic_action_start_default, NULL, NULL, NULL,
+                     ST_UI_TYPE_STRING_LINE_EDIT),
+               SDESC_STRING_ROW_LV(cheevos_password, CHEEVOS_PASSWORD,
+                     ACCOUNTS_CHEEVOS_PASSWORD, "",
+                     SD_FLAG_ALLOW_INPUT, 0,
+                     NULL, setting_get_string_representation_password,
+                     setting_generic_action_start_default, NULL, NULL, NULL,
+                     ST_UI_TYPE_PASSWORD_LINE_EDIT)
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  cheevos_acct_desc, ARRAY_SIZE(cheevos_acct_desc),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 
          END_SUB_GROUP(list, list_info, parent_group);
@@ -24967,224 +21311,54 @@ static bool setting_append_list(
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_system,
-               sizeof(settings->paths.directory_system),
-               MENU_ENUM_LABEL_SYSTEM_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_SYSTEM_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_SYSTEM],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_CONTENT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_core_assets,
-               sizeof(settings->paths.directory_core_assets),
-               MENU_ENUM_LABEL_CORE_ASSETS_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_CORE_ASSETS_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_CORE_ASSETS],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_assets,
-               sizeof(settings->paths.directory_assets),
-               MENU_ENUM_LABEL_ASSETS_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_ASSETS_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_ASSETS],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_dynamic_wallpapers,
-               sizeof(settings->paths.directory_dynamic_wallpapers),
-               MENU_ENUM_LABEL_DYNAMIC_WALLPAPERS_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_DYNAMIC_WALLPAPERS_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_WALLPAPERS],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_thumbnails,
-               sizeof(settings->paths.directory_thumbnails),
-               MENU_ENUM_LABEL_THUMBNAILS_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_THUMBNAILS_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_THUMBNAILS],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_menu_content,
-               sizeof(settings->paths.directory_menu_content),
-               MENU_ENUM_LABEL_RGUI_BROWSER_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_RGUI_BROWSER_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_MENU_CONTENT],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_menu_config,
-               sizeof(settings->paths.directory_menu_config),
-               MENU_ENUM_LABEL_RGUI_CONFIG_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_RGUI_CONFIG_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_MENU_CONFIG],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_libretro,
-               sizeof(settings->paths.directory_libretro),
-               MENU_ENUM_LABEL_LIBRETRO_DIR_PATH,
-               MENU_ENUM_LABEL_VALUE_LIBRETRO_DIR_PATH,
-               g_defaults.dirs[DEFAULT_DIR_CORE],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_NONE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_CORE_INFO_INIT);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.path_libretro_info,
-               sizeof(settings->paths.path_libretro_info),
-               MENU_ENUM_LABEL_LIBRETRO_INFO_PATH,
-               MENU_ENUM_LABEL_VALUE_LIBRETRO_INFO_PATH,
-               g_defaults.dirs[DEFAULT_DIR_CORE_INFO],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_NONE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_CORE_INFO_INIT);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-#ifdef HAVE_LIBRETRODB
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.path_content_database,
-               sizeof(settings->paths.path_content_database),
-               MENU_ENUM_LABEL_CONTENT_DATABASE_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_CONTENT_DATABASE_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_DATABASE],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_NONE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-#endif
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.path_cheat_database,
-               sizeof(settings->paths.path_cheat_database),
-               MENU_ENUM_LABEL_CHEAT_DATABASE_PATH,
-               MENU_ENUM_LABEL_VALUE_CHEAT_DATABASE_PATH,
-               g_defaults.dirs[DEFAULT_DIR_CHEATS],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_NONE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_video_filter,
-               sizeof(settings->paths.directory_video_filter),
-               MENU_ENUM_LABEL_VIDEO_FILTER_DIR,
-               MENU_ENUM_LABEL_VALUE_VIDEO_FILTER_DIR,
-               g_defaults.dirs[DEFAULT_DIR_VIDEO_FILTER],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_audio_filter,
-               sizeof(settings->paths.directory_audio_filter),
-               MENU_ENUM_LABEL_AUDIO_FILTER_DIR,
-               MENU_ENUM_LABEL_VALUE_AUDIO_FILTER_DIR,
-               g_defaults.dirs[DEFAULT_DIR_AUDIO_FILTER],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-#if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_video_shader,
-               sizeof(settings->paths.directory_video_shader),
-               MENU_ENUM_LABEL_VIDEO_SHADER_DIR,
-               MENU_ENUM_LABEL_VALUE_VIDEO_SHADER_DIR,
-               g_defaults.dirs[DEFAULT_DIR_SHADER],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-#endif
-
+                  {
+            static const setting_desc_t dir_desc_0[] = {
+/* GENERATED: rows come from settings_def_dir_core.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#include "../settings/settings_def_dir_core.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  dir_desc_0, ARRAY_SIZE(dir_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
          if (string_is_not_equal(settings->arrays.record_driver, "null"))
          {
+            /* Descriptor holdout: value target outside settings_t. */
             CONFIG_DIR(
                   list, list_info,
                   recording_st->output_dir,
@@ -25215,188 +21389,54 @@ static bool setting_append_list(
                   general_read_handler);
             (*list)[list_info->index - 1].action_start = directory_action_start_generic;
          }
-#ifdef HAVE_OVERLAY
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_overlay,
-               sizeof(settings->paths.directory_overlay),
-               MENU_ENUM_LABEL_OVERLAY_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_OVERLAY_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_OVERLAY],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
+         {
+            static const setting_desc_t dir_desc_1[] = {
+/* GENERATED: rows come from settings_def_dir_user.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#include "../settings/settings_def_dir_user.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  dir_desc_1, ARRAY_SIZE(dir_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_osk_overlay,
-               sizeof(settings->paths.directory_osk_overlay),
-               MENU_ENUM_LABEL_OSK_OVERLAY_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_OSK_OVERLAY_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_OSK_OVERLAY],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-#endif
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_screenshot,
-               sizeof(settings->paths.directory_screenshot),
-               MENU_ENUM_LABEL_SCREENSHOT_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_SCREENSHOT_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_SCREENSHOT],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_CONTENT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_autoconfig,
-               sizeof(settings->paths.directory_autoconfig),
-               MENU_ENUM_LABEL_JOYPAD_AUTOCONFIG_DIR,
-               MENU_ENUM_LABEL_VALUE_JOYPAD_AUTOCONFIG_DIR,
-               g_defaults.dirs[DEFAULT_DIR_AUTOCONFIG],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_input_remapping,
-               sizeof(settings->paths.directory_input_remapping),
-               MENU_ENUM_LABEL_INPUT_REMAPPING_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_INPUT_REMAPPING_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_REMAP],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_NONE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-            (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_playlist,
-               sizeof(settings->paths.directory_playlist),
-               MENU_ENUM_LABEL_PLAYLIST_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_PLAYLIST_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_PLAYLIST],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_content_favorites,
-               sizeof(settings->paths.directory_content_favorites),
-               MENU_ENUM_LABEL_CONTENT_FAVORITES_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_CONTENT_FAVORITES_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_CONTENT_FAVORITES],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_content_history,
-               sizeof(settings->paths.directory_content_history),
-               MENU_ENUM_LABEL_CONTENT_HISTORY_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_CONTENT_HISTORY_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_CONTENT_HISTORY],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_content_image_history,
-               sizeof(settings->paths.directory_content_image_history),
-               MENU_ENUM_LABEL_CONTENT_IMAGE_HISTORY_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_CONTENT_IMAGE_HISTORY_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_CONTENT_IMAGE_HISTORY],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_content_music_history,
-               sizeof(settings->paths.directory_content_music_history),
-               MENU_ENUM_LABEL_CONTENT_MUSIC_HISTORY_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_CONTENT_MUSIC_HISTORY_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_CONTENT_MUSIC_HISTORY],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_content_video_history,
-               sizeof(settings->paths.directory_content_video_history),
-               MENU_ENUM_LABEL_CONTENT_VIDEO_HISTORY_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_CONTENT_VIDEO_HISTORY_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_CONTENT_VIDEO_HISTORY],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_runtime_log,
-               sizeof(settings->paths.directory_runtime_log),
-               MENU_ENUM_LABEL_RUNTIME_LOG_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_RUNTIME_LOG_DIRECTORY,
-               "",
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
+         /* Descriptor holdouts: value targets resolved through
+          * dir_get_ptr() at runtime, outside settings_t. */
          CONFIG_DIR(
                list, list_info,
                dir_get_ptr(RARCH_DIR_SAVEFILE),
@@ -25412,6 +21452,7 @@ static bool setting_append_list(
                general_read_handler);
          (*list)[list_info->index - 1].action_start = directory_action_start_generic;
 
+         /* Descriptor holdout: value target outside settings_t. */
          CONFIG_DIR(
                list, list_info,
                dir_get_ptr(RARCH_DIR_SAVESTATE),
@@ -25427,35 +21468,51 @@ static bool setting_append_list(
                general_read_handler);
          (*list)[list_info->index - 1].action_start = directory_action_start_generic;
 
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.directory_cache,
-               sizeof(settings->paths.directory_cache),
-               MENU_ENUM_LABEL_CACHE_DIRECTORY,
-               MENU_ENUM_LABEL_VALUE_CACHE_DIRECTORY,
-               g_defaults.dirs[DEFAULT_DIR_CACHE],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_NONE,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
-
-         CONFIG_DIR(
-               list, list_info,
-               settings->paths.log_dir,
-               sizeof(settings->paths.log_dir),
-               MENU_ENUM_LABEL_LOG_DIR,
-               MENU_ENUM_LABEL_VALUE_LOG_DIR,
-               g_defaults.dirs[DEFAULT_DIR_LOGS],
-               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
+                  {
+            static const setting_desc_t dir_desc_2[] = {
+/* GENERATED: rows come from settings_def_dir_cache_log.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_STRING(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us, sub) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_STRING_NS(f, T, n, d, sd, c, ok, rp, sta, sel, lf, rt, ui, us) \
+                  SDESC_STRING_ROW(f, T, d, sd, c, ok, rp, sta, sel, lf, rt, ui),
+#define S_DIR(f, T, n, d, el, sd, c, sta, us, sub) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#define S_DIR_NS(f, T, n, d, el, sd, c, sta, us) \
+                  SDESC_DIR_ROW(f, T, d, el, sd, c, sta),
+#include "../settings/settings_def_dir_cache_log.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+#undef S_STRING
+#undef S_STRING_NS
+#undef S_DIR
+#undef S_DIR_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  dir_desc_2, ARRAY_SIZE(dir_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
@@ -25471,55 +21528,111 @@ static bool setting_append_list(
 
          if (string_is_not_equal(settings->arrays.camera_driver, "null"))
          {
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.camera_allow,
-                  MENU_ENUM_LABEL_CAMERA_ALLOW,
-                  MENU_ENUM_LABEL_VALUE_CAMERA_ALLOW,
-                  false,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t privacy_desc_0[] = {
+/* GENERATED: rows come from settings_def_privacy_camera.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_privacy_camera.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  privacy_desc_0, ARRAY_SIZE(privacy_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
 #ifdef HAVE_DISCORD
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.discord_enable,
-               MENU_ENUM_LABEL_DISCORD_ALLOW,
-               MENU_ENUM_LABEL_VALUE_DISCORD_ALLOW,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
+         {
+            static const setting_desc_t privacy_desc_1[] = {
+/* GENERATED: rows come from settings_def_privacy_discord.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_privacy_discord.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  privacy_desc_1, ARRAY_SIZE(privacy_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
-
          if (string_is_not_equal(settings->arrays.location_driver, "null"))
          {
-            CONFIG_BOOL(
-                  list, list_info,
-                  &settings->bools.location_allow,
-                  MENU_ENUM_LABEL_LOCATION_ALLOW,
-                  MENU_ENUM_LABEL_VALUE_LOCATION_ALLOW,
-                  false,
-                  MENU_ENUM_LABEL_VALUE_OFF,
-                  MENU_ENUM_LABEL_VALUE_ON,
-                  &group_info,
-                  &subgroup_info,
-                  parent_group,
-                  general_write_handler,
-                  general_read_handler,
-                  SD_FLAG_NONE);
+         {
+            static const setting_desc_t privacy_desc_2[] = {
+/* GENERATED: rows come from settings_def_privacy_location.h in order. */
+#define S_BOOL(f, T, n, d, sd, df, c, us, sub) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_BOOL_NS(f, T, n, d, sd, df, c, us) \
+                  SDESC_BOOL_ROW(f, T, d, sd, df, c),
+#define S_UINT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_UINT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_UINT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us, sub) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_INT_NS(f, T, n, d, sd, df, c, mn, mx, st, ob, ok, rp, us) \
+                  SDESC_INT_ROW(f, T, d, sd, df, c, mn, mx, st, ob, ok, rp),
+#define S_FLOAT(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us, sub) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
+                  SDESC_FLOAT_ROW(f, T, d, rnd, sd, df, c, mn, mx, st, ok, rp),
+#include "../settings/settings_def_privacy_location.h"
+#undef S_BOOL
+#undef S_BOOL_NS
+#undef S_UINT
+#undef S_UINT_NS
+#undef S_INT
+#undef S_INT_NS
+#undef S_FLOAT
+#undef S_FLOAT_NS
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  privacy_desc_2, ARRAY_SIZE(privacy_desc_2),
+                  &group_info, &subgroup_info, parent_group);
+         }
          }
 
          END_SUB_GROUP(list, list_info, parent_group);
@@ -25535,6 +21648,7 @@ static bool setting_append_list(
                &group_info, &subgroup_info, parent_group);
 
 #if !defined(RARCH_CONSOLE)
+         /* Descriptor holdout: poke tail outside the descriptor grammar. */
          CONFIG_STRING(
                list, list_info,
                settings->arrays.midi_input,
@@ -25569,19 +21683,19 @@ static bool setting_append_list(
          (*list)[list_info->index - 1].action_right = setting_string_action_right_midi_output;
          (*list)[list_info->index - 1].action_ok    = setting_string_action_ok_midi_device;
 
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.midi_volume,
-               MENU_ENUM_LABEL_MIDI_VOLUME,
-               MENU_ENUM_LABEL_VALUE_MIDI_VOLUME,
-               DEFAULT_MIDI_VOLUME,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         menu_settings_list_current_add_range(list, list_info, 0.0f, 100.0f, 1.0f, true, true);
+         {
+            static const setting_desc_t midi_desc_0[] = {
+               SDESC_UINT_ROW_EX(midi_volume, MIDI_VOLUME,
+                     DEFAULT_MIDI_VOLUME,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0.0f, 100.0f, 1.0f, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  midi_desc_0, ARRAY_SIZE(midi_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 #endif
 
          END_SUB_GROUP(list, list_info, parent_group);
@@ -25596,6 +21710,7 @@ static bool setting_append_list(
          START_SUB_GROUP(list, list_info, "State",
                &group_info, &subgroup_info, parent_group);
 
+         /* Descriptor holdout: value target outside settings_t. */
          CONFIG_STRING(
                list, list_info,
                manual_content_scan_get_system_name_custom_ptr(),
@@ -25766,40 +21881,22 @@ static bool setting_append_list(
          START_SUB_GROUP(list, list_info, "State",
                &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-               list, list_info,
-               &settings->bools.steam_rich_presence_enable,
-               MENU_ENUM_LABEL_STEAM_RICH_PRESENCE_ENABLE,
-               MENU_ENUM_LABEL_VALUE_STEAM_RICH_PRESENCE_ENABLE,
-               false,
-               MENU_ENUM_LABEL_VALUE_OFF,
-               MENU_ENUM_LABEL_VALUE_ON,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler,
-               SD_FLAG_NONE);
-         (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-         (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
-
-         CONFIG_UINT(
-               list, list_info,
-               &settings->uints.steam_rich_presence_format,
-               MENU_ENUM_LABEL_STEAM_RICH_PRESENCE_FORMAT,
-               MENU_ENUM_LABEL_VALUE_STEAM_RICH_PRESENCE_FORMAT,
-               DEFAULT_STEAM_RICH_PRESENCE_FORMAT,
-               &group_info,
-               &subgroup_info,
-               parent_group,
-               general_write_handler,
-               general_read_handler);
-         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_steam_rich_presence_format;
-         menu_settings_list_current_add_range(list, list_info, 0, (STEAM_RICH_PRESENCE_FORMAT_LAST-1), 1, true, true);
+         {
+            static const setting_desc_t steam_desc_0[] = {
+               SDESC_BOOL_ROW_EX(steam_rich_presence_enable, STEAM_RICH_PRESENCE_ENABLE,
+                     false, SD_FLAG_NONE, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+               SDESC_UINT_ROW_EX(steam_rich_presence_format, STEAM_RICH_PRESENCE_FORMAT,
+                     DEFAULT_STEAM_RICH_PRESENCE_FORMAT,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, (STEAM_RICH_PRESENCE_FORMAT_LAST-1), 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_steam_rich_presence_format,
+                     NULL, NULL, NULL, NULL, ST_UI_TYPE_UINT_COMBOBOX),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  steam_desc_0, ARRAY_SIZE(steam_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
@@ -25811,29 +21908,22 @@ static bool setting_append_list(
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SMB_CLIENT_SETTINGS),
             parent_group);
 
-         parent_group = MENU_ENUM_LABEL_SMB_CLIENT_SETTINGS_STR;
+         parent_group = msg_hash_to_str(MENU_ENUM_LABEL_SMB_CLIENT_SETTINGS);
 
          START_SUB_GROUP(list, list_info, "State", &group_info, &subgroup_info, parent_group);
 
-         CONFIG_BOOL(
-            list, list_info,
-            &settings->bools.smb_client_enable,
-            MENU_ENUM_LABEL_SMB_CLIENT_ENABLE,
-            MENU_ENUM_LABEL_VALUE_SMB_CLIENT_ENABLE,
-            false,
-            MENU_ENUM_LABEL_VALUE_OFF,
-            MENU_ENUM_LABEL_VALUE_ON,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler,
-            SD_FLAG_NONE);
-            SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-            (*list)[list_info->index - 1].action_ok     = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_left   = &setting_bool_action_left_with_refresh;
-            (*list)[list_info->index - 1].action_right  = &setting_bool_action_right_with_refresh;
+         {
+            static const setting_desc_t smbclient_desc_0[] = {
+               SDESC_BOOL_ROW_EX(smb_client_enable, SMB_CLIENT_ENABLE,
+                     false, SD_FLAG_ADVANCED, 0, 0,
+                     setting_bool_action_left_with_refresh, NULL, NULL, NULL, setting_bool_action_left_with_refresh, setting_bool_action_right_with_refresh, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  smbclient_desc_0, ARRAY_SIZE(smbclient_desc_0),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
+         /* Descriptor holdout: non-general read/write handler. */
          CONFIG_STRING(
             list, list_info,
             settings->arrays.smb_client_server_address,
@@ -25920,51 +22010,31 @@ static bool setting_append_list(
             NULL);
          SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
 
-         CONFIG_UINT(
-            list, list_info,
-            &settings->uints.smb_client_auth_mode,
-            MENU_ENUM_LABEL_SMB_CLIENT_AUTH_MODE,
-            MENU_ENUM_LABEL_VALUE_SMB_CLIENT_AUTH_MODE,
-            DEFAULT_SMB_CLIENT_AUTH_MODE,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-         (*list)[list_info->index - 1].action_ok     = &setting_action_ok_uint;
-         (*list)[list_info->index - 1].get_string_representation =
-            &setting_get_string_representation_smb_auth;
-         menu_settings_list_current_add_range(list, list_info, 0, RETRO_SMB2_SEC_KRB5, 1, true, true);
-
-         CONFIG_UINT(
-            list, list_info,
-            &settings->uints.smb_client_num_contexts,
-            MENU_ENUM_LABEL_SMB_CLIENT_NUM_CONTEXTS,
-            MENU_ENUM_LABEL_VALUE_SMB_CLIENT_NUM_CONTEXTS,
-            DEFAULT_SMB_CLIENT_NUM_CONTEXTS,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-         menu_settings_list_current_add_range(list, list_info, 1, DEFAULT_SMB_CLIENT_MAX_CONTEXTS, 1, true, true);
-
-         CONFIG_UINT(
-            list, list_info,
-            &settings->uints.smb_client_timeout,
-            MENU_ENUM_LABEL_SMB_CLIENT_TIMEOUT,
-            MENU_ENUM_LABEL_VALUE_SMB_CLIENT_TIMEOUT,
-            DEFAULT_SMB_CLIENT_TIMEOUT,
-            &group_info,
-            &subgroup_info,
-            parent_group,
-            general_write_handler,
-            general_read_handler);
-         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
-         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ADVANCED);
-         menu_settings_list_current_add_range(list, list_info, 1, DEFAULT_SMB_CLIENT_MAX_TIMEOUT, 1, true, true);
+         {
+            static const setting_desc_t smbclient_desc_1[] = {
+               SDESC_UINT_ROW_EX(smb_client_auth_mode, SMB_CLIENT_AUTH_MODE,
+                     DEFAULT_SMB_CLIENT_AUTH_MODE,
+                     SD_FLAG_NONE, SDESC_RANGE_MINMAX, 0,
+                     0, RETRO_SMB2_SEC_KRB5, 1, 0,
+                     setting_action_ok_uint, setting_get_string_representation_smb_auth,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(smb_client_num_contexts, SMB_CLIENT_NUM_CONTEXTS,
+                     DEFAULT_SMB_CLIENT_NUM_CONTEXTS,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     1, DEFAULT_SMB_CLIENT_MAX_CONTEXTS, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+               SDESC_UINT_ROW_EX(smb_client_timeout, SMB_CLIENT_TIMEOUT,
+                     DEFAULT_SMB_CLIENT_TIMEOUT,
+                     SD_FLAG_ADVANCED, SDESC_RANGE_MINMAX, 0,
+                     1, DEFAULT_SMB_CLIENT_MAX_TIMEOUT, 1, 0,
+                     setting_action_ok_uint, NULL,
+                     NULL, NULL, NULL, NULL, 0),
+            };
+            settings_list_add_desc(list, list_info, settings,
+                  smbclient_desc_1, ARRAY_SIZE(smbclient_desc_1),
+                  &group_info, &subgroup_info, parent_group);
+         }
 
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);
@@ -25985,6 +22055,9 @@ void menu_setting_free(rarch_setting_t *setting)
 
    if (!setting)
       return;
+
+   if (setting == settings_index_list)
+      menu_setting_index_free();
 
    list                   = (rarch_setting_t**)&setting;
 
@@ -26191,7 +22264,174 @@ static rarch_setting_t *menu_setting_new_internal(rarch_setting_info_t *list_inf
  * Returns: settings list composed of all requested
  * settings on success, otherwise NULL.
  **/
+/* Validation harness for settings-list refactoring.
+ *
+ * When the RETROARCH_SETTINGS_DUMP environment variable is set to a
+ * file path, the fully constructed settings list is serialised there
+ * in a canonical text form at menu init.  Dumps taken before and
+ * after a registration refactor (e.g. converting imperative
+ * CONFIG_* runs to setting_desc_t tables) must be byte-identical.
+ *
+ * Handler pointers cannot be compared across binaries, so the
+ * handlers most affected by conversions are reported as symbolic
+ * tags, and get_string_representation is exercised directly for
+ * value types so that a wrongly wired representation callback shows
+ * up as a differing string rather than an invisible pointer.
+ *
+ * Zero cost unless the environment variable is set. */
+static void menu_setting_validation_dump(rarch_setting_t *list)
+{
+   unsigned i;
+   RFILE *f;
+   const char *path = getenv("RETROARCH_SETTINGS_DUMP");
+
+   if (!path || !list)
+      return;
+
+   f = filestream_open(path,
+         RETRO_VFS_FILE_ACCESS_WRITE,
+         RETRO_VFS_FILE_ACCESS_HINT_NONE);
+   if (!f)
+      return;
+
+   for (i = 0; list[i].type != ST_NONE; i++)
+   {
+      char repr[512];
+      rarch_setting_t *s   = &list[i];
+      const char *ok_tag   = "-";
+      const char *left_tag = "-";
+      const char *rght_tag = "-";
+      const char *strt_tag = "0";
+      const char *sel_tag  = "0";
+      char dflt[64];
+
+      if (s->action_ok == setting_bool_action_left_with_refresh)
+         ok_tag   = "boolrefL";
+      else if (s->action_ok == setting_action_ok_uint)
+         ok_tag   = "okuint";
+      if (s->action_left == setting_bool_action_left_with_refresh)
+         left_tag = "boolrefL";
+      else if (s->action_left == setting_uint_action_left_with_refresh)
+         left_tag = "uintrefL";
+      else if (s->action_left == setting_uint_action_left_default)
+         left_tag = "Du";
+      else if (s->action_left == setting_int_action_left_default)
+         left_tag = "Di";
+      else if (s->action_left == setting_bool_action_ok_default)
+         left_tag = "Db";
+      else if (s->action_left == setting_fraction_action_left_default)
+         left_tag = "Df";
+      else if (s->action_left)
+         left_tag = "C";
+      else
+         left_tag = "0";
+      if (s->action_right == setting_bool_action_right_with_refresh)
+         rght_tag = "boolrefR";
+      else if (s->action_right == setting_uint_action_right_with_refresh)
+         rght_tag = "uintrefR";
+      else if (s->action_right == setting_uint_action_right_default)
+         rght_tag = "Du";
+      else if (s->action_right == setting_int_action_right_default)
+         rght_tag = "Di";
+      else if (s->action_right == setting_bool_action_ok_default)
+         rght_tag = "Db";
+      else if (s->action_right == setting_fraction_action_right_default)
+         rght_tag = "Df";
+      else if (s->action_right)
+         rght_tag = "C";
+      else
+         rght_tag = "0";
+      if (s->action_start == setting_generic_action_start_default)
+         strt_tag = "D";
+      else if (s->action_start)
+         strt_tag = "C";
+      if (s->action_select == setting_generic_action_ok_default)
+         sel_tag  = "D";
+      else if (s->action_select)
+         sel_tag  = "C";
+
+      dflt[0] = '\0';
+      repr[0] = '\0';
+
+      switch (s->type)
+      {
+         case ST_BOOL:
+            snprintf(dflt, sizeof(dflt), "%d",
+                  s->default_value.boolean ? 1 : 0);
+            break;
+         case ST_INT:
+            snprintf(dflt, sizeof(dflt), "%d",
+                  s->default_value.integer);
+            break;
+         case ST_UINT:
+            snprintf(dflt, sizeof(dflt), "%u",
+                  s->default_value.unsigned_integer);
+            break;
+         case ST_SIZE:
+            snprintf(dflt, sizeof(dflt), "%u",
+                  (unsigned)s->default_value.sizet);
+            break;
+         case ST_FLOAT:
+            snprintf(dflt, sizeof(dflt), "%.6g",
+                  s->default_value.fraction);
+            break;
+         case ST_PATH:
+         case ST_DIR:
+         case ST_STRING:
+         case ST_STRING_OPTIONS:
+            snprintf(dflt, sizeof(dflt), "%s",
+                  s->default_value.string ? s->default_value.string : "");
+            break;
+         default:
+            break;
+      }
+
+      switch (s->type)
+      {
+         case ST_BOOL:
+         case ST_INT:
+         case ST_UINT:
+         case ST_SIZE:
+         case ST_FLOAT:
+            if (s->get_string_representation)
+               s->get_string_representation(s, repr, sizeof(repr));
+            break;
+         default:
+            break;
+      }
+
+      filestream_printf(f,
+            "%u|%s|%d|%d|%d|%08x|%02x|%.6g|%.6g|%.6g|%d|%d|%d|%d|%u|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n",
+            i,
+            s->name ? s->name : "",
+            (int)s->type,
+            (int)s->enum_idx,
+            (int)s->enum_value_idx,
+            (unsigned)s->flags,
+            (unsigned)s->free_flags,
+            (double)s->min,
+            (double)s->max,
+            (double)s->step,
+            (int)s->offset_by,
+            (int)s->ui_type,
+            (int)s->browser_selection_type,
+            (int)s->cmd_trigger_idx,
+            (unsigned)s->size,
+            dflt,
+            s->rounding_fraction ? s->rounding_fraction : "",
+            ok_tag, left_tag, rght_tag, strt_tag, sel_tag,
+            s->short_description ? s->short_description : "",
+            s->group ? s->group : "",
+            s->subgroup ? s->subgroup : "",
+            s->values ? s->values : "",
+            repr);
+   }
+
+   filestream_close(f);
+}
+
 rarch_setting_t *menu_setting_new(void)
+
 {
    rarch_setting_t* list           = NULL;
    rarch_setting_info_t *list_info = (rarch_setting_info_t*)
@@ -26204,6 +22444,10 @@ rarch_setting_t *menu_setting_new(void)
    list_info->size  = 32;
 
    list             = menu_setting_new_internal(list_info);
+
+   menu_setting_index_build(list);
+
+   menu_setting_validation_dump(list);
 
    if (list_info)
       free(list_info);
@@ -26230,6 +22474,7 @@ void video_driver_menu_settings(void **list_data, void *list_info_data,
    (void)global;
 
 #if defined(GEKKO) || defined(_XBOX360)
+   /* Descriptor holdout: value target outside settings_t. */
    CONFIG_UINT(
          list, list_info,
          &global->console.screen.gamma_correction,

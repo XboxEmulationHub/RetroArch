@@ -3363,6 +3363,18 @@ bool runloop_environment_cb(unsigned cmd, void *data)
          break;
       }
 
+      case RETRO_ENVIRONMENT_GET_MEMORY_STATUS:
+      {
+         struct retro_memory_status *memstat = (struct retro_memory_status *)data;
+         memstat->free  = frontend_driver_get_free_memory();
+         memstat->total = frontend_driver_get_total_memory();
+         /* If the active frontend driver cannot report memory, tell the core
+          * the call is unsupported so it falls back to its own defaults. */
+         if (memstat->free == 0 && memstat->total == 0)
+            return false;
+         break;
+      }
+
       case RETRO_ENVIRONMENT_GET_INPUT_MAX_USERS:
          *(unsigned *)data = settings->uints.input_max_users;
          break;
@@ -3533,6 +3545,52 @@ bool runloop_environment_cb(unsigned cmd, void *data)
             }
          }
          break;
+
+      case RETRO_ENVIRONMENT_GET_AUDIO_SAMPLE_BATCH_FLOAT:
+      {
+         struct retro_audio_sample_float_callback *cb =
+               (struct retro_audio_sample_float_callback*)data;
+         if (!cb)
+            return false;
+         /* The 'Resample to Fixed Integer' hint (audio_fastpath_s16) asks for
+          * a deterministic integer audio pipeline. Advertising float here
+          * would defeat it: a float-native core forces the float resampler
+          * path regardless of the hint. So when the hint is set we decline,
+          * and the core keeps using its int16 batch callback - leaving the
+          * whole chain in the integer domain. The hint takes precedence over
+          * float advertisement. This is queried once at core init, so
+          * toggling the hint takes effect on the next core load. */
+         if (config_get_ptr()->bools.audio_fastpath_s16)
+            return false;
+         /* Only advertise float when the audio driver actually runs a float
+          * output format. If it negotiated s16 (the device rejected float, or
+          * the format-negotiation hint asked for s16), a float core would just
+          * be converted straight back to s16 for the device - so decline and
+          * let the core keep its int16 batch callback. When the driver is not
+          * yet initialised (queried before drivers_init, e.g. a direct CLI
+          * load) we cannot read its real format, so fall back to the
+          * format-negotiation hint, which is what it will request. */
+         if (audio_state_get_ptr()->flags & AUDIO_FLAG_ACTIVE)
+         {
+            if (!(audio_state_get_ptr()->flags & AUDIO_FLAG_USE_FLOAT))
+               return false;
+         }
+         else if (config_get_ptr()->uints.audio_format_negotiation
+               != AUDIO_FORMAT_NEGOTIATION_FLOAT)
+            return false;
+         /* RetroArch's resampler and DSP chain are float-native, so we
+          * advertise float audio output and hand the core our float
+          * batch entry point. The core then bypasses int16 entirely.
+          *
+          * Note: the float entry funnels into the same audio_driver_flush()
+          * as int16 and internally bridges recording and reverse-audio
+          * (rewind). The one subsystem it does not cover is netplay's
+          * core-packet audio interception (audio_sample_batch_net), which
+          * swaps the int16 batch callback the float core no longer uses;
+          * that path remains int16-only. */
+         cb->batch = audio_driver_sample_batch_float;
+         break;
+      }
 
       case RETRO_ENVIRONMENT_GET_JIT_CAPABLE:
          {
@@ -6287,7 +6345,7 @@ static enum runloop_state_enum runloop_check_state(
                generic_action_ok_displaylist_push(
                      msg_hash_to_str(MENU_ENUM_LABEL_VALUE_HISTORY_TAB),
                      NULL,
-                     MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY_STR,
+                     msg_hash_to_str(MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY),
                      MENU_SETTING_ACTION,
                      0, 0, ACTION_OK_DL_GENERIC);
                break;
@@ -6327,7 +6385,7 @@ static enum runloop_state_enum runloop_check_state(
                generic_action_ok_displaylist_push(
                      msg_hash_to_str(MENU_ENUM_LABEL_VALUE_LOAD_CONTENT_LIST),
                      NULL,
-                     MENU_ENUM_LABEL_LOAD_CONTENT_LIST_STR,
+                     msg_hash_to_str(MENU_ENUM_LABEL_LOAD_CONTENT_LIST),
                      MENU_SETTING_ACTION,
                      0, 0, ACTION_OK_DL_GENERIC);
                break;

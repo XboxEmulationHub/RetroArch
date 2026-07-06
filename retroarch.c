@@ -2908,13 +2908,13 @@ enum rarch_content_type path_is_media_type(const char *path)
       case FILE_TYPE_M4A:
 #endif
 #if defined(HAVE_FFMPEG) || defined(HAVE_MPV) || defined(HAVE_AUDIOMIXER)
-#if !defined(HAVE_AUDIOMIXER) || defined(HAVE_STB_VORBIS)
+#if !defined(HAVE_AUDIOMIXER) || defined(HAVE_RVORBIS)
       case FILE_TYPE_OGG:
 #endif
-#if !defined(HAVE_AUDIOMIXER) || defined(HAVE_DR_MP3)
+#if !defined(HAVE_AUDIOMIXER) || defined(HAVE_RMP3)
       case FILE_TYPE_MP3:
 #endif
-#if !defined(HAVE_AUDIOMIXER) || defined(HAVE_DR_FLAC)
+#if !defined(HAVE_AUDIOMIXER) || defined(HAVE_RFLAC)
       case FILE_TYPE_FLAC:
 #endif
 #if !defined(HAVE_AUDIOMIXER) || defined(HAVE_RWAV)
@@ -6675,6 +6675,9 @@ static void retroarch_print_features(void)
 #ifdef HAVE_RWEBP
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_RWEBP,           "RWEBP",           "WebP (RWEBP) image loading");
 #endif
+#ifdef HAVE_RDDS
+   _len += _PSUPP_BUF(buf, _len, SUPPORTS_RDDS,            "RDDS",            "DDS (RDDS) image loading");
+#endif
 #ifdef HAVE_SDL
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_SDL,             "SDL1",            "SDL1 input/audio/video drivers");
 #endif
@@ -8145,6 +8148,16 @@ static void retroarch_validate_cpu_features(void)
  *
  * @return true on success, otherwise false if there was an error.
  **/
+/* Runtime savestate probe for core_info. A running core that reports a
+ * nonzero serializable size can save/load state even if its info file
+ * declares otherwise; core_info.c consults this via a registered seam so
+ * it need not depend on the runloop/retroarch backend directly. */
+static bool retroarch_core_info_savestate_probe(void)
+{
+   return (runloop_get_flags() & RUNLOOP_FLAG_CORE_RUNNING)
+         && core_serialize_size() > 0;
+}
+
 bool retroarch_main_init(int argc, char *argv[])
 {
 #if defined(DEBUG) && defined(HAVE_DRMINGW)
@@ -8168,6 +8181,8 @@ bool retroarch_main_init(int argc, char *argv[])
 #ifdef HAVE_MENU
    struct menu_state *menu_st    = menu_state_get_ptr();
 #endif
+
+   core_info_set_savestate_probe(retroarch_core_info_savestate_probe);
 
    input_st->osk_idx             = OSK_LOWERCASE_LATIN;
    video_st->flags              |= VIDEO_FLAG_ACTIVE;

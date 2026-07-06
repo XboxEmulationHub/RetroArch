@@ -715,6 +715,15 @@ static void xmb_free_list_nodes(file_list_t *list, bool actiondata)
 {
    unsigned i;
    unsigned size = list ? (unsigned)list->size : 0;
+   uintptr_t tag = (uintptr_t)list;
+
+   /* Kill any in-flight tweens whose subject points into a node we are
+    * about to free.  Horizontal-list node highlight animations are tagged
+    * with the address of their owning file_list_t (see
+    * xmb_list_open_horizontal_list / xmb_list_switch_horizontal_list);
+    * without this the next gfx_animation_update() would write through a
+    * freed node->alpha.  No-op when nothing is tagged for this list. */
+   gfx_animation_kill_by_tag(&tag);
 
    for (i = 0; i < size; ++i)
    {
@@ -2446,6 +2455,13 @@ static xmb_node_t *xmb_node_allocate_userdata(
    }
 
    tmp = (xmb_node_t*)file_list_get_userdata_at_offset(&xmb->horizontal_list, i);
+   if (tmp)
+   {
+      /* Kill in-flight highlight tweens on the node before freeing it;
+       * they are tagged by the horizontal list (see below). */
+      uintptr_t tag = (uintptr_t)&xmb->horizontal_list;
+      gfx_animation_kill_by_tag(&tag);
+   }
    xmb_free_node(tmp);
 
    xmb->horizontal_list.list[i].userdata = node;
@@ -2938,8 +2954,13 @@ static void xmb_list_switch_horizontal_list(xmb_handle_t *xmb,
       /* Horizontal icon highlight animation */
       entry.target_value = ia;
       entry.subject      = &node->alpha;
-      /* TODO/FIXME - integer conversion resulted in change of sign */
-      entry.tag          = -1;
+      /* Playlist categories (j > system_tab_end) are heap nodes in
+       * horizontal_list that can be freed at runtime (e.g. a dbscan
+       * finishing); tag their tweens with the owning list so the free
+       * paths can kill them.  Embedded system-tab nodes are never freed
+       * and keep the untagged (-1) sentinel. */
+      entry.tag          = (j > xmb->system_tab_end)
+            ? (uintptr_t)&xmb->horizontal_list : (uintptr_t)-1;
       entry.cb           = NULL;
 
       switch (animation_horizontal_highlight)
@@ -3131,8 +3152,11 @@ static void xmb_list_open_horizontal_list(xmb_handle_t *xmb, bool animate)
          anim_entry.target_value = ia;
          anim_entry.subject      = &node->alpha;
          anim_entry.easing_enum  = XMB_EASING_ALPHA;
-         /* TODO/FIXME - integer conversion resulted in change of sign */
-         anim_entry.tag          = -1;
+         /* See xmb_list_switch_horizontal_list: tag playlist-node tweens
+          * with the owning list so runtime frees can kill them; embedded
+          * system-tab nodes keep the untagged (-1) sentinel. */
+         anim_entry.tag          = (j > xmb->system_tab_end)
+               ? (uintptr_t)&xmb->horizontal_list : (uintptr_t)-1;
          anim_entry.cb           = NULL;
 
          if (anim_entry.subject)
@@ -3621,7 +3645,7 @@ static void xmb_populate_entries(void *data,
 #endif
             )
          )
-         || string_is_equal(label, MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY_STR)
+         || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_LOAD_CONTENT_HISTORY))
          || string_is_equal(label, MENU_ENUM_LABEL_DEFERRED_PLAYLIST_LIST_STR)
          || string_is_equal(label, MENU_ENUM_LABEL_DEFERRED_FAVORITES_LIST_STR)
          || string_is_equal(label, MENU_ENUM_LABEL_DEFERRED_IMAGES_LIST_STR)
@@ -3671,7 +3695,7 @@ static void xmb_populate_entries(void *data,
     *   selecting 'load content' */
    xmb->is_file_list =
             string_is_equal(label, MENU_ENUM_LABEL_FAVORITES_STR)
-         || string_is_equal(label, MENU_ENUM_LABEL_MENU_WALLPAPER_STR);
+         || string_is_equal(label, msg_hash_to_str(MENU_ENUM_LABEL_MENU_WALLPAPER));
 
    /* Determine whether this is the quick menu */
    xmb->is_quick_menu =
@@ -7393,6 +7417,12 @@ static void xmb_render(void *data,
 
    if (!xmb)
       return;
+
+   /* Advance animated thumbnails (animated WebP) once per frame on the
+    * main thread. No-op for still images. */
+   gfx_thumbnail_animate(&xmb->thumbnails.right);
+   gfx_thumbnail_animate(&xmb->thumbnails.left);
+   gfx_thumbnail_animate(&xmb->thumbnails.icon);
 
    /* Handle deferred context reset from a previous scale factor /
     * layout change. We must wait two xmb_render() calls (not one)

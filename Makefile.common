@@ -232,8 +232,14 @@ ifneq ($(GIT_VERSION),)  # Enable version_git.o?
 endif
 
 # General object files
-ifeq ($(HAVE_DR_MP3), 1)
-   DEFINES += -DHAVE_DR_MP3
+ifeq ($(HAVE_RMP3), 1)
+   DEFINES += -DHAVE_RMP3
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/mp3/rmp3.o
+ifneq ($(HAVE_BUILTINFLAC),1)
+ifneq ($(HAVE_RVORBIS),1)
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/audio_transfer.o
+endif
+endif
 endif
 
 OBJ += frontend/frontend_driver.o \
@@ -416,10 +422,12 @@ OBJ     += $(LIBRETRO_COMM_DIR)/audio/dsp_filter.o
 endif
 
 OBJ += $(LIBRETRO_COMM_DIR)/audio/resampler/drivers/sinc_resampler.o
+OBJ += $(LIBRETRO_COMM_DIR)/audio/resampler/drivers/sinc_resampler_int16.o
 
 ifeq ($(HAVE_NEAREST_RESAMPLER), 1)
    DEFINES += -DHAVE_NEAREST_RESAMPLER
    OBJ     += $(LIBRETRO_COMM_DIR)/audio/resampler/drivers/nearest_resampler.o
+   OBJ     += $(LIBRETRO_COMM_DIR)/audio/resampler/drivers/nearest_resampler_int16.o
 endif
 
 OBJ += \
@@ -467,6 +475,7 @@ endif
 ifeq ($(HAVE_CC_RESAMPLER), 1)
    DEFINES += -DHAVE_CC_RESAMPLER
    OBJ += audio/drivers_resampler/cc_resampler.o
+   OBJ += audio/drivers_resampler/cc_resampler_int16.o
 
 ifeq ($(HAVE_NEON),1)
    OBJ += audio/drivers_resampler/cc_resampler_neon.o
@@ -1210,23 +1219,19 @@ ifeq ($(HAVE_THREAD_STORAGE), 1)
 endif
 
 ifeq ($(HAVE_VITA2D), 1)
-   OBJ += $(DEPS_DIR)/libvita2d/source/vita2d.o \
-          $(DEPS_DIR)/libvita2d/source/vita2d_texture.o \
-          $(DEPS_DIR)/libvita2d/source/vita2d_draw.o \
-          $(DEPS_DIR)/libvita2d/source/utils.o
-
-   OBJ += $(DEPS_DIR)/libvita2d/shader/clear_v_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/clear_f_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/color_v_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/color_f_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/texture_v_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/texture_f_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/texture_tint_v_gxp.o \
-          $(DEPS_DIR)/libvita2d/shader/texture_tint_f_gxp.o
+   # The vita2d GXM backend is now folded directly into vita2d_gfx.c; only
+   # the precompiled shader blobs remain as a dependency (the driver still
+   # references clear_v_gxp/texture_v_gxp/... as externs).
+   OBJ += gfx/drivers/vita_shaders/clear_v_gxp.o \
+          gfx/drivers/vita_shaders/clear_f_gxp.o \
+          gfx/drivers/vita_shaders/color_v_gxp.o \
+          gfx/drivers/vita_shaders/color_f_gxp.o \
+          gfx/drivers/vita_shaders/texture_v_gxp.o \
+          gfx/drivers/vita_shaders/texture_f_gxp.o \
+          gfx/drivers/vita_shaders/texture_tint_v_gxp.o \
+          gfx/drivers/vita_shaders/texture_tint_f_gxp.o
 
    OBJ += gfx/drivers/vita2d_gfx.o
-
-   INCLUDE_DIRS += -I$(DEPS_DIR)/libvita2d/include
 endif
 
 ifeq ($(TARGET), retroarch_3ds)
@@ -2064,9 +2069,11 @@ endif
 
 ifeq ($(HAVE_BUILTINFLAC),1)
    HAVE_FLAC = 1
-   DEFINES += -DHAVE_FLAC -DHAVE_DR_FLAC  -DHAVE_STDINT_H -DHAVE_LROUND -DFLAC__HAS_OGG=0 \
+   DEFINES += -DHAVE_FLAC -DHAVE_RFLAC  -DHAVE_STDINT_H -DHAVE_LROUND -DFLAC__HAS_OGG=0 \
               -DFLAC_PACKAGE_VERSION="\"retroarch\""
    INCLUDE_DIRS += -I$(DEPS_DIR) -I$(DEPS_DIR)/libFLAC/include
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/audio_transfer.o \
+          $(LIBRETRO_COMM_DIR)/formats/flac/rflac.o
    FLACOBJ = $(DEPS_DIR)/libFLAC/bitmath.o \
              $(DEPS_DIR)/libFLAC/bitreader.o \
              $(DEPS_DIR)/libFLAC/cpu.o \
@@ -2092,6 +2099,14 @@ ifeq ($(HAVE_BUILTINFLAC),1)
 else ifeq ($(HAVE_FLAC),1)
    DEFINES += -DHAVE_FLAC
    LIBS    += $(FLAC_LIBS)
+endif
+
+ifeq ($(HAVE_RVORBIS),1)
+   DEFINES += -DHAVE_RVORBIS
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/vorbis/rvorbis.o
+ifneq ($(HAVE_BUILTINFLAC),1)
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/audio_transfer.o
+endif
 endif
 
 ifeq ($(HAVE_BUILTINZLIB), 1)
@@ -2227,6 +2242,11 @@ ifeq ($(HAVE_ZLIB_COMMON), 1)
       ifeq ($(HAVE_FLAC),1)
          OBJ += $(LIBRETRO_COMM_DIR)/formats/libchdr/libchdr_flac.o \
                 $(LIBRETRO_COMM_DIR)/formats/libchdr/libchdr_flac_codec.o
+         # libchdr decodes CHD FLAC through rflac; when the built-in FLAC
+         # library is not in use it has not already added the object.
+         ifneq ($(HAVE_BUILTINFLAC),1)
+            OBJ += $(LIBRETRO_COMM_DIR)/formats/flac/rflac.o
+         endif
       endif
 
       ifeq ($(HAVE_7ZIP), 1)
@@ -2254,6 +2274,11 @@ endif
 ifeq ($(HAVE_RTGA), 1)
    DEFINES += -DHAVE_RTGA
    OBJ += $(LIBRETRO_COMM_DIR)/formats/tga/rtga.o
+endif
+
+ifeq ($(HAVE_RDDS), 1)
+   DEFINES += -DHAVE_RDDS
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/dds/rdds.o
 endif
 
 ifeq ($(HAVE_RPNG), 1)
