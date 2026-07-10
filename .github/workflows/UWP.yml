@@ -1,0 +1,268 @@
+name: UWP
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+env:
+  CL: /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
+
+jobs:
+  SyncUpstream:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.WORKFLOW_PAT }}
+
+      - name: Sync with Upstream
+        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
+        with:
+          target_sync_branch: master
+          target_repo_token: ${{ secrets.WORKFLOW_PAT }}
+          upstream_sync_branch: master
+          upstream_sync_repo: libretro/RetroArch
+          test_mode: false
+
+  Build:
+    needs: SyncUpstream
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: XboxOne
+            name: "RetroArch-XboxOne"
+            config: "ReleaseANGLE"
+            folder: "ReleaseANGLE"
+            appx_pattern: "*ReleaseANGLE.appx"
+            all_cores: false
+          - id: SeriesConsoles
+            name: "RetroArch-SeriesConsoles"
+            config: "Release"
+            folder: "Release"
+            appx_pattern: "*x64.appx"
+            all_cores: false
+          - id: XboxOneAllCores
+            name: "RetroArch-XboxOne-AllCores"
+            config: "ReleaseANGLE"
+            folder: "ReleaseANGLE"
+            appx_pattern: "*ReleaseANGLE.appx"
+            all_cores: true
+          - id: SeriesConsolesAllCores
+            name: "RetroArch-SeriesConsoles-AllCores"
+            config: "Release"
+            folder: "Release"
+            appx_pattern: "*x64.appx"
+            all_cores: true
+    steps:
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Download Dependency Files
+        shell: pwsh
+        run: |
+          if ("${{ matrix.all_cores }}" -eq "true") {
+              curl.exe -L "https://buildbot.libretro.com/nightly/windows/x86_64/RetroArch_cores.7z" --output Cores.7z
+              7z e Cores.7z -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\"
+          }
+          if ("${{ matrix.config }}" -eq "ReleaseANGLE") {
+              curl.exe -L "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/Angle%20Cores.zip" --output Angle_Cores.zip
+              7z x Angle_Cores.zip -aoa -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores" *.* -r -y
+          }
+          curl.exe -L "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/DLLs.zip.001" --output DLLs.zip.001
+          curl.exe -L "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/DLLs.zip.002" --output DLLs.zip.002
+          7z x DLLs.zip.001 -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64" *.* -r -y
+          
+          # Clean up unneeded files securely
+          $empty1 = "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\.empty"
+          $empty2 = "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\.empty"
+          $citra1 = "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\citra2018_libretro.dll"
+          $citra2 = "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\citra_libretro.dll"
+          Remove-Item -Path $empty1, $empty2, $citra1, $citra2 -ErrorAction SilentlyContinue
+      - name: Write uwp_assets_init source files
+        shell: pwsh
+        run: |
+          $header = @'
+          #pragma once
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+          void uwp_init_assets(void);
+          void uwp_check_asset_updates(void);
+          #ifdef __cplusplus
+          }
+          #endif
+          '@
+          $source = @'
+          #include "uwp_assets_init.h"
+          #include <winrt/Windows.Storage.h>
+          #include <winrt/Windows.ApplicationModel.h>
+          #include <winrt/Windows.Foundation.Collections.h>
+          #include <string.h>
+          
+          using namespace winrt::Windows::Storage;
+          using namespace winrt::Windows::ApplicationModel;
+          
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+          #if defined(HAVE_ONLINE_UPDATER) && defined(HAVE_NETWORKING)
+          extern void menu_trigger_all_online_updates(void);
+          #endif
+          #ifdef __cplusplus
+          }
+          #endif
+          
+          static bool g_needs_update  = false;
+          static int  g_frame_counter = 0;
+          #define ASSET_UPDATE_DELAY 180
+          
+          void uwp_init_assets(void)
+          {
+             try {
+                auto assets = ApplicationData::Current().LocalFolder()
+                   .GetFolderAsync(L"assets").get();
+                auto items = assets.GetItemsAsync().get();
+                if (items.Size() > 0)
+                   return;
+             } catch (...) {}
+             
+             g_needs_update = true;
+          }
+          
+          void uwp_check_asset_updates(void)
+          {
+             if (!g_needs_update)
+                return;
+                
+             g_frame_counter++;
+             if (g_frame_counter < ASSET_UPDATE_DELAY)
+                return;
+                
+             g_needs_update = false;
+             
+          #if defined(HAVE_ONLINE_UPDATER) && defined(HAVE_NETWORKING)
+             menu_trigger_all_online_updates();
+          #endif
+          }
+          '@
+          New-Item -ItemType Directory -Force -Path "uwp"
+          Set-Content -Path "uwp\uwp_assets_init.h" -Value $header
+          Set-Content -Path "uwp\uwp_assets_init.cpp" -Value $source
+      - name: Patch source files and vcxproj
+        shell: pwsh
+        run: |
+          # Append a public wrapper to menu_cbs_ok.c that calls the static updater actions
+          $wrapper = @"
+          #if defined(HAVE_ONLINE_UPDATER) && defined(HAVE_NETWORKING)
+          void menu_trigger_all_online_updates(void)
+          {
+             action_ok_update_assets(NULL, NULL, 0, 0, 0);
+             action_ok_update_core_info_files(NULL, NULL, 0, 0, 0);
+             action_ok_update_autoconfig_profiles(NULL, NULL, 0, 0, 0);
+          #ifdef HAVE_CHEATS
+             action_ok_update_cheats(NULL, NULL, 0, 0, 0);
+          #endif
+             action_ok_update_databases(NULL, NULL, 0, 0, 0);
+             action_ok_update_overlays(NULL, NULL, 0, 0, 0);
+          #if defined(HAVE_SLANG)
+             action_ok_update_shaders_slang(NULL, NULL, 0, 0, 0);
+          #endif
+          }
+          #endif
+          "@
+          Add-Content "menu\cbs\menu_cbs_ok.c" $wrapper
+          # Patch uwp_main.cpp using purely literal string replacements
+          $main = Get-Content "uwp\uwp_main.cpp" -Raw
+          
+          $main = $main.Replace('#include "uwp_async.h"', "#include `"uwp_async.h`"`r`n#include `"uwp_assets_init.h`"")
+          $main = $main.Replace('if ((ret = rarch_main(', "uwp_init_assets();`r`n   if ((ret = rarch_main(")
+          $main = $main.Replace('task_queue_check();', "task_queue_check();`r`n      uwp_check_asset_updates();")
+          
+          Set-Content "uwp\uwp_main.cpp" $main
+          # Patch vcxproj
+          $vcx = Get-Content "pkg\msvc-UWP\RetroArch-msvcUWP\RetroArch-msvcUWP.vcxproj" -Raw
+          $inject = '<ItemGroup><ClCompile Include="..\..\..\uwp\uwp_assets_init.cpp" /></ItemGroup>'
+          $vcx = $vcx.Replace('</Project>', "$inject`r`n</Project>")
+          Set-Content "pkg\msvc-UWP\RetroArch-msvcUWP\RetroArch-msvcUWP.vcxproj" $vcx
+      - name: Compile Application
+        shell: pwsh
+        run: |
+          msbuild pkg\msvc-UWP\RetroArch-msvcUWP.sln `
+          /p:AppxBundle=Always `
+          /p:UapAppxPackageBuildMode=SideloadOnly `
+          /p:AppxBundlePlatforms="x64" `
+          /p:Configuration="${{ matrix.config }}" `
+          /p:Platform="x64"
+      - name: Grab AppX package
+        shell: pwsh
+        run: |
+          $src = Get-Item "pkg\msvc-uwp\x64\${{ matrix.folder }}\RetroArch-msvcUWP\${{ matrix.appx_pattern }}" | Select-Object -First 1
+          Copy-Item $src.FullName "pkg\msvc-uwp\x64\${{ matrix.name }}.appx"
+      - name: Upload AppX package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ./pkg/msvc-uwp/x64/${{ matrix.name }}.appx
+
+  Publish-release:
+    needs: Build
+    name: Publish Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get current date
+        id: date_step
+        run: echo "date_tag=$(date +'%m-%d-%Y')" >> $GITHUB_OUTPUT
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts/
+
+      - name: Generate Upstream Release Notes
+        run: |
+          git remote add upstream https://github.com/libretro/RetroArch.git 2>/dev/null || true
+          git fetch upstream master
+          PREV_TAG=$(git describe --tags --match="??-??-20??" --abbrev=0 2>/dev/null || echo "")
+          echo "## Upstream Changes" > release_notes.md
+          if [ -z "$PREV_TAG" ]; then
+            git log upstream/master -n 50 --no-merges \
+              --pretty=format:"* %s (%h)" \
+              -- ':!.github' >> release_notes.md
+          else
+            MERGE_COMMIT=$(git log --merges --ancestry-path $PREV_TAG..HEAD -1 --format="%H")
+            UPSTREAM_BASE=$(git log -1 $MERGE_COMMIT --format="%P" | awk '{print $2}')
+            git log $UPSTREAM_BASE..upstream/master --no-merges \
+              --pretty=format:"* %s (%h)" \
+              -- ':!.github' >> release_notes.md
+          fi
+      - name: Create a new release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "${{ steps.date_step.outputs.date_tag }}"
+          name: "Xbox Builds [${{ steps.date_step.outputs.date_tag }}]"
+          body_path: release_notes.md
+          prerelease: false
+          files: |
+            ./artifacts/RetroArch-XboxOne/RetroArch-XboxOne.appx
+            ./artifacts/RetroArch-SeriesConsoles/RetroArch-SeriesConsoles.appx
+            ./artifacts/RetroArch-XboxOne-AllCores/RetroArch-XboxOne-AllCores.appx
+            ./artifacts/RetroArch-SeriesConsoles-AllCores/RetroArch-SeriesConsoles-AllCores.appx
