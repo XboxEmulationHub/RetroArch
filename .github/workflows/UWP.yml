@@ -75,8 +75,23 @@ jobs:
         shell: pwsh
         run: |
           if ("${{ matrix.all_cores }}" -eq "true") {
-              curl.exe -L "https://buildbot.libretro.com/nightly/windows/x86_64/RetroArch_cores.7z" --output Cores.7z
-              7z e Cores.7z -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\"
+              $baseUrl = "https://buildbot.libretro.com/nightly/windows/x86_64/latest/"
+              $coresDir = "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\"
+              
+              # Scrape the directory listing for all .zip links
+              $page = Invoke-WebRequest -Uri $baseUrl -UseBasicParsing
+              $zipFiles = $page.Links |
+                  Where-Object { $_.href -match '\.zip$' } |
+                  Select-Object -ExpandProperty href
+              foreach ($zip in $zipFiles) {
+                  # hrefs are relative filenames on this server
+                  $fileName = [System.IO.Path]::GetFileName($zip)
+                  $url = $baseUrl + $fileName
+                  Write-Host "Downloading $fileName..."
+                  curl.exe -L $url --output $fileName --retry 3 --retry-delay 2
+                  7z e $fileName -o"$coresDir" -y
+                  Remove-Item $fileName
+              }
           }
           if ("${{ matrix.config }}" -eq "ReleaseANGLE") {
               curl.exe -L "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/Angle%20Cores.zip" --output Angle_Cores.zip
