@@ -1925,7 +1925,17 @@ static void menu_input_get_mouse_hw_state(
    hw_state->flags                 = 0;
 
    if (!menu_mouse_enable)
+   {
+      /* 'hw_state->flags' has just been zeroed, but the button
+       * edge detectors below are not reached on this path. Reset
+       * them to match, otherwise they retain the state from the
+       * last enabled frame and report a spurious change - and so
+       * a spurious MENU_INP_PTR_FLG_ACTIVE - once mouse input is
+       * re-enabled (e.g. when an overlay is dismissed) */
+      last_select_pressed = false;
+      last_cancel_pressed = false;
       return;
+   }
 
    joypad_info.joy_idx             = 0;
    joypad_info.auto_binds          = NULL;
@@ -2159,6 +2169,12 @@ static void menu_input_get_touchscreen_hw_state(
       hw_state->y       = 0;
       hw_state->flags  &= ~(MENU_INP_PTR_FLG_PRESS_SELECT
                           | MENU_INP_PTR_FLG_PRESS_CANCEL);
+      /* Keep the edge detectors in step with the cleared flags,
+       * otherwise they retain the state from the last enabled
+       * frame and report a spurious change once touch input is
+       * re-enabled (e.g. when an overlay is dismissed) */
+      last_select_pressed = false;
+      last_cancel_pressed = false;
       return;
    }
 
@@ -5135,10 +5151,15 @@ unsigned menu_event(
    static float delay_timer                        = 0.0f;
    static float delay_count                        = 0.0f;
    static unsigned ok_old                          = 0;
+   static uint8_t switch_old                       = 0;
+   static size_t ok_enum_idx                       = 0;
+   static bool keydown[RARCH_FIRST_CUSTOM_BIND]    = {false};
    static bool navigation_reset_delay              = true;
    static bool hold_initial                        = true;
    static bool hold_reset                          = true;
    unsigned ret                                    = MENU_ACTION_NOOP;
+   uint8_t switch_current                          = 0;
+   uint8_t switch_trigger                          = 0;
    bool set_scroll                                 = false;
    unsigned new_scroll_accel                       = 0;
    struct menu_state *menu_st                      = &menu_driver_state;
@@ -5207,6 +5228,24 @@ unsigned menu_event(
    if (menu_st->flags & MENU_ST_FLAG_BLOCK_ALL_INPUT)
    {
       ok_old                                       = ok_current;
+      switch_old                                   = BIT256_GET_PTR(p_input, RETRO_DEVICE_ID_JOYPAD_LEFT)
+                                                   | BIT256_GET_PTR(p_input, RETRO_DEVICE_ID_JOYPAD_RIGHT);
+      /* Reset the navigation auto-repeat state machine, not just
+       * its clock. A hold that spans the blocked interval would
+       * otherwise resume with 'hold_reset' still false and
+       * 'delay_count' already partway to 'delay_timer', so the
+       * first unblocked frame fires a repeat immediately - and it
+       * does so at the accumulated scroll acceleration, which
+       * menu_driver_ctl() turns into up to six entries per step.
+       * That is what makes the selection jump several places when
+       * the menu unblocks mid-hold. Treat the block as ending the
+       * hold: the next press starts from the initial delay again. */
+      last_time_us                                 = menu_st->current_time_us;
+      hold_reset                                   = true;
+      hold_initial                                 = true;
+      delay_count                                  = 0.0f;
+      navigation_initial                           = 0;
+      menu_st->scroll.acceleration                 = 0;
       return MENU_ACTION_NOOP;
    }
 
@@ -5343,6 +5382,16 @@ unsigned menu_event(
                                         | MENU_INP_PTR_FLG_PRESS_RIGHT);
       menu_input->select_inhibit      = true;
       menu_input->cancel_inhibit      = true;
+      switch_old                      = BIT256_GET_PTR(p_input, RETRO_DEVICE_ID_JOYPAD_LEFT)
+                                      | BIT256_GET_PTR(p_input, RETRO_DEVICE_ID_JOYPAD_RIGHT);
+      /* Reset the navigation auto-repeat state machine, for the
+       * same reason as the BLOCK_ALL_INPUT path above */
+      last_time_us                    = menu_st->current_time_us;
+      hold_reset                      = true;
+      hold_initial                    = true;
+      delay_count                     = 0.0f;
+      navigation_initial              = 0;
+      menu_st->scroll.acceleration    = 0;
       return MENU_ACTION_NOOP;
    }
 
@@ -5410,6 +5459,16 @@ unsigned menu_event(
 
    if (set_scroll)
       menu_st->scroll.acceleration  = new_scroll_accel;
+
+   /* Left/Right edge detection
+    * > Must be maintained regardless of the on-screen keyboard
+    *   state, otherwise 'switch_old' freezes for the duration of
+    *   the OSK session and a stale edge is emitted on the first
+    *   frame after it closes, bypassing the ST_BOOL debounce */
+   switch_current                   = BIT256_GET_PTR(p_input, RETRO_DEVICE_ID_JOYPAD_LEFT)
+                                    | BIT256_GET_PTR(p_input, RETRO_DEVICE_ID_JOYPAD_RIGHT);
+   switch_trigger                   = switch_current & ~switch_old;
+   switch_old                       = switch_current;
 
    if (display_kb)
    {
@@ -5521,16 +5580,8 @@ unsigned menu_event(
    }
    else
    {
-      static size_t ok_enum_idx = 0;
-      static uint8_t switch_old = 0;
-      static bool keydown[RARCH_FIRST_CUSTOM_BIND] = {false};
       unsigned onkeyup          =
             input_combo_type_onkeyup_lut[settings->uints.input_menu_toggle_gamepad_combo];
-      uint8_t switch_current    = BIT256_GET_PTR(p_input, RETRO_DEVICE_ID_JOYPAD_LEFT)
-                                | BIT256_GET_PTR(p_input, RETRO_DEVICE_ID_JOYPAD_RIGHT);
-      uint8_t switch_trigger    = switch_current & ~switch_old;
-
-      switch_old                = switch_current;
 
       /* Always process Select and Start on release */
       onkeyup |= (1 << RETRO_DEVICE_ID_JOYPAD_SELECT)
@@ -7604,7 +7655,20 @@ static int generic_menu_iterate(
       /* If pointer devices are disabled, just ensure mouse
        * cursor is hidden */
       if (menu_input->pointer.type == MENU_POINTER_DISABLED)
+      {
+         /* menu_input_post_iterate() is skipped here, so its
+          * 'last_*_pressed' edge detectors stop being updated
+          * while the hardware press flags are left untouched.
+          * Clear the flags so that the two cannot desynchronise
+          * and emit a phantom press/release once pointer input
+          * is re-enabled */
+         menu_st->input_pointer_hw_state.flags &=
+               ~(MENU_INP_PTR_FLG_PRESS_SELECT
+               | MENU_INP_PTR_FLG_PRESS_CANCEL
+               | MENU_INP_PTR_FLG_PRESS_LEFT
+               | MENU_INP_PTR_FLG_PRESS_RIGHT);
          ret = 0;
+      }
       else
          ret = menu_input_post_iterate(p_disp, menu_st, action,
                current_time);
