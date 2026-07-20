@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <math.h>
 
+#include <retro_atomic.h>
 #include <retro_inline.h>
 #include <string/stdstring.h>
 #include <retro_math.h>
@@ -639,6 +640,25 @@ static void *video_thread_get_ptr(video_driver_state_t *video_st)
    if (thr)
       return thr->driver_data;
    return NULL;
+}
+
+/* Content scale is computed by the viewport maths, which runs on the
+ * video thread when threading is active. Read the copy the worker
+ * publishes under its lock instead of racing video_driver_st. */
+static void video_thread_get_scale(video_driver_state_t *video_st,
+      unsigned *width, unsigned *height)
+{
+   thread_video_t *thr = (thread_video_t*)video_st->data;
+   if (!thr)
+   {
+      *width  = video_st->scale_width;
+      *height = video_st->scale_height;
+      return;
+   }
+   slock_lock(thr->lock);
+   *width  = thr->scale_width;
+   *height = thr->scale_height;
+   slock_unlock(thr->lock);
 }
 #endif
 
@@ -1266,10 +1286,9 @@ const char *video_display_server_get_ident(void)
 void* video_display_server_init(enum rarch_display_type type)
 {
    video_driver_state_t *video_st = &video_driver_st;
-   runloop_state_t *runloop_st    = runloop_state_get_ptr();
 
    /* Reuse when already and still running */
-   if (current_display_server && runloop_st->flags & RUNLOOP_FLAG_IS_INITED)
+   if (current_display_server && runloop_is_inited())
       return video_st->current_display_server_data;
    else
       video_display_server_destroy();
@@ -1649,24 +1668,13 @@ bool video_driver_is_threaded(void)
 bool *video_driver_get_threaded(void)
 {
    video_driver_state_t *video_st                 = &video_driver_st;
-#if defined(__MACH__) && defined(__APPLE__)
-   /* TODO/FIXME - force threaded video to disabled on Apple for now
-    * until NSWindow/UIWindow concurrency issues are taken care of */
-   video_st->threaded = false;
-#endif
    return &video_st->threaded;
 }
 
 void video_driver_set_threaded(bool val)
 {
    video_driver_state_t *video_st                 = &video_driver_st;
-#if defined(__MACH__) && defined(__APPLE__)
-   /* TODO/FIXME - force threaded video to disabled on Apple for now
-    * until NSWindow/UIWindow concurrency issues are taken care of */
-   video_st->threaded = false;
-#else
    video_st->threaded = val;
-#endif
 }
 
 const char *video_driver_get_ident(void)
@@ -1744,7 +1752,7 @@ void video_driver_filter_free(void)
 
    video_st->state_scale     = 0;
    video_st->state_out_bpp   = 0;
-   video_st->flags          &= ~(VIDEO_FLAG_STATE_OUT_RGB32);
+   video_driver_modify_disp_flags(0, VIDEO_FLAG_STATE_OUT_RGB32);
 }
 
 void video_driver_init_filter(enum retro_pixel_format colfmt_int,
@@ -1800,9 +1808,9 @@ void video_driver_init_filter(enum retro_pixel_format colfmt_int,
    video_st->state_scale     = maxsize / RARCH_SCALE_BASE;
    if (rarch_softfilter_get_output_format(
          video_st->state_filter) == RETRO_PIXEL_FORMAT_XRGB8888)
-      video_st->flags       |=  VIDEO_FLAG_STATE_OUT_RGB32;
+      video_driver_modify_disp_flags(VIDEO_FLAG_STATE_OUT_RGB32, 0);
    else
-      video_st->flags       &= ~VIDEO_FLAG_STATE_OUT_RGB32;
+      video_driver_modify_disp_flags(0, VIDEO_FLAG_STATE_OUT_RGB32);
 
    video_st->state_out_bpp   = (video_st->flags & VIDEO_FLAG_STATE_OUT_RGB32)
       ? sizeof(uint32_t) : sizeof(uint16_t);
@@ -1905,6 +1913,11 @@ void video_driver_free_internal(void)
    if (video_st->scaler_ptr)
       video_driver_pixel_converter_free(video_st->scaler_ptr);
    video_st->scaler_ptr = NULL;
+
+   if (video_st->pix10_convert_buf)
+      free(video_st->pix10_convert_buf);
+   video_st->pix10_convert_buf = NULL;
+   video_st->pix10_convert_cap = 0;
 #ifdef HAVE_VIDEO_FILTER
    video_driver_filter_free();
 #endif
@@ -2233,6 +2246,44 @@ void video_driver_set_viewport_core(void)
    float core_aspect = video_driver_get_core_aspect();
    if (core_aspect != 0)
       aspectratio_lut[ASPECT_RATIO_CORE].value = core_aspect;
+}
+
+/* Atomically set and/or clear bits of video_driver_st.flags under
+ * display_lock, the same lock video_driver_get_disp_flags() takes.
+ * Callers must not hold display_lock already; this is a leaf helper.
+ * A set/get pair around a |= would not do: the read-modify-write would
+ * straddle two separate critical sections. */
+void video_driver_modify_disp_flags(uint32_t set_bits, uint32_t clear_bits)
+{
+   video_driver_state_t *video_st = &video_driver_st;
+#ifdef HAVE_THREADS
+   if (video_st->display_lock)
+   {
+      slock_lock(video_st->display_lock);
+      video_st->flags = (video_st->flags & ~clear_bits) | set_bits;
+      slock_unlock(video_st->display_lock);
+      return;
+   }
+#endif
+   video_st->flags = (video_st->flags & ~clear_bits) | set_bits;
+}
+
+static retro_atomic_int_t video_cache_context_ack
+   = RETRO_ATOMIC_INT_INITIALIZER(0);
+
+void video_driver_cache_context_ack_set(void)
+{
+   retro_atomic_fetch_or_int(&video_cache_context_ack, 1);
+}
+
+bool video_driver_cache_context_ack_test(void)
+{
+   return retro_atomic_load_acquire_int(&video_cache_context_ack) != 0;
+}
+
+void video_driver_cache_context_ack_clear(void)
+{
+   retro_atomic_fetch_and_int(&video_cache_context_ack, 0);
 }
 
 uint32_t video_driver_get_disp_flags(void)
@@ -3076,6 +3127,44 @@ bool video_driver_is_hw_context(void)
    return video_st->hw_render.context_type != RETRO_HW_CONTEXT_NONE;
 }
 
+bool video_driver_render_context_is_main_thread_only(void)
+{
+#ifdef IOS
+   /* The iOS Cocoa GL/GLES backends ("gl", "glcore") render through a
+    * GLKView, whose drawable and backing CAEAGLLayer may only be touched
+    * on the main thread.  With threaded video, swap_buffers and the
+    * per-frame bindDrawable run on the video worker thread, which trips
+    * UIKit's "modifying properties of a view's layer off the main thread"
+    * assertion (the GLKView drawable is realized/resized from the layer
+    * lazily on whichever thread first binds it).  Veto threaded video for
+    * these drivers so all GL and UIKit work stays on the main thread, the
+    * way GLKit is designed to be driven.  Metal and Vulkan (CAMetalLayer
+    * via MoltenVK) do not use GLKView and are unaffected. */
+   video_driver_state_t *video_st = &video_driver_st;
+   const video_driver_t *vid      = video_st->current_video;
+   const char           *ident    = NULL;
+   if (!vid)
+      return false;
+   /* Read the underlying driver ident directly.  Mirror
+    * video_driver_get_ident() but key off VIDEO_FLAG_THREAD_WRAPPER_ACTIVE
+    * rather than VIDEO_DRIVER_IS_THREADED_INTERNAL, since that macro calls
+    * back into this predicate and would recurse. */
+#ifdef HAVE_THREADS
+   if (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE)
+   {
+      const thread_video_t *thr = (const thread_video_t*)video_st->data;
+      ident = (thr && thr->driver) ? thr->driver->ident : NULL;
+   }
+   else
+#endif
+      ident = vid->ident;
+   if (ident && (string_is_equal(ident, "gl")
+              || string_is_equal(ident, "glcore")))
+      return true;
+#endif /* IOS */
+   return false;
+}
+
 /* Drops cached, core-owned GPU resource references from the active
  * video driver. Safe to call unconditionally; cheap when no HW context
  * is active or when the driver does not implement the hook. */
@@ -3211,6 +3300,14 @@ bool video_driver_texture_load(void *data,
     * (or that declined the threaded upload), then take the normal upload. */
    if (ti && ti->compressed && !ti->pixels)
       image_texture_realize_rgba(ti);
+
+   /* A 10-bit (XRGB2101010) texture is only kept for drivers that advertise
+    * native 10-bit source support; otherwise narrow to 8-bit ARGB8888 before
+    * upload so the driver's ordinary 8-bit path stays correct. */
+   if (     ti
+         && ti->pix10
+         && !video_driver_test_all_flags(GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE))
+      image_texture_narrow_10bit(ti);
 
    *id = poke->load_texture(video_st->data, data, threaded, filter_type);
    return true;
@@ -3416,6 +3513,30 @@ void video_driver_cached_frame_invalidate(void)
    cached_frame_lock_release();
 }
 
+bool video_driver_cached_frame_invalidate_if(
+      void *userdata,
+      bool (*predicate)(void *userdata, const void *data))
+{
+   bool invalidated = false;
+
+   if (!predicate)
+      return false;
+
+   cached_frame_lock_acquire();
+   if (     frame_cache_data
+         && predicate(userdata, frame_cache_data))
+   {
+      frame_cache_data   = NULL;
+      frame_cache_width  = 0;
+      frame_cache_height = 0;
+      frame_cache_pitch  = 0;
+      invalidated        = true;
+   }
+   cached_frame_lock_release();
+
+   return invalidated;
+}
+
 bool video_driver_has_focus(void)
 {
    video_driver_state_t *video_st = &video_driver_st;
@@ -3428,7 +3549,7 @@ size_t video_driver_get_window_title(char *s, size_t len)
    if (s && (video_st->flags & VIDEO_FLAG_WINDOW_TITLE_UPDATE))
    {
       size_t n = strlcpy(s, video_st->window_title, len);
-      video_st->flags &= ~VIDEO_FLAG_WINDOW_TITLE_UPDATE;
+      video_driver_modify_disp_flags(0, VIDEO_FLAG_WINDOW_TITLE_UPDATE);
       if (n >= len)
          return len ? len - 1 : 0;
       return n;
@@ -3450,7 +3571,7 @@ void video_driver_update_title(void *data)
          window->set_title((void*)video_st->display_userdata, video_st->window_title);
          strlcpy(video_st->window_title_prev, video_st->window_title, sizeof(video_st->window_title_prev));
       }
-      video_st->flags &= ~VIDEO_FLAG_WINDOW_TITLE_UPDATE;
+      video_driver_modify_disp_flags(0, VIDEO_FLAG_WINDOW_TITLE_UPDATE);
    }
 #endif
 }
@@ -3554,8 +3675,17 @@ void video_driver_build_info(video_frame_info_t *video_info)
 
    video_info->width                       = video_st->width;
    video_info->height                      = video_st->height;
-   video_info->scale_width                 = video_st->scale_width;
-   video_info->scale_height                = video_st->scale_height;
+#ifdef HAVE_THREADS
+   if (  VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
+       && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE))
+      video_thread_get_scale(video_st,
+            &video_info->scale_width, &video_info->scale_height);
+   else
+#endif
+   {
+      video_info->scale_width              = video_st->scale_width;
+      video_info->scale_height             = video_st->scale_height;
+   }
 
    video_info->shader_active               = !(menu_shdr_flags & SHDR_FLAG_DISABLED) ? true : false;
    video_info->hdr_mode                    = settings->uints.video_hdr_mode;
@@ -3778,7 +3908,7 @@ bool video_context_driver_get_flags(gfx_ctx_flags_t *flags)
          if (video_st->flags & VIDEO_FLAG_DEFERRED_VIDEO_CTX_DRIVER_SET_FLAGS)
          {
             flags->flags     = video_st->deferred_flag_data.flags;
-            video_st->flags &= ~VIDEO_FLAG_DEFERRED_VIDEO_CTX_DRIVER_SET_FLAGS;
+            video_driver_modify_disp_flags(0, VIDEO_FLAG_DEFERRED_VIDEO_CTX_DRIVER_SET_FLAGS);
          }
          else
             flags->flags     = ctx->get_flags(ctx_data);
@@ -3833,7 +3963,7 @@ bool video_context_driver_set_flags(gfx_ctx_flags_t *flags)
    if (!ctx->set_flags)
    {
       video_st->deferred_flag_data.flags  = flags->flags;
-      video_st->flags |= VIDEO_FLAG_DEFERRED_VIDEO_CTX_DRIVER_SET_FLAGS;
+      video_driver_modify_disp_flags(VIDEO_FLAG_DEFERRED_VIDEO_CTX_DRIVER_SET_FLAGS, 0);
       return false;
    }
 
@@ -4187,20 +4317,41 @@ bool video_driver_init_internal(bool *video_is_threaded, bool verbosity_enabled)
    video.font_enable                 = settings->bools.video_font_enable;
    video.font_size                   = settings->floats.video_font_size;
    video.path_font                   = settings->paths.path_font;
+   /* Both XRGB8888 and XRGB2101010 sources are 32-bit; the latter is
+    * down-converted to XRGB8888 before the driver sees it (until a driver
+    * gains native 10-bit support), so from the driver's perspective it is a
+    * 32-bit frame either way. */
 #ifdef HAVE_VIDEO_FILTER
    video.rgb32                       = video_st->state_filter
          ? (video_st->flags & VIDEO_FLAG_STATE_OUT_RGB32)
-         : (video_driver_pix_fmt == RETRO_PIXEL_FORMAT_XRGB8888);
+         : (video_driver_pix_fmt == RETRO_PIXEL_FORMAT_XRGB8888
+         || video_driver_pix_fmt == RETRO_PIXEL_FORMAT_XRGB2101010
+         || video_driver_pix_fmt == RETRO_PIXEL_FORMAT_HDR10_2101010);
 #else
    video.rgb32                       =
-         (video_driver_pix_fmt == RETRO_PIXEL_FORMAT_XRGB8888);
+         (video_driver_pix_fmt == RETRO_PIXEL_FORMAT_XRGB8888
+         || video_driver_pix_fmt == RETRO_PIXEL_FORMAT_XRGB2101010
+         || video_driver_pix_fmt == RETRO_PIXEL_FORMAT_HDR10_2101010);
 #endif
+   /* A native 10-bit source is only presented to drivers that advertise
+    * support; otherwise it has already been down-converted to XRGB8888 in
+    * video_driver_frame and must not be flagged as 10-bit here. */
+   /* Both 10-bit formats share the packed 2-10-10-10 upload; they differ
+    * only in how the samples are interpreted downstream.  HDR10 is refused
+    * outright unless the driver can present it (see SET_PIXEL_FORMAT), so it
+    * needs no capability test here. */
+   video.source_10bit                =
+         (   (video_driver_pix_fmt == RETRO_PIXEL_FORMAT_XRGB2101010)
+          && video_driver_test_all_flags(GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE))
+         || (video_driver_pix_fmt == RETRO_PIXEL_FORMAT_HDR10_2101010);
+   video.source_hdr10                =
+         (video_driver_pix_fmt == RETRO_PIXEL_FORMAT_HDR10_2101010);
    video.parent                      = 0;
 
    if (video.fullscreen)
-      video_st->flags |=  VIDEO_FLAG_STARTED_FULLSCREEN;
+      video_driver_modify_disp_flags(VIDEO_FLAG_STARTED_FULLSCREEN, 0);
    else
-      video_st->flags &= ~VIDEO_FLAG_STARTED_FULLSCREEN;
+      video_driver_modify_disp_flags(0, VIDEO_FLAG_STARTED_FULLSCREEN);
 
    /* Reset video frame count */
    video_st->frame_count             = 0;
@@ -4350,6 +4501,57 @@ bool video_driver_init_internal(bool *video_is_threaded, bool verbosity_enabled)
    return true;
 }
 
+/* Down-convert an XRGB2101010 source frame to XRGB8888 in place of a scratch
+ * buffer, used when the active video driver cannot present a native 10-bit
+ * source surface. Each channel is narrowed 10 -> 8 bits by taking the high 8
+ * bits (>> 2), which matches the truncation a core would otherwise apply
+ * itself. Returns the scratch buffer and its tight stride, or NULL on
+ * allocation failure (in which case the caller leaves the frame untouched).
+ * The packed layout is bits [29:20]=R, [19:10]=G, [9:0]=B, 2 ignored high
+ * bits; output is 0xFFRRGGBB (XRGB8888, native endian). */
+static const void *video_driver_convert_xrgb2101010(
+      video_driver_state_t *video_st,
+      const void *data, unsigned width, unsigned height,
+      size_t in_pitch, size_t *out_pitch)
+{
+   unsigned x, y;
+   const uint8_t *src_row = (const uint8_t*)data;
+   uint32_t      *dst;
+   size_t         needed  = (size_t)width * height;
+
+   if (video_st->pix10_convert_cap < needed)
+   {
+      uint32_t *buf = (uint32_t*)realloc(video_st->pix10_convert_buf,
+            needed * sizeof(uint32_t));
+      if (!buf)
+         return NULL;
+      video_st->pix10_convert_buf = buf;
+      video_st->pix10_convert_cap = needed;
+   }
+
+   dst = video_st->pix10_convert_buf;
+   for (y = 0; y < height; y++)
+   {
+      const uint32_t *src = (const uint32_t*)src_row;
+      for (x = 0; x < width; x++)
+      {
+         uint32_t p = src[x];
+         uint32_t r = (p >> 20) & 0x3ff;
+         uint32_t g = (p >> 10) & 0x3ff;
+         uint32_t b =  p        & 0x3ff;
+         dst[x]     = 0xff000000u
+                    | ((r >> 2) << 16)
+                    | ((g >> 2) <<  8)
+                    |  (b >> 2);
+      }
+      dst     += width;
+      src_row += in_pitch;
+   }
+
+   *out_pitch = (size_t)width * sizeof(uint32_t);
+   return video_st->pix10_convert_buf;
+}
+
 void video_driver_frame(const void *data, unsigned width,
       unsigned height, size_t pitch)
 {
@@ -4421,6 +4623,27 @@ void video_driver_frame(const void *data, unsigned width,
             data, width, height, pitch);
       data                = video_st->scaler_ptr->scaler_out;
       pitch               = video_st->scaler_ptr->scaler->out_stride;
+   }
+
+   /* XRGB2101010 fallback: if the active video driver cannot present a native
+    * 10-bit source surface, transparently narrow to XRGB8888 before the driver
+    * sees the frame. A driver that advertises GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE
+    * takes the packed 10-bit frame directly and this branch is skipped. */
+   if (
+            (video_driver_pix_fmt == RETRO_PIXEL_FORMAT_XRGB2101010)
+         && data
+         && (data != RETRO_HW_FRAME_BUFFER_VALID)
+         && !video_driver_test_all_flags(GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE)
+      )
+   {
+      size_t      conv_pitch = pitch;
+      const void *converted  = video_driver_convert_xrgb2101010(
+            video_st, data, width, height, pitch, &conv_pitch);
+      if (converted)
+      {
+         data  = converted;
+         pitch = conv_pitch;
+      }
    }
 
    video_driver_build_info(&video_info);
@@ -4700,7 +4923,7 @@ void video_driver_frame(const void *data, unsigned width,
 
          curr_time                  = new_time;
          video_st->window_title_len = __len;
-         video_st->flags           |= VIDEO_FLAG_WINDOW_TITLE_UPDATE;
+         video_driver_modify_disp_flags(VIDEO_FLAG_WINDOW_TITLE_UPDATE, 0);
       }
    }
    else
@@ -4714,7 +4937,7 @@ void video_driver_frame(const void *data, unsigned width,
 
       status_text[0] = '\0';
 
-      video_st->flags |= VIDEO_FLAG_WINDOW_TITLE_UPDATE;
+      video_driver_modify_disp_flags(VIDEO_FLAG_WINDOW_TITLE_UPDATE, 0);
    }
 
    /* Add core status message to status text */
@@ -4971,6 +5194,7 @@ void video_driver_frame(const void *data, unsigned width,
       video_info.osd_stat_params.drop_alpha  = 0.9f;
       video_info.osd_stat_params.color       = COLOR_ABGR(
             alpha, blue, green, red);
+      video_info.osd_stat_params.color_hp    = NULL;
 
       audio_compute_buffer_statistics(&audio_stats);
 
@@ -5111,9 +5335,9 @@ void video_driver_frame(const void *data, unsigned width,
                ? ""
                : video_driver_msg,
                &video_info))
-         video_st->flags |=  VIDEO_FLAG_ACTIVE;
+         video_driver_modify_disp_flags(VIDEO_FLAG_ACTIVE, 0);
       else
-         video_st->flags &= ~VIDEO_FLAG_ACTIVE;
+         video_driver_modify_disp_flags(0, VIDEO_FLAG_ACTIVE);
    }
 
    video_st->frame_count++;
@@ -5173,7 +5397,7 @@ void video_driver_frame(const void *data, unsigned width,
       unsigned native_width     = width;
       bool dynamic_super_width  = false;
 
-      video_st->flags          |= VIDEO_FLAG_CRT_SWITCHING_ACTIVE;
+      video_driver_modify_disp_flags(VIDEO_FLAG_CRT_SWITCHING_ACTIVE, 0);
 
       switch (video_info.crt_switch_resolution_super)
       {
@@ -5207,7 +5431,7 @@ void video_driver_frame(const void *data, unsigned width,
    }
    else if (!video_info.crt_switch_resolution)
 #endif
-      video_st->flags          &= ~VIDEO_FLAG_CRT_SWITCHING_ACTIVE;
+      video_driver_modify_disp_flags(0, VIDEO_FLAG_CRT_SWITCHING_ACTIVE);
 
    if (video_info.scanline_sync && !video_info.input_driver_nonblock_state)
       video_driver_scanline_after_frame(video_st,
@@ -5242,12 +5466,12 @@ void video_driver_reinit(int flags)
          VIDEO_DRIVER_GET_HW_CONTEXT_INTERNAL(video_st);
 
    if (hwr->cache_context != false)
-      video_st->flags                     |=  VIDEO_FLAG_CACHE_CONTEXT;
+      video_driver_modify_disp_flags(VIDEO_FLAG_CACHE_CONTEXT, 0);
    else
-      video_st->flags                     &= ~VIDEO_FLAG_CACHE_CONTEXT;
-   video_st->flags                        &= ~VIDEO_FLAG_CACHE_CONTEXT_ACK;
+      video_driver_modify_disp_flags(0, VIDEO_FLAG_CACHE_CONTEXT);
+   video_driver_cache_context_ack_clear();
    video_driver_reinit_context(settings, flags);
-   video_st->flags                        &= ~VIDEO_FLAG_CACHE_CONTEXT;
+   video_driver_modify_disp_flags(0, VIDEO_FLAG_CACHE_CONTEXT);
 
    video_st->window_title_prev[0]          = '\0';
 }

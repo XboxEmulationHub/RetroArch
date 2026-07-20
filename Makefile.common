@@ -2004,8 +2004,16 @@ endif
 # Compression/Archive
 
 OBJ += $(LIBRETRO_COMM_DIR)/file/archive_file.o \
+       $(LIBRETRO_COMM_DIR)/file/archive_file_zlib.o \
        $(LIBRETRO_COMM_DIR)/streams/trans_stream.o \
-       $(LIBRETRO_COMM_DIR)/streams/trans_stream_pipe.o
+       $(LIBRETRO_COMM_DIR)/streams/trans_stream_pipe.o \
+       $(LIBRETRO_COMM_DIR)/encodings/encoding_deflate.o \
+       $(LIBRETRO_COMM_DIR)/streams/trans_stream_deflate.o \
+       $(LIBRETRO_COMM_DIR)/streams/rzip_stream.o
+
+# The ZIP archive backend decodes DEFLATE through the built-in inflate when
+# zlib is not present, so ZIP/APK extraction is always available.
+HAVE_COMPRESSION = 1
 
 ifeq ($(HAVE_7ZIP),1)
    INCLUDE_DIRS += -I$(DEPS_DIR)/7zip
@@ -2072,6 +2080,11 @@ ifneq ($(HAVE_RMP3),1)
 endif
 endif
 endif
+endif
+
+ifeq ($(HAVE_RAAC), 1)
+   DEFINES += -DHAVE_RAAC
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/aac/raac.o
 endif
 
 ifeq ($(HAVE_ROPUS), 1)
@@ -2153,9 +2166,7 @@ else ifeq ($(HAVE_ZLIB),1)
 endif
 
 ifeq ($(HAVE_ZLIB_COMMON), 1)
-   OBJ += $(LIBRETRO_COMM_DIR)/file/archive_file_zlib.o \
-          $(LIBRETRO_COMM_DIR)/streams/trans_stream_zlib.o \
-          $(LIBRETRO_COMM_DIR)/streams/rzip_stream.o
+   OBJ += $(LIBRETRO_COMM_DIR)/streams/trans_stream_zlib.o
    DEFINES += -DHAVE_ZLIB
    HAVE_COMPRESSION = 1
 
@@ -2326,12 +2337,35 @@ endif
 
 ifeq ($(HAVE_RWEBM), 1)
    DEFINES += -DHAVE_RWEBM
-   OBJ += $(LIBRETRO_COMM_DIR)/formats/webm/rwebm.o
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/webm/rwebm.o \
+          $(LIBRETRO_COMM_DIR)/formats/webm/rwebm_video.o \
+          $(LIBRETRO_COMM_DIR)/formats/webm/rwebm_audio.o
+ifneq ($(HAVE_RWEBP), 1)
+   # rwebm_video decodes VP8 tracks with rvp8, normally built with RWEBP
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/vp8/rvp8.o
+endif
+endif
+
+ifeq ($(HAVE_RMP4), 1)
+   DEFINES += -DHAVE_RMP4
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/mp4/rmp4.o \
+          $(LIBRETRO_COMM_DIR)/formats/mp4/rmp4_video.o \
+          $(LIBRETRO_COMM_DIR)/formats/mp4/rmp4_audio.o \
+          $(LIBRETRO_COMM_DIR)/formats/h264/rh264.o
+ifneq ($(HAVE_RWEBP), 1)
+ifneq ($(HAVE_RWEBM), 1)
+   # rmp4_video decodes VP8 tracks with rvp8, normally built with RWEBP
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/vp8/rvp8.o
+endif
+endif
 endif
 
 ifeq ($(HAVE_RVP9), 1)
    DEFINES += -DHAVE_RVP9
    OBJ += $(LIBRETRO_COMM_DIR)/formats/vp9/rvp9.o
+   # Shared 10-bit / HDR I420->RGB blits, used by both the webm and mp4
+   # rvp9 paths; kept demuxer-independent so neither has to link the other.
+   OBJ += $(LIBRETRO_COMM_DIR)/formats/image/image_hdr_blit.o
 endif
 
 ifeq ($(HAVE_WEBMPLAYER), 1)

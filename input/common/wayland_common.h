@@ -156,6 +156,12 @@ typedef struct data_offer_ctx
   enum wl_data_device_manager_dnd_action supported_actions;
 } data_offer_ctx;
 
+/* Per-backend hook invoked from the common shell-surface configure
+ * handlers, between the shared configure processing and the clearing
+ * of 'configured'.  EGL uses it to resize/create the wl_egl_window;
+ * Vulkan needs no additional action and passes NULL. */
+typedef void (*driver_configure_handler_t)(struct gfx_ctx_wayland_data *wl);
+
 typedef struct gfx_ctx_wayland_data
 {
 #ifdef HAVE_EGL
@@ -260,7 +266,23 @@ typedef struct gfx_ctx_wayland_data
    bool maximized;
    bool resize;
    bool configured;
+   bool suspended;
    bool ignore_configuration;
+   driver_configure_handler_t driver_configure_handler;
+   /* State from xdg_toplevel.configure, held until the compositor's
+    * xdg_surface.configure marks it current (xdg-shell latching). */
+   struct
+   {
+      int32_t width;
+      int32_t height;
+      bool fullscreen;
+      bool maximized;
+      bool resizing;
+      bool activated;
+      bool floating;
+      bool suspended;
+      bool pending;
+   } cfg_pending;
    bool activated;
    bool reported_display_size;
    bool swap_complete;

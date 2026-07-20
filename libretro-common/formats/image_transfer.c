@@ -41,6 +41,13 @@
 #ifdef HAVE_RWEBP
 #include <formats/rwebp.h>
 #endif
+
+#ifdef HAVE_RWEBM
+#include <formats/rwebm_video.h>
+#endif
+#ifdef HAVE_RMP4
+#include <formats/rmp4_video.h>
+#endif
 #ifdef HAVE_RDDS
 #include <formats/rdds.h>
 #endif
@@ -78,6 +85,16 @@ void image_transfer_free(void *data, enum image_type_enum type)
       case IMAGE_TYPE_WEBP:
 #ifdef HAVE_RWEBP
          rwebp_free((rwebp_t*)data);
+#endif
+         break;
+      case IMAGE_TYPE_WEBM:
+#ifdef HAVE_RWEBM
+         rwebm_video_free((rwebm_video_t*)data);
+#endif
+         break;
+      case IMAGE_TYPE_MP4:
+#ifdef HAVE_RMP4
+         rmp4_video_free((rmp4_video_t*)data);
 #endif
          break;
       case IMAGE_TYPE_DDS:
@@ -121,6 +138,18 @@ void *image_transfer_new(enum image_type_enum type)
       case IMAGE_TYPE_WEBP:
 #ifdef HAVE_RWEBP
          return rwebp_alloc();
+#else
+         break;
+#endif
+      case IMAGE_TYPE_WEBM:
+#ifdef HAVE_RWEBM
+         return rwebm_video_alloc();
+#else
+         break;
+#endif
+      case IMAGE_TYPE_MP4:
+#ifdef HAVE_RMP4
+         return rmp4_video_alloc();
 #else
          break;
 #endif
@@ -168,6 +197,10 @@ bool image_transfer_start(void *data, enum image_type_enum type)
          return true;
       case IMAGE_TYPE_WEBP:
          return true;
+      case IMAGE_TYPE_WEBM:
+         return true;
+      case IMAGE_TYPE_MP4:
+         return true;
       case IMAGE_TYPE_DDS:
 #ifdef HAVE_RDDS
          return true;
@@ -208,6 +241,10 @@ bool image_transfer_is_valid(
       case IMAGE_TYPE_BMP:
          return true;
       case IMAGE_TYPE_WEBP:
+         return true;
+      case IMAGE_TYPE_WEBM:
+         return true;
+      case IMAGE_TYPE_MP4:
          return true;
       case IMAGE_TYPE_DDS:
 #ifdef HAVE_RDDS
@@ -253,6 +290,16 @@ void image_transfer_set_buffer_ptr(
       case IMAGE_TYPE_WEBP:
 #ifdef HAVE_RWEBP
          rwebp_set_buf_ptr((rwebp_t*)data, (uint8_t*)ptr, len);
+#endif
+         break;
+      case IMAGE_TYPE_WEBM:
+#ifdef HAVE_RWEBM
+         rwebm_video_set_buf_ptr((rwebm_video_t*)data, (uint8_t*)ptr, len);
+#endif
+         break;
+      case IMAGE_TYPE_MP4:
+#ifdef HAVE_RMP4
+         rmp4_video_set_buf_ptr((rmp4_video_t*)data, (uint8_t*)ptr, len);
 #endif
          break;
       case IMAGE_TYPE_DDS:
@@ -312,6 +359,22 @@ int image_transfer_process(
       case IMAGE_TYPE_WEBP:
 #ifdef HAVE_RWEBP
          ret = rwebp_process_image((rwebp_t*)data,
+               (void**)buf, len, width, height, supports_rgba);
+         break;
+#else
+         break;
+#endif
+      case IMAGE_TYPE_WEBM:
+#ifdef HAVE_RWEBM
+         ret = rwebm_video_process_image((rwebm_video_t*)data,
+               (void**)buf, len, width, height, supports_rgba);
+         break;
+#else
+         break;
+#endif
+      case IMAGE_TYPE_MP4:
+#ifdef HAVE_RMP4
+         ret = rmp4_video_process_image((rmp4_video_t*)data,
                (void**)buf, len, width, height, supports_rgba);
          break;
 #else
@@ -420,6 +483,58 @@ bool image_transfer_get_gpu_layout(
    return false;
 }
 
+/* Report whether the last processed frame was written as packed XRGB2101010
+ * (10-bit) rather than 8-bit RGBA. Only the video decoders can produce this,
+ * and only for 10-bit HDR sources. */
+/* Ask a video decoder to emit packed XRGB2101010 for 10-bit HDR sources.
+ * Only the video types honour it; still images ignore it. */
+void image_transfer_set_want_10bit(void *data, enum image_type_enum type,
+      int want)
+{
+   switch (type)
+   {
+#ifdef HAVE_RPNG
+      case IMAGE_TYPE_PNG:
+         rpng_set_want_10bit((rpng_t*)data, want);
+         break;
+#endif
+#ifdef HAVE_RWEBM
+      case IMAGE_TYPE_WEBM:
+         rwebm_video_set_want_10bit((rwebm_video_t*)data, want);
+         break;
+#endif
+#ifdef HAVE_RMP4
+      case IMAGE_TYPE_MP4:
+         rmp4_video_set_want_10bit((rmp4_video_t*)data, want);
+         break;
+#endif
+      default:
+         break;
+   }
+}
+
+bool image_transfer_is_10bit(void *data, enum image_type_enum type)
+{
+   switch (type)
+   {
+#ifdef HAVE_RPNG
+      case IMAGE_TYPE_PNG:
+         return rpng_is_10bit((const rpng_t*)data);
+#endif
+#ifdef HAVE_RWEBM
+      case IMAGE_TYPE_WEBM:
+         return rwebm_video_is_10bit((const rwebm_video_t*)data);
+#endif
+#ifdef HAVE_RMP4
+      case IMAGE_TYPE_MP4:
+         return rmp4_video_is_10bit((const rmp4_video_t*)data);
+#endif
+      default:
+         break;
+   }
+   return false;
+}
+
 bool image_transfer_iterate(void *data, enum image_type_enum type)
 {
 
@@ -447,6 +562,10 @@ bool image_transfer_iterate(void *data, enum image_type_enum type)
          return false;
       case IMAGE_TYPE_WEBP:
          return false;
+      case IMAGE_TYPE_WEBM:
+         return false;
+      case IMAGE_TYPE_MP4:
+         return false;
       case IMAGE_TYPE_DDS:
 #ifdef HAVE_RDDS
          return false;
@@ -461,9 +580,10 @@ bool image_transfer_iterate(void *data, enum image_type_enum type)
 }
 
 /* ===== Animation ===== *
- * Currently only WEBP supports animation. These helpers return NULL /
- * false for every other image type, so callers may attempt animation
- * unconditionally and fall back to the still-image path. */
+ * WEBP (animated) and WEBM (video track) support animation. These
+ * helpers return NULL / false for every other image type, so callers
+ * may attempt animation unconditionally and fall back to the
+ * still-image path. */
 
 void *image_transfer_anim_new(void *buf, size_t len,
       enum image_type_enum type)
@@ -559,6 +679,18 @@ void *image_transfer_anim_stream_new(void *buf, size_t len,
 #else
          break;
 #endif
+      case IMAGE_TYPE_WEBM:
+#ifdef HAVE_RWEBM
+         return rwebm_video_stream_open((const uint8_t*)buf, len);
+#else
+         break;
+#endif
+      case IMAGE_TYPE_MP4:
+#ifdef HAVE_RMP4
+         return rmp4_video_stream_open((const uint8_t*)buf, len);
+#else
+         break;
+#endif
       default:
          break;
    }
@@ -575,6 +707,16 @@ void image_transfer_anim_stream_free(void *stream,
          rwebp_anim_stream_close((rwebp_anim_stream_t*)stream);
 #endif
          break;
+      case IMAGE_TYPE_WEBM:
+#ifdef HAVE_RWEBM
+         rwebm_video_stream_close((rwebm_video_stream_t*)stream);
+#endif
+         break;
+      case IMAGE_TYPE_MP4:
+#ifdef HAVE_RMP4
+         rmp4_video_stream_close((rmp4_video_stream_t*)stream);
+#endif
+         break;
       default:
          break;
    }
@@ -589,6 +731,18 @@ void image_transfer_anim_stream_get_info(void *stream,
       case IMAGE_TYPE_WEBP:
 #ifdef HAVE_RWEBP
          rwebp_anim_stream_get_info((const rwebp_anim_stream_t*)stream,
+               width, height, num_frames, loop_count);
+#endif
+         break;
+      case IMAGE_TYPE_WEBM:
+#ifdef HAVE_RWEBM
+         rwebm_video_stream_get_info((const rwebm_video_stream_t*)stream,
+               width, height, num_frames, loop_count);
+#endif
+         break;
+      case IMAGE_TYPE_MP4:
+#ifdef HAVE_RMP4
+         rmp4_video_stream_get_info((const rmp4_video_stream_t*)stream,
                width, height, num_frames, loop_count);
 #endif
          break;
@@ -609,6 +763,20 @@ const uint32_t *image_transfer_anim_stream_next(void *stream,
 #else
          break;
 #endif
+      case IMAGE_TYPE_WEBM:
+#ifdef HAVE_RWEBM
+         return rwebm_video_stream_next((rwebm_video_stream_t*)stream,
+               duration_ms);
+#else
+         break;
+#endif
+      case IMAGE_TYPE_MP4:
+#ifdef HAVE_RMP4
+         return rmp4_video_stream_next((rmp4_video_stream_t*)stream,
+               duration_ms);
+#else
+         break;
+#endif
       default:
          break;
    }
@@ -623,6 +791,16 @@ void image_transfer_anim_stream_rewind(void *stream,
       case IMAGE_TYPE_WEBP:
 #ifdef HAVE_RWEBP
          rwebp_anim_stream_rewind((rwebp_anim_stream_t*)stream);
+#endif
+         break;
+      case IMAGE_TYPE_WEBM:
+#ifdef HAVE_RWEBM
+         rwebm_video_stream_rewind((rwebm_video_stream_t*)stream);
+#endif
+         break;
+      case IMAGE_TYPE_MP4:
+#ifdef HAVE_RMP4
+         rmp4_video_stream_rewind((rmp4_video_stream_t*)stream);
 #endif
          break;
       default:

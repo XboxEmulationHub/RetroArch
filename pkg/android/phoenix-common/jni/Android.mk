@@ -121,6 +121,7 @@ DEFINES += -DRARCH_MOBILE \
 	   -DHAVE_RTGA \
 	   -DINLINE=inline \
 	   -DHAVE_THREADS \
+	   -DHAVE_THREAD_STORAGE \
 	   -D__LIBRETRO__ \
 	   -DHAVE_RSOUND \
 	   -DHAVE_NETWORKGAMEPAD \
@@ -251,6 +252,16 @@ ifneq ($(SANITIZER),)
    LOCAL_CFLAGS   += -g -fsanitize=$(SANITIZER) -fno-omit-frame-pointer
    LOCAL_CPPFLAGS += -g -fsanitize=$(SANITIZER) -fno-omit-frame-pointer
    LOCAL_LDFLAGS  += -fsanitize=$(SANITIZER)
+endif
+
+ifneq ($(PLAY_STORE_BUILD),1)
+   ifeq ($(TARGET_ARCH_ABI),arm64-v8a)
+      LOCAL_LDFLAGS += -Wl,-z,max-page-size=4096
+   endif
+
+   ifeq ($(TARGET_ARCH_ABI),x86_64)
+      LOCAL_LDFLAGS += -Wl,-z,max-page-size=4096
+   endif
 endif
 
 include $(BUILD_SHARED_LIBRARY)

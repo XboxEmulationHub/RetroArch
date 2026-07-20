@@ -116,6 +116,12 @@ DXGI_FORMAT* dxgi_get_format_fallback_list(DXGI_FORMAT format)
                                           DXGI_FORMAT_UNKNOWN };
          return formats;
       }
+      case DXGI_FORMAT_R10G10B10A2_UNORM:
+      {
+         static DXGI_FORMAT formats[] = { DXGI_FORMAT_R10G10B10A2_UNORM,
+                                          DXGI_FORMAT_UNKNOWN };
+         return formats;
+      }
       case DXGI_FORMAT_EX_A4R4G4B4_UNORM:
       case DXGI_FORMAT_B4G4R4A4_UNORM:
       {
@@ -2407,6 +2413,46 @@ void dxgi_copy(
          break;
       }
 
+      case DXGI_FORMAT_R10G10B10A2_UNORM:
+      {
+         /* Native 10-bit source. The ABI's XRGB2101010 packs R in bits
+          * [29:20], G in [19:10], B in [9:0]; DXGI_FORMAT_R10G10B10A2_UNORM
+          * expects R in the LOW 10 bits and B in the high 10 bits, so R and B
+          * must be swapped during the copy (there is no B-first 10-bit DXGI
+          * format). Alpha is forced opaque (3 = max for a 2-bit channel). */
+         switch ((unsigned)dst_format)
+         {
+            case DXGI_FORMAT_R10G10B10A2_UNORM:
+            {
+               const UINT32* src_ptr = (const UINT32*)src_data;
+               UINT32*       dst_ptr = (UINT32*)dst_data;
+               int sp = src_pitch;
+               int dp = dst_pitch;
+               if (sp)
+                  sp -= width * sizeof(*src_ptr);
+               if (dp)
+                  dp -= width * sizeof(*dst_ptr);
+               for (i = 0; i < height; i++)
+               {
+                  for (j = 0; j < width; j++)
+                  {
+                     UINT32 src_val = *src_ptr++;
+                     unsigned r = (src_val >> 20) & 0x3ff;
+                     unsigned g = (src_val >> 10) & 0x3ff;
+                     unsigned b =  src_val        & 0x3ff;
+                     *dst_ptr++ = r | (g << 10) | (b << 20) | (0x3u << 30);
+                  }
+                  src_ptr = (UINT32*)((UINT8*)src_ptr + sp);
+                  dst_ptr = (UINT32*)((UINT8*)dst_ptr + dp);
+               }
+               break;
+            }
+            default:
+               break;
+         }
+         break;
+      }
+
       default:
          break;
    }
@@ -2562,14 +2608,9 @@ bool dxgi_check_display_hdr_support(DXGIFactory1 factory, HWND hwnd)
 #endif
    {
       UINT i = 0;
-#ifdef __cplusplus
-      while (  dxgi_adapter->EnumOutputs(i, &current_output)
-            != DXGI_ERROR_NOT_FOUND)
-#else
-      while (  dxgi_adapter->lpVtbl->EnumOutputs(dxgi_adapter, i, &current_output)
-            != DXGI_ERROR_NOT_FOUND)
-#endif
+      for (;;)
       {
+         HRESULT hr;
          RECT r, rect;
          DXGI_OUTPUT_DESC desc;
          int intersect_area;
@@ -2578,6 +2619,21 @@ bool dxgi_check_display_hdr_support(DXGIFactory1 factory, HWND hwnd)
          int ay1               = 0;
          int ax2               = 0;
          int ay2               = 0;
+
+#ifdef __cplusplus
+         hr                     = dxgi_adapter->EnumOutputs(i, &current_output);
+#else
+         hr                     = dxgi_adapter->lpVtbl->EnumOutputs(
+               dxgi_adapter, i, &current_output);
+#endif
+         /* Stop at the end of the output list (DXGI_ERROR_NOT_FOUND) or on
+          * any other failure. Some drivers can return a failure HRESULT
+          * other than DXGI_ERROR_NOT_FOUND together with a NULL output,
+          * which must never be dereferenced. */
+         if (FAILED(hr) || !current_output)
+            break;
+
+         i++;
 
          if (win32_get_client_rect(&rect))
          {
@@ -2595,7 +2651,12 @@ bool dxgi_check_display_hdr_support(DXGIFactory1 factory, HWND hwnd)
 #endif
          {
             RARCH_ERR("[DXGI] Failed to get DXGI output description.\n");
-            i++;
+#ifdef __cplusplus
+            current_output->Release();
+#else
+            Release(current_output);
+#endif
+            current_output      = NULL;
             continue;
          }
 
@@ -2629,7 +2690,13 @@ bool dxgi_check_display_hdr_support(DXGIFactory1 factory, HWND hwnd)
             best_intersect_area = (float)intersect_area;
          }
 
-         i++;
+         /* Release this iteration's reference; best_output holds its own. */
+#ifdef __cplusplus
+         current_output->Release();
+#else
+         Release(current_output);
+#endif
+         current_output         = NULL;
       }
 
       if (current_output)

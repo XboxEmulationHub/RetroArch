@@ -36,10 +36,12 @@
 #define HAVE_RMODTRACKER 1
 
 #define HAVE_ROPUS 1
+#define HAVE_RAAC 1
 
-#if defined(HAVE_ZLIB) || defined(HAVE_7ZIP)
+/* The ZIP archive backend and the DEFLATE trans_stream backend both fall
+ * back to the built-in inflate/deflate codec, so compression support is
+ * always available regardless of whether zlib or 7zip is compiled in. */
 #define HAVE_COMPRESSION 1
-#endif
 
 #if defined(HAVE_OPENGL) && defined(HAVE_ANGLE)
 #ifndef HAVE_OPENGLES
@@ -142,9 +144,9 @@ ARCHIVE FILE
 ============================================================ */
 #include "../libretro-common/file/archive_file.c"
 
-#ifdef HAVE_ZLIB
+/* Always built: decodes ZIP DEFLATE via zlib when present, else via the
+ * built-in inflate. */
 #include "../libretro-common/file/archive_file_zlib.c"
-#endif
 
 #ifdef HAVE_7ZIP
 #include "../libretro-common/file/archive_file_7z.c"
@@ -160,10 +162,12 @@ COMPRESSION
 #include "../libretro-common/streams/stdin_stream.c"
 #include "../libretro-common/streams/trans_stream.c"
 #include "../libretro-common/streams/trans_stream_pipe.c"
+#include "../libretro-common/encodings/encoding_deflate.c"
+#include "../libretro-common/streams/trans_stream_deflate.c"
+#include "../libretro-common/streams/rzip_stream.c"
 
 #ifdef HAVE_ZLIB
 #include "../libretro-common/streams/trans_stream_zlib.c"
-#include "../libretro-common/streams/rzip_stream.c"
 #endif
 
 /*============================================================
@@ -440,12 +444,26 @@ VIDEO IMAGE
 #include "../libretro-common/formats/bmp/rbmp.c"
 #endif
 #ifdef HAVE_RWEBP
-#include "../libretro-common/formats/vp8/rvp8.c"
 #include "../libretro-common/formats/webp/rwebp.c"
+#endif
+#if defined(HAVE_RWEBP) || defined(HAVE_RWEBM) || defined(HAVE_RMP4)
+#include "../libretro-common/formats/vp8/rvp8.c"
+#endif
+#ifdef HAVE_RWEBM
+#include "../libretro-common/formats/webm/rwebm.c"
+#include "../libretro-common/formats/webm/rwebm_video.c"
+#include "../libretro-common/formats/webm/rwebm_audio.c"
+#endif
+#ifdef HAVE_RMP4
+#include "../libretro-common/formats/h264/rh264.c"
+#include "../libretro-common/formats/mp4/rmp4.c"
+#include "../libretro-common/formats/mp4/rmp4_video.c"
+#include "../libretro-common/formats/mp4/rmp4_audio.c"
 #endif
 
 #ifdef HAVE_RVP9
 #include "../libretro-common/formats/vp9/rvp9.c"
+#include "../libretro-common/formats/image/image_hdr_blit.c"
 #endif
 #ifdef HAVE_RDDS
 #include "../libretro-common/formats/dds/rdds.c"
@@ -1016,6 +1034,9 @@ DRIVERS
 #ifdef HAVE_ROPUS
 #include "../libretro-common/formats/opus/ropus.c"
 #endif
+#ifdef HAVE_RAAC
+#include "../libretro-common/formats/aac/raac.c"
+#endif
 #if defined(HAVE_RFLAC) || defined(HAVE_RVORBIS) || defined(HAVE_RMP3) || defined(HAVE_RMODTRACKER) || defined(HAVE_ROPUS)
 #include "../libretro-common/formats/audio_transfer.c"
 #endif
@@ -1370,7 +1391,7 @@ DATA RUNLOOP
 #ifdef HAVE_TRANSLATE
 #include "../tasks/task_translation.c"
 #endif
-#ifdef HAVE_ZLIB
+#ifdef HAVE_COMPRESSION
 #include "../tasks/task_decompress.c"
 #endif
 #include "../tasks/task_database.c"

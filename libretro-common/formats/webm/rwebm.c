@@ -34,9 +34,17 @@
 #define ID_TRACKTYPE       0x83u
 #define ID_CODECID         0x86u
 #define ID_CODECPRIVATE    0x63A2u
+#define ID_CODECDELAY      0x56AAu
 #define ID_VIDEO           0xE0u
 #define ID_PIXELWIDTH      0xB0u
 #define ID_PIXELHEIGHT     0xBAu
+#define ID_COLOUR          0x55B0u
+#define ID_MATRIXCOEFF     0x55B1u
+#define ID_COLOURRANGE     0x55B9u
+#define ID_TRANSFERCHAR    0x55BAu
+#define ID_PRIMARIES       0x55BBu
+#define ID_MAXCLL          0x55BCu
+#define ID_MAXFALL         0x55BDu
 #define ID_AUDIO           0xE1u
 #define ID_SAMPLINGFREQ    0xB5u
 #define ID_CHANNELS        0x9Fu
@@ -197,6 +205,11 @@ static enum rwebm_codec codec_from_id(const char *id)
    if (!strcmp(id, "V_VP9"))    return RWEBM_CODEC_VP9;
    if (!strcmp(id, "A_VORBIS")) return RWEBM_CODEC_VORBIS;
    if (!strcmp(id, "A_OPUS"))   return RWEBM_CODEC_OPUS;
+   if (!strcmp(id, "V_MPEG4/ISO/AVC")) return RWEBM_CODEC_H264;
+   /* A_AAC with a profile suffix (e.g. A_AAC/MPEG4/LC) appears in older
+    * muxes; the CodecPrivate AudioSpecificConfig is authoritative
+    * either way. */
+   if (!strncmp(id, "A_AAC", 5)) return RWEBM_CODEC_AAC;
    return RWEBM_CODEC_UNKNOWN;
 }
 
@@ -228,6 +241,46 @@ static void parse_track_av(const uint8_t *p, const uint8_t *end,
          case ID_CHANNELS:
             trk->channels    = (unsigned)be_uint(body, (size_t)sz);
             break;
+         case ID_COLOUR:
+         {
+            /* Colour master element: pick out the code points we use */
+            ebml_reader cr;
+            cr.p = body; cr.end = body + sz;
+            while (cr.p < cr.end)
+            {
+               int       cok;
+               uint32_t  cid   = ebml_read_id(&cr);
+               uint64_t  csz   = ebml_read_vint(&cr, 1, &cok);
+               const uint8_t *cb = cr.p;
+               if (!cid || !cok || cb + csz > cr.end)
+                  break;
+               switch (cid)
+               {
+                  case ID_MATRIXCOEFF:
+                     trk->matrix_coefficients     = (unsigned)be_uint(cb, (size_t)csz);
+                     break;
+                  case ID_COLOURRANGE:
+                     trk->colour_range            = (unsigned)be_uint(cb, (size_t)csz);
+                     break;
+                  case ID_TRANSFERCHAR:
+                     trk->transfer_characteristics = (unsigned)be_uint(cb, (size_t)csz);
+                     break;
+                  case ID_PRIMARIES:
+                     trk->primaries               = (unsigned)be_uint(cb, (size_t)csz);
+                     break;
+                  case ID_MAXCLL:
+                     trk->max_cll                 = (unsigned)be_uint(cb, (size_t)csz);
+                     break;
+                  case ID_MAXFALL:
+                     trk->max_fall                = (unsigned)be_uint(cb, (size_t)csz);
+                     break;
+                  default:
+                     break;
+               }
+               cr.p = cb + csz;
+            }
+            break;
+         }
          default:
             break;
       }
@@ -276,6 +329,11 @@ static void parse_track_entry(const uint8_t *p, const uint8_t *end,
          case ID_CODECPRIVATE:
             trk->codec_private      = body;
             trk->codec_private_size = (size_t)sz;
+            break;
+         case ID_CODECDELAY:
+            /* nanoseconds of decoded output to drop from the stream
+             * start (the encoder delay; AAC priming in mkv muxes) */
+            trk->codec_delay_ns = be_uint(body, (size_t)sz);
             break;
          case ID_VIDEO:
          case ID_AUDIO:

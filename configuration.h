@@ -411,6 +411,7 @@ typedef struct settings
       unsigned video_shader_subframes;
       unsigned video_autoswitch_refresh_rate;
       unsigned video_hdr_mode;
+      unsigned video_swapchain_bit_depth;
       unsigned video_hdr_subpixel_layout;
       unsigned video_hdr_expand_gamut;
 
@@ -863,6 +864,7 @@ typedef struct settings
       bool menu_horizontal_animation;
       bool menu_scroll_fast;
       bool menu_show_online_updater;
+      bool menu_show_full_paths;
 #ifdef HAVE_MIST
       bool menu_show_core_manager_steam;
 #endif
@@ -896,6 +898,7 @@ typedef struct settings
       bool menu_materialui_dual_thumbnail_list_view_enable;
       bool menu_materialui_thumbnail_background_enable;
       bool menu_thumbnail_background_enable;
+      bool menu_thumbnail_preview_audio;
       bool menu_rgui_background_filler_thickness_enable;
       bool menu_rgui_border_filler_thickness_enable;
       bool menu_rgui_border_filler_enable;

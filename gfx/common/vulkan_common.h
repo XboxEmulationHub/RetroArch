@@ -108,7 +108,16 @@ enum vk_flags
    VK_FLAG_READBACK_STREAMED   = (1 << 13),
    VK_FLAG_OVERLAY_ENABLE      = (1 << 14),
    VK_FLAG_OVERLAY_FULLSCREEN  = (1 << 15),
-   VK_FLAG_SDR_PIPELINE        = (1 << 16)
+   VK_FLAG_SDR_PIPELINE        = (1 << 16),
+   /* The core's frames are already PQ-encoded Rec.2020 at absolute
+    * luminance (RETRO_PIXEL_FORMAT_HDR10_2101010), so the HDR composition
+    * must pass them through rather than encode them again. */
+   VK_FLAG_SOURCE_HDR10        = (1 << 17),
+   /* A synchronous HDR screenshot read-back is pending: the frame path
+    * should copy the HDR backbuffer (not the tone-mapped SDR one) into the
+    * HDR readback staging buffer. Distinct from READBACK_PENDING so the two
+    * never interfere. */
+   VK_FLAG_READBACK_HDR        = (1 << 18)
 };
 
 enum vk_texture_type
@@ -257,6 +266,12 @@ typedef struct gfx_ctx_vulkan_data
    uint8_t flags;
    enum vulkan_wsi_type wsi_type;
    bool fse_supported;
+#ifdef VULKAN_HDR_SWAPCHAIN
+   /* Loaded from VK_EXT_hdr_metadata when that optional device extension is
+    * present; NULL otherwise. Used to signal SMPTE-2086 mastering-display
+    * metadata to the compositor after (re)creating an HDR swapchain. */
+   PFN_vkSetHdrMetadataEXT set_hdr_metadata;
+#endif
 } gfx_ctx_vulkan_data_t;
 
 struct vulkan_display_surface_info

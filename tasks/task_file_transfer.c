@@ -208,6 +208,8 @@ do_transfer_parse:
          case NBIO_TYPE_TGA:
          case NBIO_TYPE_BMP:
          case NBIO_TYPE_WEBP:
+         case NBIO_TYPE_WEBM:
+         case NBIO_TYPE_MP4:
             if (!task_image_load_handler(task))
                task_set_flags(task, RETRO_TASK_FLG_FINISHED, true);
             break;

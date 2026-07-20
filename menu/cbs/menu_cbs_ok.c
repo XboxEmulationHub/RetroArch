@@ -3950,10 +3950,30 @@ DEFAULT_ACTION_DIALOG_START(action_ok_disable_kiosk_mode,
    msg_hash_to_str(MSG_INPUT_KIOSK_MODE_PASSWORD),
    (unsigned)entry_idx,
    menu_input_st_string_cb_disable_kiosk_mode)
-DEFAULT_ACTION_DIALOG_START(action_ok_rename_entry,
-   msg_hash_to_str(MSG_INPUT_RENAME_ENTRY),
-   (unsigned)entry_idx,
-   menu_input_st_string_cb_rename_entry)
+static int action_ok_rename_entry(const char *path,
+      const char *label_setting, unsigned type, size_t idx, size_t entry_idx)
+{
+   menu_input_ctx_line_t line;
+   playlist_t *playlist;
+   const struct playlist_entry *entry = NULL;
+
+   line.label                         = msg_hash_to_str(MSG_INPUT_RENAME_ENTRY);
+   line.label_setting                 = label_setting;
+   line.type                          = type;
+   line.idx                           = (unsigned)entry_idx;
+   line.cb                            = menu_input_st_string_cb_rename_entry;
+
+   if (!menu_input_dialog_start(&line))
+      return -1;
+
+   if ((playlist = playlist_get_cached()))
+      playlist_get_index(playlist, entry_idx, &entry);
+   if (entry && entry->label && *entry->label)
+      input_keyboard_line_append(&input_state_get_ptr()->keyboard_line,
+            entry->label, strlen(entry->label));
+
+   return 0;
+}
 
 
 static int generic_action_ok_remap_file_operation(const char *path,
@@ -5171,7 +5191,7 @@ static int action_ok_undo_save_state(const char *path,
 
 #ifdef HAVE_NETWORKING
 
-#ifdef HAVE_ZLIB
+#ifdef HAVE_COMPRESSION
 static void cb_decompressed(retro_task_t *task,
       void *task_data, void *user_data, const char *err)
 {
@@ -5478,7 +5498,7 @@ void cb_generic_download(retro_task_t *task,
 {
    char output_path[PATH_MAX_LENGTH];
    char buf[PATH_MAX_LENGTH];
-#if defined(HAVE_COMPRESSION) && defined(HAVE_ZLIB)
+#if defined(HAVE_COMPRESSION)
    bool extract               = true;
 #endif
    const char *dir_path       = NULL;
@@ -5502,7 +5522,7 @@ void cb_generic_download(retro_task_t *task,
          break;
       case MENU_ENUM_LABEL_CB_CORE_CONTENT_DOWNLOAD:
          dir_path = settings->paths.directory_core_assets;
-#if defined(HAVE_COMPRESSION) && defined(HAVE_ZLIB)
+#if defined(HAVE_COMPRESSION)
          extract  = settings->bools.network_buildbot_auto_extract_archive;
 #endif
          break;
@@ -5628,7 +5648,7 @@ void cb_generic_download(retro_task_t *task,
       goto finish;
    }
 
-#if defined(HAVE_COMPRESSION) && defined(HAVE_ZLIB)
+#if defined(HAVE_COMPRESSION)
    if (!extract)
       goto finish;
 
@@ -8186,13 +8206,12 @@ static int action_ok_state_slot_run(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
-   int slot                   = idx - 1;
    size_t new_selection_ptr   = 0;
 
    menu_entries_pop_stack(&new_selection_ptr, 0, 0);
    menu_st->selection_ptr     = 0;
 
-   menu_st->driver_data->state_slot_run = slot;
+   menu_st->driver_data->state_slot_run = idx - 1;
 
    menu_st->flags |=  MENU_ST_FLAG_ENTRIES_NEED_REFRESH;
    menu_st->flags &= ~MENU_ST_FLAG_PREVENT_POPULATE;

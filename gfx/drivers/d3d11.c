@@ -107,7 +107,11 @@ enum d3d11_state_flags
    D3D11_ST_FLAG_OVERLAYS_FULLSCREEN = (1 << 14),
    D3D11_ST_FLAG_MENU_ENABLE         = (1 << 15),
    D3D11_ST_FLAG_MENU_FULLSCREEN     = (1 << 16),
-   D3D11_ST_FLAG_FRAME_DUPE_LOCK     = (1 << 17)
+   D3D11_ST_FLAG_FRAME_DUPE_LOCK     = (1 << 17),
+   /* The core's frames are already PQ-encoded Rec.2020 at absolute
+    * luminance (RETRO_PIXEL_FORMAT_HDR10_2101010), so the HDR composition
+    * must pass them through rather than encode them a second time. */
+   D3D11_ST_FLAG_SOURCE_HDR10        = (1 << 18)
 };
 
 enum d3d11_feature_level_hint
@@ -1514,6 +1518,7 @@ static uint32_t d3d11_get_flags(void *data)
    BIT32_SET(flags, GFX_CTX_FLAGS_SHADERS_SLANG);
    BIT32_SET(flags, GFX_CTX_FLAGS_SUBFRAME_SHADERS);
    BIT32_SET(flags, GFX_CTX_FLAGS_FAST_TOGGLE_SHADERS);
+   BIT32_SET(flags, GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE);
 #endif
 
    return flags;
@@ -2410,14 +2415,30 @@ static bool d3d11_shader_load_step(void *data,
          ? d3d11->pass[d3d11->shader_preset->passes - 1].semantics.format
          : SLANG_FORMAT_UNKNOWN;
 
+      /* Only a format the shader declared itself (#pragma format)
+       * means the shader performed its own HDR encode.  A format
+       * derived from preset FBO flags (float_framebuffer /
+       * rgb10_framebuffer) carries no such intent and must not put
+       * the driver into passthrough. */
+      enum glslang_format last_hdr_fmt =
+         (     d3d11->shader_preset && d3d11->shader_preset->passes
+            && d3d11->pass[d3d11->shader_preset->passes - 1].semantics.explicit_format)
+         ? last_fmt : SLANG_FORMAT_UNKNOWN;
+
+      /* A core supplying PQ has the same effect as a final shader pass
+       * that emits PQ: the samples must not be encoded again. */
+      if (     (d3d11->flags & D3D11_ST_FLAG_SOURCE_HDR10)
+            && last_hdr_fmt == SLANG_FORMAT_UNKNOWN)
+         last_hdr_fmt = SLANG_FORMAT_A2B10G10R10_UNORM_PACK32;
+
       if (menu_hdr_mode == 2)
       {
          d3d11_set_hdr_inverse_tonemap(d3d11, false);
          d3d11_set_hdr10(d3d11, false);
 
-         if (last_fmt == SLANG_FORMAT_R16G16B16A16_SFLOAT)
+         if (last_hdr_fmt == SLANG_FORMAT_R16G16B16A16_SFLOAT)
             d3d11->hdr.ubo_values.hdr_mode = 0;
-         else if (last_fmt == SLANG_FORMAT_A2B10G10R10_UNORM_PACK32)
+         else if (last_hdr_fmt == SLANG_FORMAT_A2B10G10R10_UNORM_PACK32)
             d3d11->hdr.ubo_values.hdr_mode = 3;
          else
          {
@@ -2432,8 +2453,8 @@ static bool d3d11_shader_load_step(void *data,
       }
       else
       {
-         if (last_fmt == SLANG_FORMAT_A2B10G10R10_UNORM_PACK32
-               || last_fmt == SLANG_FORMAT_R16G16B16A16_SFLOAT)
+         if (last_hdr_fmt == SLANG_FORMAT_A2B10G10R10_UNORM_PACK32
+               || last_hdr_fmt == SLANG_FORMAT_R16G16B16A16_SFLOAT)
          {
             d3d11_set_hdr_inverse_tonemap(d3d11, false);
             d3d11_set_hdr10(d3d11, false);
@@ -2668,15 +2689,25 @@ static bool d3d11_gfx_set_shader(void* data, enum rarch_shader_type type, const 
          ? d3d11->pass[d3d11->shader_preset->passes - 1].semantics.format
          : SLANG_FORMAT_UNKNOWN;
 
+      /* Only a format the shader declared itself (#pragma format)
+       * means the shader performed its own HDR encode.  A format
+       * derived from preset FBO flags (float_framebuffer /
+       * rgb10_framebuffer) carries no such intent and must not put
+       * the driver into passthrough. */
+      enum glslang_format last_hdr_fmt =
+         (     d3d11->shader_preset && d3d11->shader_preset->passes
+            && d3d11->pass[d3d11->shader_preset->passes - 1].semantics.explicit_format)
+         ? last_fmt : SLANG_FORMAT_UNKNOWN;
+
       if (menu_hdr_mode == 2) /* scRGB */
       {
          /* scRGB: legacy inverse tonemap / PQ encoding never used */
          d3d11_set_hdr_inverse_tonemap(d3d11, false);
          d3d11_set_hdr10(d3d11, false);
 
-         if (last_fmt == SLANG_FORMAT_R16G16B16A16_SFLOAT)
+         if (last_hdr_fmt == SLANG_FORMAT_R16G16B16A16_SFLOAT)
             d3d11->hdr.ubo_values.hdr_mode = 0; /* passthrough: already scRGB */
-         else if (last_fmt == SLANG_FORMAT_A2B10G10R10_UNORM_PACK32)
+         else if (last_hdr_fmt == SLANG_FORMAT_A2B10G10R10_UNORM_PACK32)
             d3d11->hdr.ubo_values.hdr_mode = 3; /* PQ->scRGB at Point 2 */
          else
          {
@@ -2691,14 +2722,14 @@ static bool d3d11_gfx_set_shader(void* data, enum rarch_shader_type type, const 
       }
       else /* HDR10 */
       {
-         if (last_fmt == SLANG_FORMAT_A2B10G10R10_UNORM_PACK32)
+         if (last_hdr_fmt == SLANG_FORMAT_A2B10G10R10_UNORM_PACK32)
          {
             /* Shader emits HDR10 PQ: passthrough */
             d3d11_set_hdr_inverse_tonemap(d3d11, false);
             d3d11_set_hdr10(d3d11, false);
             d3d11->flags |= D3D11_ST_FLAG_RESIZE_CHAIN;
          }
-         else if (last_fmt == SLANG_FORMAT_R16G16B16A16_SFLOAT)
+         else if (last_hdr_fmt == SLANG_FORMAT_R16G16B16A16_SFLOAT)
          {
             /* Shader emits RGBA16F: passthrough, HW quantises */
             d3d11_set_hdr_inverse_tonemap(d3d11, false);
@@ -2914,7 +2945,15 @@ static bool d3d11_init_swapchain(d3d11_video_t* d3d11,
          ? DXGI_SWAPCHAIN_BIT_DEPTH_16 : DXGI_SWAPCHAIN_BIT_DEPTH_10;
    }
    else
-      d3d11->chain_bit_depth   = DXGI_SWAPCHAIN_BIT_DEPTH_8;
+   {
+      /* SDR.  A 10-bit swapchain here removes the final-pass
+       * quantisation for chains that darken heavily (CRT beam
+       * profiles, aperture grilles) without pulling in the HDR
+       * pipeline.  Opt-in; G22/P709 is correct for both depths. */
+      settings_t *settings     = config_get_ptr();
+      d3d11->chain_bit_depth   = (settings->uints.video_swapchain_bit_depth == 2)
+         ? DXGI_SWAPCHAIN_BIT_DEPTH_10 : DXGI_SWAPCHAIN_BIT_DEPTH_8;
+   }
 #endif
 
 #ifdef __WINRT__
@@ -3288,8 +3327,20 @@ static void *d3d11_gfx_init(const video_info_t* video,
    else
       d3d11->flags       &= ~D3D11_ST_FLAG_KEEP_ASPECT;
 
-   d3d11->format          = (video->rgb32)
-         ? DXGI_FORMAT_B8G8R8X8_UNORM : DXGI_FORMAT_B5G6R5_UNORM;
+   /* Both 10-bit formats upload through the same packed 2-10-10-10
+    * texture; they differ only in how the samples are interpreted
+    * downstream.  A PQ frame is already in the swapchain's encoding --
+    * the same state a shader preset emitting HDR10 leaves us in -- so it
+    * takes that existing passthrough path rather than a new one. */
+   if (video->source_hdr10)
+      d3d11->flags       |=  D3D11_ST_FLAG_SOURCE_HDR10;
+   else
+      d3d11->flags       &= ~D3D11_ST_FLAG_SOURCE_HDR10;
+
+   d3d11->format          = video->source_10bit
+         ? DXGI_FORMAT_R10G10B10A2_UNORM
+         : ((video->rgb32)
+         ? DXGI_FORMAT_B8G8R8X8_UNORM : DXGI_FORMAT_B5G6R5_UNORM);
 
    d3d11->frame.texture[0].desc.Format = d3d11->format;
    d3d11->frame.texture[0].desc.Usage  = D3D11_USAGE_DEFAULT;
@@ -3998,7 +4049,16 @@ static bool d3d11_gfx_frame(
       else if (video_info->hdr_mode == 1)
          desired_bit_depth = DXGI_SWAPCHAIN_BIT_DEPTH_10;
       else
-         desired_bit_depth = DXGI_SWAPCHAIN_BIT_DEPTH_8;
+      {
+         /* SDR.  This runs every frame and rebuilds the chain
+          * whenever it disagrees with the current depth, so it has
+          * to honour the setting the creation path already honours,
+          * or a 10-bit SDR chain is torn straight back down. */
+         settings_t *settings = config_get_ptr();
+         desired_bit_depth    =
+            (settings->uints.video_swapchain_bit_depth == 2)
+            ? DXGI_SWAPCHAIN_BIT_DEPTH_10 : DXGI_SWAPCHAIN_BIT_DEPTH_8;
+      }
 
       if (     (d3d11->flags & D3D11_ST_FLAG_RESIZE_CHAIN)
             || (d3d11_hdr_enable != video_hdr_enable)
@@ -4857,6 +4917,16 @@ static bool d3d11_gfx_frame(
             d3d11->hdr.ubo_values.hdr10            = 0.0f;
             d3d11->hdr.ubo_values.hdr_mode         = 2;
          }
+         else if (d3d11->flags & D3D11_ST_FLAG_SOURCE_HDR10)
+         {
+            /* Core supplies PQ frames: the back buffer already holds
+             * PQ-encoded HDR10, so pass it through unchanged. Encoding it a
+             * second time drives the menu background to black. The menu
+             * glyphs are drawn separately as SDR sprites. */
+            d3d11->hdr.ubo_values.inverse_tonemap  = 0.0f;
+            d3d11->hdr.ubo_values.hdr10            = 0.0f;
+            d3d11->hdr.ubo_values.hdr_mode         = 0;
+         }
          else /* HDR10 */
          {
             d3d11->hdr.ubo_values.inverse_tonemap  = 1.0f;
@@ -5564,14 +5634,19 @@ static uintptr_t d3d11_gfx_load_texture_internal(
 
    texture->desc.Width  = image->width;
    texture->desc.Height = image->height;
-   texture->desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+   texture->desc.Format = image->pix10
+         ? DXGI_FORMAT_R10G10B10A2_UNORM
+         : DXGI_FORMAT_B8G8R8A8_UNORM;
 
    d3d11_release_texture(texture);
    d3d11_init_texture(d3d11->device, texture);
 
    if (texture->staging)
       d3d11_update_texture(
-            d3d11->context, image->width, image->height, 0, DXGI_FORMAT_B8G8R8A8_UNORM, image->pixels,
+            d3d11->context, image->width, image->height, 0,
+            image->pix10 ? DXGI_FORMAT_R10G10B10A2_UNORM
+                         : DXGI_FORMAT_B8G8R8A8_UNORM,
+            image->pixels,
             texture);
 
    return (uintptr_t)texture;

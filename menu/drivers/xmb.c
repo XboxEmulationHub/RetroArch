@@ -1116,11 +1116,14 @@ static void xmb_draw_text(
 {
    uint32_t color;
    uint8_t a8;
+   float alpha_hp;
+   float color_hp[4];
 
    if (alpha > xmb->alpha)
       alpha = xmb->alpha;
 
    a8       = 0xFF * alpha;
+   alpha_hp = alpha;
 
    /* Avoid drawing 100% transparent text */
    if (a8 == 0)
@@ -1129,15 +1132,29 @@ static void xmb_draw_text(
    if (     !strcmp(str, "null")
          || !strcmp(str, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_OFF))
          || !strcmp(str, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_MORE)))
-      a8    = 0x7F * alpha;
+   {
+      a8       = 0x7F * alpha;
+      alpha_hp = alpha * (127.0f / 255.0f);
+   }
 
    color    = FONT_COLOR_RGBA(
          settings->uints.menu_font_color_red,
          settings->uints.menu_font_color_green,
          settings->uints.menu_font_color_blue, a8);
 
-   gfx_display_draw_text(font, str, x, y,
-         width, height, color, text_align, scale_factor,
+   /* Full-precision copy of the same colour: the RGB is the user's 8-bit
+    * menu_font_color_* setting, but the alpha (which XMB animates as a float
+    * for fade in/out) is passed un-quantised so the fade is not capped at
+    * 256 steps on a deep-colour framebuffer. Backends that ignore the
+    * high-precision path fall back to 'color', so the 8-bit result is
+    * unchanged there. */
+   color_hp[0] = settings->uints.menu_font_color_red   * (1.0f / 255.0f);
+   color_hp[1] = settings->uints.menu_font_color_green * (1.0f / 255.0f);
+   color_hp[2] = settings->uints.menu_font_color_blue  * (1.0f / 255.0f);
+   color_hp[3] = alpha_hp < 0.0f ? 0.0f : (alpha_hp > 1.0f ? 1.0f : alpha_hp);
+
+   gfx_display_draw_text_hp(font, str, x, y,
+         width, height, color, color_hp, text_align, scale_factor,
          shadows_enable,
          xmb->shadow_offset, false);
 }
@@ -1169,6 +1186,7 @@ static void xmb_render_messagebox_internal(
       unsigned video_height,
       xmb_handle_t *xmb,
       const char *message,
+      bool draw_caret,
       math_matrix_4x4 *mymat)
 {
    unsigned i, line_count              = 0;
@@ -1181,6 +1199,8 @@ static void xmb_render_messagebox_internal(
    int slice_y                         = 0;
    int slice_w                         = 0;
    int slice_h                         = 0;
+   unsigned cursor_line                = 0;
+   int cursor_x                        = 0;
    struct menu_state *menu_st          = menu_state_get_ptr();
    bool confirm_dialog                 = (menu_st->dialog_st.confirm_cmd) ? true : false;
    bool input_dialog_display_kb        = false;
@@ -1237,6 +1257,53 @@ static void xmb_render_messagebox_internal(
    /* Narrow font can make the box too narrow for Back & OK */
    if (confirm_dialog && longest_width < (int)video_width / 4)
       longest_width = video_width / 4;
+
+   if (draw_caret)
+   {
+      input_driver_state_t *input_st = input_state_get_ptr();
+      input_keyboard_line_t *line    = &input_st->keyboard_line;
+      const char *input              = strchr(message, '\n');
+
+      draw_caret = false;
+
+      if (input && line->buffer
+            && ((menu_driver_get_current_time() / 500000) & 1))
+      {
+         char cursor_message[MENU_LABEL_MAX_LENGTH];
+         size_t len = (size_t)(input - message + 1);
+         size_t ptr = line->ptr;
+
+         if (ptr > line->size)
+            ptr = line->size;
+         if (len < sizeof(cursor_message))
+         {
+            if (ptr >= sizeof(cursor_message) - len)
+               ptr = sizeof(cursor_message) - len - 1;
+
+            memcpy(cursor_message, message, len);
+            memcpy(cursor_message + len, line->buffer, ptr);
+            cursor_message[len + ptr] = '\0';
+
+            (xmb->word_wrap)(
+                  cursor_message, sizeof(cursor_message),
+                  cursor_message, strlen(cursor_message),
+                  usable_width / (xmb->font_size * 0.85f),
+                  xmb->wideglyph_width, 0);
+
+            input = cursor_message;
+            while ((input = strchr(input, '\n')))
+            {
+               cursor_line++;
+               input++;
+            }
+            input    = strrchr(cursor_message, '\n');
+            input    = input ? input + 1 : cursor_message;
+            cursor_x = font_driver_get_message_width(xmb->font, input, strlen(input), 1.0f);
+
+            draw_caret = true;
+         }
+      }
+   }
 
    slice_x                 = x - (longest_width / 2) - xmb->margins_dialog;
    slice_y                 = y + xmb->margins_slice - xmb->margins_dialog;
@@ -1310,6 +1377,30 @@ static void xmb_render_messagebox_internal(
                y + ((i + 0.85) * line_height),
                video_width, video_height, 0x444444ff,
                TEXT_ALIGN_LEFT, 1.0f, false, 0.0f, false);
+   }
+
+   if (draw_caret && (cursor_line < line_count))
+   {
+      float caret_color[16] = {
+            0.27f, 0.27f, 0.27f, 1.0f,
+            0.27f, 0.27f, 0.27f, 1.0f,
+            0.27f, 0.27f, 0.27f, 1.0f,
+            0.27f, 0.27f, 0.27f, 1.0f,
+      };
+
+      gfx_display_draw_quad(
+            p_disp,
+            userdata,
+            video_width,
+            video_height,
+            x - (longest_width / 2.0) + cursor_x,
+            y + ((cursor_line + 0.85) * line_height) - xmb->font->size,
+            2,
+            xmb->font->size,
+            video_width,
+            video_height,
+            caret_color,
+            NULL);
    }
 
    if (input_dialog_display_kb)
@@ -1902,7 +1993,9 @@ static void xmb_set_thumbnail_content(void *data, const char *s)
 
          if (     *entry.path
                && (node->fullpath && *node->fullpath)
-               && entry.type == FILE_TYPE_IMAGEVIEWER)
+               && (   (entry.type == FILE_TYPE_IMAGEVIEWER)
+                   || (image_texture_get_type(entry.path) == IMAGE_TYPE_WEBM)
+                   || (image_texture_get_type(entry.path) == IMAGE_TYPE_MP4)))
          {
             gfx_thumbnail_set_content_image(menu_st->thumbnail_path_data,
                   node->fullpath, entry.path);
@@ -2150,7 +2243,8 @@ static void xmb_selection_pointer_changed(
     * eagerly pre-resolve paths for all visible entries here — the
     * selection pointer can move many times per second during held-down
     * scrolling, and re-resolving up to ~20 paths per step (including
-    * path_is_valid syscalls, amplified ×5 by playlist_allow_non_png)
+    * path_is_valid syscalls, amplified up to ×7 by
+    * playlist_allow_non_png)
     * is enough to blow frame budgets. Lazy resolution in the
     * dispatcher gets the same visible result for a fraction of the
     * work. The is_playlist / title-name gates match the ones the old
@@ -2236,10 +2330,15 @@ static void xmb_selection_pointer_changed(
             {
                menu_entry_t entry;
                MENU_ENTRY_INITIALIZE(entry);
+               entry.flags |= MENU_ENTRY_FLAG_PATH_ENABLED;
                menu_entry_get(&entry, 0, selection, NULL, true);
 
                if (     (entry.type == FILE_TYPE_IMAGEVIEWER)
-                     || (entry.type == FILE_TYPE_IMAGE))
+                     || (entry.type == FILE_TYPE_IMAGE)
+                     /* WebM and MP4 files preview like images: the thumbnail
+                      * pipeline decodes their video track */
+                     || (image_texture_get_type(entry.path) == IMAGE_TYPE_WEBM)
+                     || (image_texture_get_type(entry.path) == IMAGE_TYPE_MP4))
                {
                   xmb_set_thumbnail_content(xmb, "imageviewer");
                   update_thumbnails = true;
@@ -3016,9 +3115,9 @@ static void xmb_populate_dynamic_icons(xmb_handle_t *xmb)
     * the render dispatcher will lazily re-resolve and re-load them for
     * currently-visible entries, under its per-frame cap. Doing the
     * path resolution upfront for every visible entry here would cost
-    * one path_is_valid syscall per entry (or five per entry with
+    * one path_is_valid syscall per entry (or up to seven per entry with
     * playlist_allow_non_png enabled, due to the .png/.jpg/.jpeg/.bmp/
-    * .tga fallback chain in gfx_thumbnail_update_path) — enough to
+    * .tga/.webp/.webm fallback chain in gfx_thumbnail_update_path) — enough to
     * blow a frame budget on the populate frame. */
    xmb_unload_icon_thumbnail_textures(xmb);
 
@@ -7816,7 +7915,7 @@ static void xmb_render(void *data,
           * xmb_populate_dynamic_icons and xmb_selection_pointer_changed
           * used to pay eagerly for every visible entry on every change,
           * including on each vertical scroll step — a stat-syscall
-          * storm multiplied ×5 by playlist_allow_non_png's extension
+          * storm multiplied up to ×7 by playlist_allow_non_png's extension
           * fallback chain. Doing it here, once per entry per list
           * population, eliminates the repeat cost on scroll. */
          if (!*thumbnail_icon->thumbnail_path_data.icon_path)
@@ -8641,6 +8740,7 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
    file_list_t *selection_buf          = MENU_LIST_GET_SELECTION(menu_list, 0);
    bool input_dialog_display_kb        = menu_input_dialog_get_display_kb();
    bool render_background              = false;
+   bool draw_caret                     = false;
    bool icon_thumbnail_drawn           = false;
 
    if (!xmb)
@@ -9780,9 +9880,10 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
       msg[  _len]                 = '\n';
       msg[++_len]                 = '\0';
       strlcpy(msg       + _len,
-            str,
+            (str && *str) ? str : " ",
             sizeof(msg) - _len);
       render_background           = true;
+      draw_caret                  = true;
    }
 
    if (xmb->box_message && *xmb->box_message)
@@ -9791,6 +9892,7 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
       free(xmb->box_message);
       xmb->box_message  = NULL;
       render_background = true;
+      draw_caret        = false;
    }
 
    if (render_background)
@@ -9803,7 +9905,7 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
          xmb_render_messagebox_internal(userdata, p_disp,
                dispctx,
                video_width, video_height,
-               xmb, msg, &mymat);
+               xmb, msg, draw_caret, &mymat);
    }
 
    /* Cursor image */

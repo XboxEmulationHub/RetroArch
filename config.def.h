@@ -164,6 +164,9 @@
 #define DEFAULT_MATERIALUI_THUMBNAIL_BACKGROUND_ENABLE true
 #define DEFAULT_MENU_THUMBNAIL_BACKGROUND_ENABLE false
 
+/* Play the audio track of animated WebM thumbnails (menu preview). */
+#define DEFAULT_MENU_THUMBNAIL_PREVIEW_AUDIO false
+
 #define DEFAULT_SCREEN_BRIGHTNESS 100
 
 #define DEFAULT_CRT_SWITCH_RESOLUTION CRT_SWITCH_NONE
@@ -546,6 +549,10 @@
 /* HDR output mode: 0 = off, 1 = HDR10, 2 = scRGB */
 #define DEFAULT_VIDEO_HDR_MODE 0
 
+/* Swapchain bit depth when HDR is off: 0 = auto (8), 1 = force 8, 2 = force 10.
+ * Only meaningful in SDR; HDR dictates its own swapchain format. */
+#define DEFAULT_VIDEO_SWAPCHAIN_BIT_DEPTH 0
+
 /* Brightness of the SDR menu/overlay when composited into the HDR backbuffer */
 #define DEFAULT_MENU_HDR_BRIGHTNESS_NITS 200.0f
 
@@ -824,6 +831,7 @@
 
 #define DEFAULT_KIOSK_MODE_ENABLE false
 #define DEFAULT_MENU_HORIZONTAL_ANIMATION true
+#define DEFAULT_MENU_SHOW_FULL_PATHS true
 
 #define DEFAULT_MENU_TICKER_TYPE (TICKER_TYPE_LOOP)
 #define DEFAULT_MENU_TICKER_SPEED 2.0f
@@ -1294,10 +1302,12 @@
 #define DEFAULT_AUDIO_FASTFORWARD_MUTE false
 /* Speed up audio to match fast forward speed up. */
 #define DEFAULT_AUDIO_FASTFORWARD_SPEEDUP false
-/* When a core outputs 16-bit integer audio, prefer the deterministic
- * fixed-point (int16) SINC resampler over the float one for any needed
- * resampling. Avoids the s16<->float round-trip and is bit-reproducible. */
-#define DEFAULT_AUDIO_FASTPATH_S16 true
+/* When a core outputs 16-bit integer audio, the deterministic
+ * fixed-point (int16) resampler variant of the selected backend
+ * (sinc, nearest, or CC) can be preferred over the float one for any
+ * needed resampling, avoiding the s16<->float round-trip
+ * (bit-reproducible). Opt-in; the float path remains the default. */
+#define DEFAULT_AUDIO_FASTPATH_S16 false
 /* Requested output sample format for negotiable audio drivers:
  * AUDIO_FORMAT_NEGOTIATION_INT16 (0) or AUDIO_FORMAT_NEGOTIATION_FLOAT (1).
  * Float by default, matching RetroArch's historical driver behaviour. */

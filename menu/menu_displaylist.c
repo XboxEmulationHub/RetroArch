@@ -2404,6 +2404,12 @@ static unsigned menu_displaylist_parse_system_info(file_list_t *list)
 #ifdef HAVE_RWEBP
          {SUPPORTS_RWEBP, "WebP (RWEBP)"},
 #endif
+#ifdef HAVE_RWEBM
+         {SUPPORTS_RWEBM, "WebM (RWEBM)"},
+#endif
+#ifdef HAVE_RVP9
+         {SUPPORTS_RVP9, "VP9 (RVP9)"},
+#endif
 #ifdef HAVE_RDDS
          {SUPPORTS_RDDS, "DDS (RDDS)"},
 #endif
@@ -10289,6 +10295,7 @@ unsigned menu_displaylist_build_list(
                   { MENU_ENUM_LABEL_VIDEO_THREADED, PARSE_ONLY_BOOL, false },
                   { MENU_ENUM_LABEL_VIDEO_GPU_INDEX, PARSE_ONLY_INT, false },
                   { MENU_ENUM_LABEL_VIDEO_MONITOR_INDEX, PARSE_ONLY_UINT, false },
+                  { MENU_ENUM_LABEL_VIDEO_SWAPCHAIN_BIT_DEPTH, PARSE_ONLY_UINT, false },
                };
                count += menu_displaylist_parse_settings_rows(list, settings,
                      dl_rows_8, (unsigned)ARRAY_SIZE(dl_rows_8));
@@ -11360,7 +11367,7 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_SORT_SAVEFILES_ENABLE,              PARSE_ONLY_BOOL, true},
                {MENU_ENUM_LABEL_SORT_SAVEFILES_BY_CONTENT_ENABLE,   PARSE_ONLY_BOOL, true},
                {MENU_ENUM_LABEL_SAVEFILES_IN_CONTENT_DIR_ENABLE,    PARSE_ONLY_BOOL, true},
-#if defined(HAVE_ZLIB)
+#if defined(HAVE_COMPRESSION)
                {MENU_ENUM_LABEL_SAVE_FILE_COMPRESSION,              PARSE_ONLY_BOOL, true},
 #endif
                {MENU_ENUM_LABEL_AUTOSAVE_INTERVAL,                  PARSE_ONLY_UINT, true},
@@ -11371,7 +11378,7 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_SAVESTATE_AUTO_SAVE,                PARSE_ONLY_BOOL, true},
                {MENU_ENUM_LABEL_SAVESTATE_AUTO_LOAD,                PARSE_ONLY_BOOL, true},
                {MENU_ENUM_LABEL_SAVESTATE_THUMBNAIL_ENABLE,         PARSE_ONLY_BOOL, true},
-#if defined(HAVE_ZLIB)
+#if defined(HAVE_COMPRESSION)
                {MENU_ENUM_LABEL_SAVESTATE_FILE_COMPRESSION,         PARSE_ONLY_BOOL, true},
 #endif
                {MENU_ENUM_LABEL_SAVESTATE_AUTOMATIC_INTERVAL,       PARSE_ONLY_UINT, true},
@@ -12283,6 +12290,7 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_MENU_RGUI_THUMBNAIL_DOWNSCALER,               PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_MENU_RGUI_THUMBNAIL_DELAY,                    PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_MENU_THUMBNAIL_BACKGROUND_ENABLE,             PARSE_ONLY_BOOL,   true},
+               {MENU_ENUM_LABEL_MENU_THUMBNAIL_PREVIEW_AUDIO,                 PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_XMB_FONT,                                     PARSE_ONLY_PATH,   true},
                {MENU_ENUM_LABEL_OZONE_FONT,                                   PARSE_ONLY_PATH,   true},
                {MENU_ENUM_LABEL_OZONE_FONT_SCALE,                             PARSE_ONLY_UINT,   true},
@@ -12312,6 +12320,7 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_MENU_XMB_ANIMATION_HORIZONTAL_HIGHLIGHT,      PARSE_ONLY_UINT,   false},
                {MENU_ENUM_LABEL_MENU_XMB_ANIMATION_OPENING_MAIN_MENU,         PARSE_ONLY_UINT,   false},
                {MENU_ENUM_LABEL_MENU_XMB_ANIMATION_MOVE_UP_DOWN,              PARSE_ONLY_UINT,   true},
+               {MENU_ENUM_LABEL_MENU_SHOW_FULL_PATHS,                         PARSE_ONLY_BOOL,   true},
             };
 
             for (i = 0; i < ARRAY_SIZE(build_list); i++)
@@ -14558,6 +14567,7 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                bool savestates_enabled     = core_info_current_supports_savestate();
                playlist_t *playlist        = playlist_get_cached();
                runloop_state_t *runloop_st = runloop_state_get_ptr();
+               int state_slot              = settings->ints.state_slot;
 
                /* Load the core for getting the final state path for thumbnails */
                if (playlist && !(runloop_st->flags & RUNLOOP_FLAG_CORE_RUNNING))
@@ -14570,6 +14580,8 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
 
                   if (entry && *entry->path)
                   {
+                     runtime_log_t *runtime_log = NULL;
+
                      path_set(RARCH_PATH_CORE, entry->core_path);
                      command_event(CMD_EVENT_LOAD_CORE, NULL);
                      runloop_set_current_core_type(CORE_TYPE_PLAIN, true);
@@ -14577,8 +14589,23 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                      /* Reinit runtime log and read current state slot */
                      savestates_enabled = core_info_current_supports_savestate();
                      if (savestates_enabled)
+                     {
                         runtime_update_playlist(playlist,
                               menu_st->driver_data->rpl_entry_selection_ptr);
+
+                        runtime_log = runtime_log_init(entry->path,
+                              entry->core_path,
+                              settings->paths.directory_runtime_log,
+                              settings->paths.directory_playlist,
+                              true);
+
+                        if (runtime_log)
+                        {
+                           if (path_is_valid(runtime_log->path) && runtime_log->state_slot < 1000)
+                              state_slot = runtime_log->state_slot;
+                           free(runtime_log);
+                        }
+                     }
                   }
                }
 
@@ -14588,7 +14615,6 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                if (     core_info_current_supports_savestate()
                      && settings->bools.quick_menu_show_save_load_state)
                {
-                  runloop_state_t *runloop_st = runloop_state_get_ptr();
                   int i;
                   int i_max = count = 1000;
 
@@ -14610,7 +14636,7 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                   }
 
                   /* Pre-select last slot from the runtime log */
-                  menu_st->selection_ptr = runloop_st->entry_state_slot + 1;
+                  menu_st->selection_ptr = state_slot + 1;
                }
 
                menu_displaylist_no_entries_fallback(info->list, count, FILE_TYPE_NONE);

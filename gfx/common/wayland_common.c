@@ -102,41 +102,23 @@ static bool gfx_ctx_wl_should_use_legacy_fullscreen_configure(
    return false;
 }
 
-void xdg_toplevel_handle_configure_common(gfx_ctx_wayland_data_t *wl,
-      void *toplevel,
-      int32_t width, int32_t height, struct wl_array *states)
+/* Apply a latched xdg_toplevel configuration.  Runs from the
+ * xdg_surface.configure handler: per xdg-shell, toplevel configure
+ * events describe pending state that only becomes current when the
+ * compositor sends xdg_surface.configure. */
+static void xdg_configure_apply(gfx_ctx_wayland_data_t *wl)
 {
-   const uint32_t *state;
-   bool floating              = true;
+   int32_t width  = wl->cfg_pending.width;
+   int32_t height = wl->cfg_pending.height;
+   bool floating  = wl->cfg_pending.floating;
 
-   wl->fullscreen             = false;
-   wl->maximized              = false;
-
-   WL_ARRAY_FOR_EACH(state, states, const uint32_t*)
-   {
-      switch (*state)
-      {
-         case XDG_TOPLEVEL_STATE_FULLSCREEN:
-            wl->fullscreen = true;
-            floating       = false;
-            break;
-         case XDG_TOPLEVEL_STATE_MAXIMIZED:
-            wl->maximized  = true;
-            /* fall-through */
-         case XDG_TOPLEVEL_STATE_TILED_LEFT:
-         case XDG_TOPLEVEL_STATE_TILED_RIGHT:
-         case XDG_TOPLEVEL_STATE_TILED_TOP:
-         case XDG_TOPLEVEL_STATE_TILED_BOTTOM:
-            floating       = false;
-            break;
-         case XDG_TOPLEVEL_STATE_RESIZING:
-            wl->resize     = true;
-            break;
-         case XDG_TOPLEVEL_STATE_ACTIVATED:
-            wl->activated  = true;
-            break;
-      }
-   }
+   wl->fullscreen = wl->cfg_pending.fullscreen;
+   wl->maximized  = wl->cfg_pending.maximized;
+   if (wl->cfg_pending.resizing)
+      wl->resize  = true;
+   if (wl->cfg_pending.activated)
+      wl->activated = true;
+   wl->suspended  = wl->cfg_pending.suspended;
 
    if (width == 0 || height == 0)
    {
@@ -179,14 +161,14 @@ void xdg_toplevel_handle_configure_common(gfx_ctx_wayland_data_t *wl,
    }
 }
 
-void xdg_toplevel_handle_close(void *data,
+static void xdg_toplevel_handle_close(void *data,
       struct xdg_toplevel *xdg_toplevel)
 {
    frontend_driver_set_signal_handler_state(1);
 }
 
 #ifdef HAVE_LIBDECOR_H
-void libdecor_frame_handle_configure_common(struct libdecor_frame *frame,
+static void libdecor_frame_handle_configure_common(struct libdecor_frame *frame,
       struct libdecor_configuration *configuration,
       gfx_ctx_wayland_data_t *wl)
 {
@@ -211,8 +193,12 @@ void libdecor_frame_handle_configure_common(struct libdecor_frame *frame,
    if (wl->libdecor_configuration_get_window_state(
          configuration, &window_state))
    {
+      /* LIBDECOR_WINDOW_STATE_SUSPENDED (libdecor >= 0.2.0); numeric
+       * value used so older libdecor headers still compile.  Older
+       * runtimes never set the bit. */
       wl->fullscreen = (window_state & LIBDECOR_WINDOW_STATE_FULLSCREEN) != 0;
       wl->maximized  = (window_state & LIBDECOR_WINDOW_STATE_MAXIMIZED) != 0;
+      wl->suspended  = (window_state & (1 << 7)) != 0;
 #if 0
       focused        = (window_state & LIBDECOR_WINDOW_STATE_ACTIVE) != 0;
       tiled          = (window_state & tiled_states) != 0;
@@ -265,14 +251,145 @@ void libdecor_frame_handle_configure_common(struct libdecor_frame *frame,
    }
 }
 
-void libdecor_frame_handle_close(struct libdecor_frame *frame,
+static void libdecor_frame_handle_close(struct libdecor_frame *frame,
       void *data)
 {
    frontend_driver_set_signal_handler_state(1);
 }
-void libdecor_frame_handle_commit(struct libdecor_frame *frame,
+static void libdecor_frame_handle_commit(struct libdecor_frame *frame,
       void *data) { }
+
+static void libdecor_frame_handle_configure(struct libdecor_frame *frame,
+      struct libdecor_configuration *configuration, void *data)
+{
+   gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
+   if (wl->ignore_configuration)
+      return;
+   libdecor_frame_handle_configure_common(frame, configuration, wl);
+   if (wl->driver_configure_handler)
+      wl->driver_configure_handler(wl);
+   wl->configured = false;
+}
+
+static void libdecor_handle_err(struct libdecor *context,
+      enum libdecor_error err, const char *message)
+{
+   RARCH_ERR("[Wayland] libdecor Caught error (%d): %s.\n", err, message);
+}
+
+static const struct libdecor_interface libdecor_interface = {
+   .error = libdecor_handle_err,
+};
+
+static const struct libdecor_frame_interface wl_libdecor_frame_interface = {
+   libdecor_frame_handle_configure,
+   libdecor_frame_handle_close,
+   libdecor_frame_handle_commit,
+};
 #endif
+
+static void xdg_toplevel_handle_configure(void *data,
+      struct xdg_toplevel *toplevel,
+      int32_t width, int32_t height, struct wl_array *states)
+{
+   gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
+   const uint32_t *state;
+
+   /* Record only; the state is pending until xdg_surface.configure.
+    * A later toplevel.configure before the surface.configure
+    * supersedes this one (last-wins), matching the protocol. */
+   wl->cfg_pending.width      = width;
+   wl->cfg_pending.height     = height;
+   wl->cfg_pending.fullscreen = false;
+   wl->cfg_pending.maximized  = false;
+   wl->cfg_pending.resizing   = false;
+   wl->cfg_pending.activated  = false;
+   wl->cfg_pending.floating   = true;
+   wl->cfg_pending.suspended  = false;
+
+   WL_ARRAY_FOR_EACH(state, states, const uint32_t*)
+   {
+      switch (*state)
+      {
+         case XDG_TOPLEVEL_STATE_FULLSCREEN:
+            wl->cfg_pending.fullscreen = true;
+            wl->cfg_pending.floating   = false;
+            break;
+         case XDG_TOPLEVEL_STATE_MAXIMIZED:
+            wl->cfg_pending.maximized  = true;
+            /* fall-through */
+         case XDG_TOPLEVEL_STATE_TILED_LEFT:
+         case XDG_TOPLEVEL_STATE_TILED_RIGHT:
+         case XDG_TOPLEVEL_STATE_TILED_TOP:
+         case XDG_TOPLEVEL_STATE_TILED_BOTTOM:
+            wl->cfg_pending.floating   = false;
+            break;
+         case XDG_TOPLEVEL_STATE_RESIZING:
+            wl->cfg_pending.resizing   = true;
+            break;
+         case XDG_TOPLEVEL_STATE_ACTIVATED:
+            wl->cfg_pending.activated  = true;
+            break;
+         case XDG_TOPLEVEL_STATE_SUSPENDED:
+            wl->cfg_pending.suspended  = true;
+            break;
+      }
+   }
+
+   wl->cfg_pending.pending = true;
+}
+
+static void xdg_surface_handle_configure_latch(void *data,
+      struct xdg_surface *xdg_surface, uint32_t serial)
+{
+   gfx_ctx_wayland_data_t *wl = (gfx_ctx_wayland_data_t*)data;
+
+   if (wl->cfg_pending.pending)
+   {
+      wl->cfg_pending.pending = false;
+      /* ignore_configuration drops the configuration exactly as the
+       * pre-latching code dropped it at toplevel.configure time;
+       * evaluated here, at the atomic point. */
+      if (!wl->ignore_configuration)
+      {
+         xdg_configure_apply(wl);
+         if (wl->driver_configure_handler)
+            wl->driver_configure_handler(wl);
+         wl->configured = false;
+      }
+   }
+
+   /* Always acknowledge; the new state takes effect on the next
+    * wl_surface.commit, which the frame loop performs. */
+   xdg_surface_ack_configure(xdg_surface, serial);
+}
+
+static const struct xdg_surface_listener wl_xdg_surface_listener = {
+   xdg_surface_handle_configure_latch,
+};
+
+static void xdg_toplevel_handle_configure_bounds(void *data,
+      struct xdg_toplevel *xdg_toplevel,
+      int32_t width, int32_t height)
+{
+   /* Advisory maximum size (since v4); RetroArch sizes from the
+    * configure events themselves, so nothing to do. */
+}
+
+static void xdg_toplevel_handle_wm_capabilities(void *data,
+      struct xdg_toplevel *xdg_toplevel,
+      struct wl_array *capabilities)
+{
+   /* Advertised WM actions (since v5); RetroArch does not currently
+    * tailor its UI to them. */
+}
+
+static const struct xdg_toplevel_listener wl_xdg_toplevel_listener = {
+   xdg_toplevel_handle_configure,
+   xdg_toplevel_handle_close,
+   xdg_toplevel_handle_configure_bounds,
+   xdg_toplevel_handle_wm_capabilities,
+};
 
 void gfx_ctx_wl_get_video_size_common(void *data,
       unsigned *width, unsigned *height)
@@ -729,7 +846,8 @@ static bool wl_draw_splash_screen(gfx_ctx_wayland_data_t *wl)
 #endif
 
 bool gfx_ctx_wl_init_common(
-      const toplevel_listener_t *toplevel_listener, gfx_ctx_wayland_data_t **wwl)
+      driver_configure_handler_t driver_configure_handler,
+      gfx_ctx_wayland_data_t **wwl)
 {
    int i;
    gfx_ctx_wayland_data_t *wl;
@@ -751,6 +869,8 @@ bool gfx_ctx_wl_init_common(
    }
 #endif
 #endif
+
+   wl->driver_configure_handler = driver_configure_handler;
 
    wl_list_init(&wl->all_outputs);
    wl_list_init(&wl->current_outputs);
@@ -896,7 +1016,7 @@ bool gfx_ctx_wl_init_common(
 
    if (wl->libdecor)
    {
-      wl->libdecor_frame = wl->libdecor_decorate(wl->libdecor_context, wl->surface, &toplevel_listener->libdecor_frame_interface, wl);
+      wl->libdecor_frame = wl->libdecor_decorate(wl->libdecor_context, wl->surface, &wl_libdecor_frame_interface, wl);
       if (!wl->libdecor_frame)
       {
          RARCH_ERR("[Wayland] Failed to create libdecor frame.\n");
@@ -939,10 +1059,10 @@ bool gfx_ctx_wl_init_common(
 #endif
    {
       wl->xdg_surface = xdg_wm_base_get_xdg_surface(wl->xdg_shell, wl->surface);
-      xdg_surface_add_listener(wl->xdg_surface, &xdg_surface_listener, wl);
+      xdg_surface_add_listener(wl->xdg_surface, &wl_xdg_surface_listener, wl);
 
       wl->xdg_toplevel = xdg_surface_get_toplevel(wl->xdg_surface);
-      xdg_toplevel_add_listener(wl->xdg_toplevel, &toplevel_listener->xdg_toplevel_listener, wl);
+      xdg_toplevel_add_listener(wl->xdg_toplevel, &wl_xdg_toplevel_listener, wl);
 
       xdg_toplevel_set_app_id(wl->xdg_toplevel, WAYLAND_APP_ID);
       xdg_toplevel_set_title(wl->xdg_toplevel, DEFAULT_WINDOW_TITLE);
@@ -1204,20 +1324,6 @@ static void xdg_surface_handle_configure(void *data,
 }
 #endif
 
-#ifdef HAVE_LIBDECOR_H
-static void libdecor_handle_err(struct libdecor *context,
-      enum libdecor_error err, const char *message)
-{
-   RARCH_ERR("[Wayland] libdecor Caught error (%d): %s.\n", err, message);
-}
-#endif
-
 const struct wl_buffer_listener shm_buffer_listener = {
    shm_buffer_handle_release,
 };
-
-#ifdef HAVE_LIBDECOR_H
-const struct libdecor_interface libdecor_interface = {
-   .error = libdecor_handle_err,
-};
-#endif

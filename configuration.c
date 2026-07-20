@@ -2301,6 +2301,9 @@ static struct config_bool_setting *populate_settings_bool(
 #include "settings/settings_def_menu_horizontal_animation.h"
 #endif
 #ifdef HAVE_MENU
+#include "settings/settings_def_menu_show_full_paths.h"
+#endif
+#ifdef HAVE_MENU
 #ifdef HAVE_RGUI
 #include "settings/settings_def_menu_rgui_transparency.h"
 #endif
@@ -3008,6 +3011,9 @@ static struct config_float_setting *populate_settings_float(
 #include "settings/settings_def_menu_horizontal_animation.h"
 #endif
 #ifdef HAVE_MENU
+#include "settings/settings_def_menu_show_full_paths.h"
+#endif
+#ifdef HAVE_MENU
 #ifdef HAVE_RGUI
 #include "settings/settings_def_menu_rgui_transparency.h"
 #endif
@@ -3673,6 +3679,9 @@ static struct config_uint_setting *populate_settings_uint(
 #include "settings/settings_def_menu_horizontal_animation.h"
 #endif
 #ifdef HAVE_MENU
+#include "settings/settings_def_menu_show_full_paths.h"
+#endif
+#ifdef HAVE_MENU
 #ifdef HAVE_RGUI
 #include "settings/settings_def_menu_rgui_transparency.h"
 #endif
@@ -3850,6 +3859,7 @@ static struct config_uint_setting *populate_settings_uint(
    SETTING_UINT("video_stream_scale_factor",     &settings->uints.video_stream_scale_factor, true, 1, false);
 
    SETTING_UINT("video_hdr_mode",                &settings->uints.video_hdr_mode, true, DEFAULT_VIDEO_HDR_MODE, false);
+   SETTING_UINT("video_swapchain_bit_depth",     &settings->uints.video_swapchain_bit_depth, true, DEFAULT_VIDEO_SWAPCHAIN_BIT_DEPTH, false);
 #ifdef HAVE_NETWORKING
    SETTING_UINT("streaming_mode",                &settings->uints.streaming_mode, true, STREAMING_MODE_TWITCH, false);
 #endif
@@ -4372,6 +4382,9 @@ static struct config_int_setting *populate_settings_int(
 #endif
 #ifdef HAVE_MENU
 #include "settings/settings_def_menu_horizontal_animation.h"
+#endif
+#ifdef HAVE_MENU
+#include "settings/settings_def_menu_show_full_paths.h"
 #endif
 #ifdef HAVE_MENU
 #ifdef HAVE_RGUI
@@ -4961,6 +4974,9 @@ static struct config_int_setting *populate_settings_int(
 #endif
 #ifdef HAVE_MENU
 #include "settings/settings_def_menu_horizontal_animation.h"
+#endif
+#ifdef HAVE_MENU
+#include "settings/settings_def_menu_show_full_paths.h"
 #endif
 #ifdef HAVE_MENU
 #ifdef HAVE_RGUI

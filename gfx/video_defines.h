@@ -261,7 +261,11 @@ enum display_flags
    GFX_CTX_FLAGS_OVERLAY_BEHIND_MENU_SUPPORTED,
    GFX_CTX_FLAGS_CRT_SWITCHRES,
    GFX_CTX_FLAGS_SUBFRAME_SHADERS,
-   GFX_CTX_FLAGS_FAST_TOGGLE_SHADERS
+   GFX_CTX_FLAGS_FAST_TOGGLE_SHADERS,
+   /* Set by a video driver that can present a native XRGB2101010 (10-bit
+    * per channel) source frame without the frontend down-converting it to
+    * XRGB8888 first. */
+   GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE
 };
 
 enum shader_uniform_type
@@ -327,6 +331,21 @@ struct font_params
 
    /* ABGR. Use the macros. */
    uint32_t color;
+
+   /* Optional full-precision colour. When non-NULL it points to 4 floats
+    * (R, G, B, A, each 0..1) that take precedence over the 8-bit 'color'
+    * above, letting a caller drive text at more than 8 bits per channel on a
+    * deep-colour (e.g. 10-bit) framebuffer. NULL means "use 'color'".
+    *
+    * Only honoured by font backends that opt in; the rest ignore it and use
+    * 'color', so it is always safe to leave set or unset. Because most
+    * font_params are built field by field, a producer that wants to use this
+    * MUST set it explicitly (to NULL or to a valid array) - do not assume it
+    * is zero-initialised. It is only ever read by backends fed from the
+    * central builders that initialise it (the menu text path and the OSD
+    * stat params), so an uninitialised value at other sites is never
+    * dereferenced. */
+   const float *color_hp;
 
    float x;
    float y;

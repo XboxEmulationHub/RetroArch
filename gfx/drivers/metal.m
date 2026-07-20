@@ -105,6 +105,12 @@ typedef NS_ENUM(NSUInteger, RPixelFormat)
    RPixelFormatBGRA8Unorm,
    RPixelFormatBGRX8Unorm, /* RetroArch XRGB */
 
+   /* RetroArch XRGB2101010 (10-bit per channel). BGR10A2 matches the ABI's
+    * packed layout (R in bits [29:20], G [19:10], B [9:0]) with no swizzle,
+    * and is directly sampleable, so it uses the same direct-encoder draw
+    * path as BGRA8/BGRX8 rather than a conversion filter. */
+   RPixelFormatBGR10A2Unorm,
+
    RPixelFormatCount
 };
 
@@ -621,6 +627,7 @@ static NSString *NSStringFromRPixelFormat(RPixelFormat format)
       STRING(RPixelFormatBGRA4Unorm);
       STRING(RPixelFormatBGRA8Unorm);
       STRING(RPixelFormatBGRX8Unorm);
+      STRING(RPixelFormatBGR10A2Unorm);
 #undef STRING
 
    });
@@ -1852,7 +1859,14 @@ static matrix_float4x4 matrix_proj_ortho(float left, float right, float top, flo
 
 - (id<MTLTexture>)newTexture:(struct texture_image)image mipmapped:(bool)mipmapped
 {
-   MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+   /* A 10-bit (XRGB2101010) source uses BGR10A2Unorm, whose packed layout
+    * (R in the high 10 bits, B in the low) matches the ABI with no swizzle,
+    * exactly as in the Metal source-frame path; otherwise BGRA8. Both are 4
+    * bytes/pixel so the row stride is unchanged. */
+   MTLPixelFormat        pf = image.pix10
+         ? MTLPixelFormatBGR10A2Unorm
+         : MTLPixelFormatBGRA8Unorm;
+   MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pf
          width:image.width
          height:image.height
          mipmapped:mipmapped];
@@ -2815,7 +2829,9 @@ static const NSUInteger kConstantAlignment = 4;
       _filter       = d.filter;
       _context      = c;
       _visible      = YES;
-      if (_format == RPixelFormatBGRA8Unorm || _format == RPixelFormatBGRX8Unorm)
+      if (   _format == RPixelFormatBGRA8Unorm
+          || _format == RPixelFormatBGRX8Unorm
+          || _format == RPixelFormatBGR10A2Unorm)
          _drawState = ViewDrawStateEncoder;
       else
          _drawState = ViewDrawStateAll;
@@ -2833,7 +2849,14 @@ static const NSUInteger kConstantAlignment = 4;
    _size = size;
 
    {
-      MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+      /* The sampled texture matches the source for the direct-encoder
+       * formats (BGRA8/BGRX8/BGR10A2); the filtered formats convert into a
+       * BGRA8 texture via a compute pass. */
+      MTLPixelFormat texFmt =
+            (_format == RPixelFormatBGR10A2Unorm)
+            ? MTLPixelFormatBGR10A2Unorm
+            : MTLPixelFormatBGRA8Unorm;
+      MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:texFmt
             width: (NSUInteger)size.width
             height:(NSUInteger)size.height
             mipmapped:NO];
@@ -2842,7 +2865,8 @@ static const NSUInteger kConstantAlignment = 4;
    }
 
    if (   _format != RPixelFormatBGRA8Unorm
-       && _format != RPixelFormatBGRX8Unorm)
+       && _format != RPixelFormatBGRX8Unorm
+       && _format != RPixelFormatBGR10A2Unorm)
    {
       MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR16Uint
                width:(NSUInteger)size.width
@@ -2886,7 +2910,8 @@ static const NSUInteger kConstantAlignment = 4;
 - (void)drawWithContext:(Context *)ctx
 {
    if (   _format == RPixelFormatBGRA8Unorm
-       || _format == RPixelFormatBGRX8Unorm)
+       || _format == RPixelFormatBGRX8Unorm
+       || _format == RPixelFormatBGR10A2Unorm)
       return;
 
    if (!_srcDirty)
@@ -2911,7 +2936,9 @@ static const NSUInteger kConstantAlignment = 4;
     * the driver to walk 4x the source memory between rows, reading
     * past the source allocation on every row after the first. The
     * else-branch already passes pitch straight through. */
-   if (_format == RPixelFormatBGRA8Unorm || _format == RPixelFormatBGRX8Unorm)
+   if (   _format == RPixelFormatBGRA8Unorm
+       || _format == RPixelFormatBGRX8Unorm
+       || _format == RPixelFormatBGR10A2Unorm)
    {
       [_texture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)_size.width, (NSUInteger)_size.height)
                   mipmapLevel:0 withBytes:src
@@ -3463,11 +3490,16 @@ static INLINE void write_quad6(SpriteVertex *pv,
       drop_mod   = params->drop_mod;
       drop_alpha = params->drop_alpha;
 
-      color      = simd_make_float4(
-            FONT_COLOR_GET_RED(params->color) / 255.0f,
-            FONT_COLOR_GET_GREEN(params->color) / 255.0f,
-            FONT_COLOR_GET_BLUE(params->color) / 255.0f,
-            FONT_COLOR_GET_ALPHA(params->color) / 255.0f);
+      if (params->color_hp)
+         color   = simd_make_float4(
+               params->color_hp[0], params->color_hp[1],
+               params->color_hp[2], params->color_hp[3]);
+      else
+         color   = simd_make_float4(
+               FONT_COLOR_GET_RED(params->color) / 255.0f,
+               FONT_COLOR_GET_GREEN(params->color) / 255.0f,
+               FONT_COLOR_GET_BLUE(params->color) / 255.0f,
+               FONT_COLOR_GET_ALPHA(params->color) / 255.0f);
 
    }
    else
@@ -3885,7 +3917,9 @@ static void metal_pull_cached_frame_cb(void *userdata,
       /* Framebuffer view */
       {
          ViewDescriptor *vd  = [ViewDescriptor new];
-         vd.format           = _video.rgb32 ? RPixelFormatBGRX8Unorm : RPixelFormatB5G6R5Unorm;
+         vd.format           = _video.source_10bit
+               ? RPixelFormatBGR10A2Unorm
+               : (_video.rgb32 ? RPixelFormatBGRX8Unorm : RPixelFormatB5G6R5Unorm);
          vd.size             = CGSizeMake(video->width, video->height);
          vd.filter           = _video.smooth ? RTextureFilterLinear : RTextureFilterNearest;
          _frameView          = [[FrameView alloc] initWithDescriptor:vd context:_context];
@@ -4498,7 +4532,9 @@ typedef struct MTLALIGN(16)
       _format               = d.format;
       _bpp                  = RPixelFormatToBPP(_format);
       _filter               = d.filter;
-      if (_format == RPixelFormatBGRA8Unorm || _format == RPixelFormatBGRX8Unorm)
+      if (   _format == RPixelFormatBGRA8Unorm
+          || _format == RPixelFormatBGRX8Unorm
+          || _format == RPixelFormatBGR10A2Unorm)
          _drawState         = ViewDrawStateEncoder;
       else
          _drawState         = ViewDrawStateAll;
@@ -4608,7 +4644,8 @@ typedef struct MTLALIGN(16)
    resize_render_targets = YES;
 
    if (   _format != RPixelFormatBGRA8Unorm
-       && _format != RPixelFormatBGRX8Unorm)
+       && _format != RPixelFormatBGRX8Unorm
+       && _format != RPixelFormatBGR10A2Unorm)
    {
       MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR16Uint
                                  width:(NSUInteger)size.width
@@ -4685,7 +4722,15 @@ typedef struct MTLALIGN(16)
    if (   _engine.frame.texture[0].size_data.x != _size.width
        || _engine.frame.texture[0].size_data.y != _size.height)
    {
-      MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+      /* The front slot receives the uploaded source frame directly, so for a
+       * native 10-bit source it must be BGR10A2 (which matches the ABI's
+       * XRGB2101010 packing with no swizzle); all other formats upload into
+       * or convert to BGRA8. */
+      MTLPixelFormat frameFmt =
+            (_format == RPixelFormatBGR10A2Unorm)
+            ? MTLPixelFormatBGR10A2Unorm
+            : MTLPixelFormatBGRA8Unorm;
+      MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:frameFmt
                width:(NSUInteger)_size.width
                height:(NSUInteger)_size.height
                mipmapped:false];
@@ -4734,7 +4779,8 @@ typedef struct MTLALIGN(16)
    [self _updateHistory];
 
    if (   _format == RPixelFormatBGRA8Unorm
-       || _format == RPixelFormatBGRX8Unorm)
+       || _format == RPixelFormatBGRX8Unorm
+       || _format == RPixelFormatBGR10A2Unorm)
    {
       id<MTLTexture> tex = _engine.frame.texture[0].view;
       [tex replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)_size.width, (NSUInteger)_size.height)
@@ -4777,6 +4823,7 @@ typedef struct MTLALIGN(16)
 
    if (     (_format != RPixelFormatBGRA8Unorm)
          && (_format != RPixelFormatBGRX8Unorm)
+         && (_format != RPixelFormatBGR10A2Unorm)
          && _srcDirty)
    {
       [_context convertFormat:_format from:_src to:_texture];
@@ -5015,7 +5062,13 @@ typedef struct MTLALIGN(16)
       if (lastPass && _hdrEnabled)
       {
          forceAllocForHDR = YES;
-         if (fmt != MTLPixelFormatRGBA16Float && fmt != MTLPixelFormatRGB10A2Unorm)
+         /* Must match the attachment format _initPipelines picks, which
+          * only honours an HDR format the shader declared itself.  A
+          * format derived from preset FBO flags is not an HDR encode, so
+          * the composite input stays RGBA16F for it. */
+         if (!(   _engine.pass[i].semantics.explicit_format
+               && (   fmt == MTLPixelFormatRGBA16Float
+                   || fmt == MTLPixelFormatRGB10A2Unorm)))
             fmt = MTLPixelFormatRGBA16Float;
       }
 
@@ -5249,11 +5302,19 @@ typedef struct MTLALIGN(16)
             BOOL passEmitsHDR16 = NO;
             if (lastPass)
             {
-               if (   _engine.pass[i].semantics.format == SLANG_FORMAT_A2B10G10R10_UNORM_PACK32
-                   || _engine.pass[i].semantics.format == SLANG_FORMAT_A2B10G10R10_UINT_PACK32)
-                  passEmitsHDR10 = YES;
-               else if (_engine.pass[i].semantics.format == SLANG_FORMAT_R16G16B16A16_SFLOAT)
-                  passEmitsHDR16 = YES;
+               /* Only a format the shader declared itself (#pragma format)
+                * means the shader performed its own HDR encode.  A format
+                * derived from preset FBO flags (float_framebuffer /
+                * rgb10_framebuffer) carries no such intent, so it must not
+                * put the composite pass into passthrough. */
+               if (_engine.pass[i].semantics.explicit_format)
+               {
+                  if (   _engine.pass[i].semantics.format == SLANG_FORMAT_A2B10G10R10_UNORM_PACK32
+                      || _engine.pass[i].semantics.format == SLANG_FORMAT_A2B10G10R10_UINT_PACK32)
+                     passEmitsHDR10 = YES;
+                  else if (_engine.pass[i].semantics.format == SLANG_FORMAT_R16G16B16A16_SFLOAT)
+                     passEmitsHDR16 = YES;
+               }
 
                /* Method-scope flags — will be pushed to Context after the loop. */
                _shaderEmitsHDR10 = passEmitsHDR10;
@@ -5630,23 +5691,65 @@ static void metal_ctx_swap_buffers(void *data)
 static bool metal_set_shader(void *data,
       enum rarch_shader_type type, const char *path);
 
+typedef struct
+{
+   const video_info_t *video;
+   input_driver_t **input;
+   void **input_data;
+   void *result;
+} metal_init_args_t;
+
+/* Defined in ui/drivers/cocoa/cocoa_common.m.  Declared locally (same
+ * pattern as the cocoa ctx drivers) to avoid touching the
+ * CRLF-formatted cocoa_common.h. */
+void cocoa_main_thread_sync(void (*func)(void *userdata), void *userdata);
+
+/* The whole init is main-thread work: setViewType replaces the
+ * window's contentView (with threaded video, calling it from the
+ * worker raises NSInternalInconsistencyException inside
+ * -[NSWindow setContentView:] and aborts), and MetalDriver's
+ * -initWithVideo: attaches to the render view (view.device /
+ * view.delegate / view.frame) and drives [apple_platform
+ * setVideoMode:].  metal_frame needs no such treatment: it presents
+ * via CAMetalLayer.nextDrawable, which is the sanctioned off-main
+ * path. */
+static void metal_init_mainthread(void *userdata)
+{
+   metal_init_args_t *args = (metal_init_args_t*)userdata;
+   MetalDriver *md         = nil;
+
+   [apple_platform setViewType:APPLE_VIEW_TYPE_METAL];
+
+   md = [[MetalDriver alloc] initWithVideo:args->video
+                                     input:args->input
+                                 inputData:args->input_data];
+   if (md == nil)
+   {
+      args->result = NULL;
+      return;
+   }
+
+   /* Store reference for context swap_buffers calls */
+   metal_ctx_data = (__bridge void *)md;
+
+   args->result   = (__bridge_retained void *)md;
+}
+
 static void *metal_init(
       const video_info_t *video,
       input_driver_t **input,
       void **input_data)
 {
-   MetalDriver *md = nil;
+   metal_init_args_t args;
 
-   [apple_platform setViewType:APPLE_VIEW_TYPE_METAL];
+   args.video      = video;
+   args.input      = input;
+   args.input_data = input_data;
+   args.result     = NULL;
 
-   md = [[MetalDriver alloc] initWithVideo:video input:input inputData:input_data];
-   if (md == nil)
-      return NULL;
+   cocoa_main_thread_sync(metal_init_mainthread, &args);
 
-   /* Store reference for context swap_buffers calls */
-   metal_ctx_data = (__bridge void *)md;
-
-   return (__bridge_retained void *)md;
+   return args.result;
 }
 
 /* Flag to prevent recursive shader_subframes calls */
@@ -5741,7 +5844,11 @@ static void metal_set_nonblock_state(void *data, bool non_block,
 
 static bool metal_alive(void *data) { return true; }
 static bool metal_has_windowed(void *data) { return true; }
-static bool metal_focus(void *data) { return apple_platform.hasFocus; }
+/* apple_platform.hasFocus is [NSApp isActive] (AppKit, main-thread-
+ * only); with threaded video this is queried from the worker every
+ * frame.  cocoa_has_focus() reads the value the main thread last
+ * published, lock-free. */
+static bool metal_focus(void *data) { return cocoa_has_focus(NULL); }
 
 static bool metal_suppress_screensaver(void *data, bool disable)
 {
@@ -5969,9 +6076,17 @@ static void metal_set_texture_enable(void *data, bool state, bool full_screen)
 #endif
 }
 
+static void metal_show_mouse_mainthread(void *userdata)
+{
+   [apple_platform setCursorVisible:(userdata != NULL)];
+}
+
 static void metal_show_mouse(void *data, bool state)
 {
-   [apple_platform setCursorVisible:state];
+   /* setCursorVisible is NSCursor (AppKit); with threaded video this
+    * can be reached from the worker thread. */
+   cocoa_main_thread_sync(metal_show_mouse_mainthread,
+         state ? (void*)1 : NULL);
 }
 
 static struct video_shader *metal_get_current_shader(void *data)
@@ -5990,6 +6105,7 @@ static uint32_t metal_get_flags(void *data)
    BIT32_SET(flags, GFX_CTX_FLAGS_CUSTOMIZABLE_SWAPCHAIN_IMAGES);
    BIT32_SET(flags, GFX_CTX_FLAGS_MENU_FRAME_FILTERING);
    BIT32_SET(flags, GFX_CTX_FLAGS_SCREENSHOTS_SUPPORTED);
+   BIT32_SET(flags, GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE);
 
 #if defined(HAVE_SLANG) && defined(HAVE_SPIRV_CROSS)
    BIT32_SET(flags, GFX_CTX_FLAGS_SHADERS_SLANG);

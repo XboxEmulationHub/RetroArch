@@ -33,6 +33,7 @@
 #include "../../configuration.h"
 #include "../../core.h"
 #include "../../core_info.h"
+#include "../../manual_content_scan.h"
 #include "../../verbosity.h"
 #include "../../msg_hash_lbl_str.h"
 
@@ -422,6 +423,18 @@ static int general_push(menu_displaylist_info_t *info,
 #if defined(HAVE_RWAV)
                string_ext_list_merge_dedup(ext_filter, &_len, sizeof(ext_filter), "wav");
 #endif
+#ifdef HAVE_RAAC
+#ifdef HAVE_RMP4
+               string_ext_list_merge_dedup(ext_filter, &_len, sizeof(ext_filter), "m4a");
+#endif
+               string_ext_list_merge_dedup(ext_filter, &_len, sizeof(ext_filter), "aac");
+#endif
+#ifdef HAVE_ROPUS
+               string_ext_list_merge_dedup(ext_filter, &_len, sizeof(ext_filter), "opus");
+#endif
+#if defined(HAVE_RWEBM) && (defined(HAVE_ROPUS) || defined(HAVE_RVORBIS))
+               string_ext_list_merge_dedup(ext_filter, &_len, sizeof(ext_filter), "weba");
+#endif
 #ifdef HAVE_RMODTRACKER
                string_ext_list_merge_dedup(ext_filter, &_len, sizeof(ext_filter), "s3m|mod|xm");
 #endif
@@ -458,6 +471,13 @@ static int general_push(menu_displaylist_info_t *info,
       }
    }
 #endif
+
+   if (     string_is_equal(info->label, MENU_ENUM_LABEL_MANUAL_CONTENT_SCAN_DIR_STR)
+         && manual_content_scan_get_scan_method_enum() == MANUAL_CONTENT_SCAN_METHOD_CUSTOM)
+   {
+      strlcpy(ext_filter, manual_content_scan_get_file_exts(), sizeof(ext_filter));
+      string_replace_all_chars(ext_filter, ' ', '|');
+   }
 
    if (*ext_filter)
    {

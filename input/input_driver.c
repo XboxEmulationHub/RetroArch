@@ -88,6 +88,7 @@
 
 /* Depends on ASCII character values */
 #define ISPRINT(c) (((int)(c) >= ' ' && (int)(c) <= '~') ? 1 : 0)
+#define IS_UTF8_CONTINUATION(c) ((((uint8_t)(c)) & 0xc0) == 0x80)
 
 #define INPUT_REMOTE_KEY_PRESSED(input_st, key, port) (input_st->remote_st_ptr.buttons[(port)] & (UINT64_C(1) << (key)))
 
@@ -4909,25 +4910,27 @@ static bool input_keyboard_line_event(
    }
    else if (c == '\b' || c == '\x7f') /* 0x7f is ASCII for del */
    {
-      if (state->ptr)
+      if (state->ptr && state->buffer)
       {
-         unsigned i;
+         size_t ptr = state->ptr;
 
-         for (i = 0; i < input_st->osk_last_codepoint_len; i++)
+         while (state->ptr)
          {
-            memmove(state->buffer + state->ptr - 1,
-                  state->buffer + state->ptr,
-                  state->size - state->ptr + 1);
             state->ptr--;
-            state->size--;
+            if (!IS_UTF8_CONTINUATION(state->buffer[state->ptr]))
+               break;
          }
+
+         memmove(state->buffer + state->ptr,
+               state->buffer + ptr,
+               state->size - ptr + 1);
+         state->size -= ptr - state->ptr;
 
          word     = state->buffer;
       }
    }
    else if (ISPRINT(c))
    {
-      /* Handle left/right here when suitable */
       char *newbuf = (char*)
          realloc(state->buffer, state->size + 2);
       if (!newbuf)
@@ -6128,7 +6131,7 @@ void input_overlay_unload(void)
 
    /* Free if overlays disabled or initing/deiniting core */
    if (     !input_overlay_enable
-         || !(runloop_st->flags & RUNLOOP_FLAG_IS_INITED)
+         || !runloop_is_inited()
          ||  (runloop_st->flags & RUNLOOP_FLAG_SHUTDOWN_INITIATED))
       input_overlay_deinit();
    else
@@ -8067,24 +8070,16 @@ void input_driver_collect_system_input(input_driver_state_t *input_st,
       }
       else if (display_kb && input && input->input_state)
       {
-         /* Allow arrows, LCtrl as OK, character map switches,
+         /* Allow character map switches, 
           * and set RetroPad Select bit when pressing Escape
           * in order to clear the input window and close it. */
          unsigned i;
          unsigned ids[][2] =
          {
-            {RETROK_LCTRL,     RETRO_DEVICE_ID_JOYPAD_A      },
-            {RETROK_UP,        RETRO_DEVICE_ID_JOYPAD_UP     },
-            {RETROK_DOWN,      RETRO_DEVICE_ID_JOYPAD_DOWN   },
-            {RETROK_LEFT,      RETRO_DEVICE_ID_JOYPAD_LEFT   },
-            {RETROK_RIGHT,     RETRO_DEVICE_ID_JOYPAD_RIGHT  },
             {RETROK_PAGEUP,    RETRO_DEVICE_ID_JOYPAD_L      },
             {RETROK_PAGEDOWN,  RETRO_DEVICE_ID_JOYPAD_R      },
             {RETROK_ESCAPE,    RETRO_DEVICE_ID_JOYPAD_SELECT },
          };
-
-         if (settings->bools.input_menu_swap_ok_cancel_buttons)
-            ids[0][1] = RETRO_DEVICE_ID_JOYPAD_B;
 
          for (i = 0; i < ARRAY_SIZE(ids); i++)
          {
@@ -8318,11 +8313,50 @@ void input_keyboard_event(bool down, unsigned code,
    }
    else if (input_st->keyboard_line.enabled)
    {
+      input_keyboard_line_t *line = &input_st->keyboard_line;
+
       if (!down)
          return;
 
-      if (!input_keyboard_line_event(input_st,
-            &input_st->keyboard_line, character))
+      switch (code)
+      {
+         case RETROK_LEFT:
+            if (line->ptr && line->buffer)
+            {
+               line->ptr--;
+               while (line->ptr && IS_UTF8_CONTINUATION(line->buffer[line->ptr]))
+                  line->ptr--;
+
+               if (mod & RETROKMOD_CTRL)
+                  while (line->ptr &&
+                        (ISSPACE(line->buffer[line->ptr]) || !ISSPACE(line->buffer[line->ptr - 1])))
+                     line->ptr--;
+            }
+            return;
+         case RETROK_RIGHT:
+            if (line->buffer && line->ptr < line->size)
+            {
+               line->ptr++;
+               while (line->ptr < line->size && IS_UTF8_CONTINUATION(line->buffer[line->ptr]))
+                  line->ptr++;
+
+               if (mod & RETROKMOD_CTRL)
+                  while (line->ptr < line->size &&
+                        (ISSPACE(line->buffer[line->ptr]) || !ISSPACE(line->buffer[line->ptr - 1])))
+                     line->ptr++;
+            }
+            return;
+         case RETROK_UP:
+            line->ptr = 0;
+            return;
+         case RETROK_DOWN:
+            line->ptr = line->size;
+            return;
+         default:
+            break;
+      }
+
+      if (!input_keyboard_line_event(input_st, line, character))
          return;
 
       /* Line is complete, can free it now. */

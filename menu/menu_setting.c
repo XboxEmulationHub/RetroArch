@@ -1313,11 +1313,14 @@ static size_t setting_get_string_representation_st_path(rarch_setting_t *setting
 {
    if (setting)
    {
+      const char *path = setting->value.target.string;
+      if ((setting->type == ST_DIR) && (config_get_ptr()->bools.menu_show_full_paths))
+         return strlcpy(s, path, len);
 #if IOS
       return fill_pathname_abbreviate_special(s,
-            path_basename(setting->value.target.string), len);
+            path_basename(path), len);
 #else
-      return fill_pathname(s, path_basename(setting->value.target.string),
+      return fill_pathname(s, path_basename(path),
             "", len);
 #endif
    }
@@ -3279,6 +3282,27 @@ static size_t setting_get_string_representation_video_hdr_mode(
          case 2:
             return strlcpy(s, msg_hash_to_str(
                      MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MODE_SCRGB), len);
+      }
+   }
+   return 0;
+}
+
+static size_t setting_get_string_representation_video_swapchain_bit_depth(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (setting)
+   {
+      switch (*setting->value.target.unsigned_integer)
+      {
+         case 0:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_SWAPCHAIN_BIT_DEPTH_AUTO), len);
+         case 1:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_SWAPCHAIN_BIT_DEPTH_8), len);
+         case 2:
+            return strlcpy(s, msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_VIDEO_SWAPCHAIN_BIT_DEPTH_10), len);
       }
    }
    return 0;
@@ -12333,6 +12357,11 @@ static const setting_desc_t menu_desc_39[] = {
 #include "../settings/settings_def_menu_privacy.h"
 };
 
+static const setting_desc_t menu_desc_40[] = {
+/* GENERATED: rows come from settings_def_menu_show_full_paths.h in order. */
+#include "../settings/settings_def_menu_show_full_paths.h"
+};
+
 static const setting_desc_t menu_file_brow_desc_0[] = {
 /* GENERATED: rows come from settings_def_menu_filebrowser.h in order. */
 #include "../settings/settings_def_menu_filebrowser.h"
@@ -14307,6 +14336,28 @@ static void settings_build_video(
             ADD_DESC(vid_desc_10);
          }
 
+         /* Descriptor holdout: poke tail outside the descriptor grammar.
+          * Deliberately not in the HDR sub-group: this is the SDR path,
+          * and an SDR-only display never reaches the HDR block at all. */
+         CONFIG_UINT(
+               list, list_info,
+               &settings->uints.video_swapchain_bit_depth,
+               MENU_ENUM_LABEL_VIDEO_SWAPCHAIN_BIT_DEPTH,
+               MENU_ENUM_LABEL_VALUE_VIDEO_SWAPCHAIN_BIT_DEPTH,
+               DEFAULT_VIDEO_SWAPCHAIN_BIT_DEPTH,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler);
+         SETTINGS_ACTION_SET(ok, &(*list)[list_info->index - 1], &setting_action_ok_uint)
+         SETTINGS_ACTION_SET(repr, &(*list)[list_info->index - 1], &setting_get_string_representation_video_swapchain_bit_depth)
+         menu_settings_list_current_add_range(list, list_info, 0, 2, 1, true, true);
+         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(
+               list,
+               list_info,
+               CMD_EVENT_VIDEO_APPLY_STATE_CHANGES);
+
          END_SUB_GROUP(list, list_info, parent_group);
          START_SUB_GROUP(list, list_info, "Aspect", &group_info, &subgroup_info, parent_group);
 
@@ -14434,7 +14485,7 @@ static void settings_build_video(
             ADD_DESC(vid_desc_20);
          }
 
-#if defined(HAVE_THREADS) && !defined(__PSL1GHT__) && !defined(__PS3__) && !defined(__APPLE__)
+#if defined(HAVE_THREADS) && !defined(__PSL1GHT__) && !defined(__PS3__)
          /* Descriptor holdout: value target outside settings_t. */
          CONFIG_BOOL(
                list, list_info,
@@ -15310,6 +15361,8 @@ static void settings_build_menu(
 #endif
 
             ADD_DESC(menu_desc_14);
+
+            ADD_DESC(menu_desc_40);
 
       END_SUB_GROUP(list, list_info, parent_group);
 
@@ -17874,6 +17927,7 @@ static const settings_desc_table_t settings_desc_registry[] = {
    { menu_desc_37, (uint16_t)ARRAY_SIZE(menu_desc_37) },
    { menu_desc_38, (uint16_t)ARRAY_SIZE(menu_desc_38) },
    { menu_desc_39, (uint16_t)ARRAY_SIZE(menu_desc_39) },
+   { menu_desc_40, (uint16_t)ARRAY_SIZE(menu_desc_40) },
 #ifdef ANDROID
    { power_manageme_desc_0_s0, (uint16_t)ARRAY_SIZE(power_manageme_desc_0_s0) },
 #endif
