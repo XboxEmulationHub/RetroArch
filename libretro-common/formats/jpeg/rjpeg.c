@@ -22,6 +22,15 @@
 
 /* Baseline and progressive JPEG decoder.
  *
+ * What it implements: baseline sequential and progressive JFIF/EXIF
+ * streams, 8-bit precision, grayscale and YCbCr with all common chroma
+ * subsamplings, restart markers, and BGRA/RGBA output with SIMD IDCT,
+ * upsampling and colour conversion.
+ *
+ * What it does not implement: arithmetic entropy coding, hierarchical
+ * and lossless JPEG modes, 12-bit precision, CMYK/YCCK four-component
+ * streams, and encoding.
+ *
  * Originally derived from stb_image's JPEG sources and since reworked
  * for RetroArch: the decoder is driven incrementally (rjpeg_process_image
  * yields between bounded row batches so a large image never blocks the
@@ -114,6 +123,30 @@ struct rjpeg
    struct rjpeg_process   *process;
    uint8_t                *buff_data;
    size_t                  buff_len;       /* set by set_buf_ptr caller (image_transfer) */
+   /* Prefix decoding: resident byte count from buff_data.  Defaults to
+    * buff_len (whole buffer resident).  rjpeg_set_avail lowers it and
+    * the entropy row driver yields with rjpeg_need_more() true when the
+    * decode reaches the resident frontier while more file is still to
+    * arrive.  See img_buffer_true_end / hit_wall in the decode ctx. */
+   size_t                  avail_len;
+   bool                    avail_set;      /* rjpeg_set_avail was called      */
+   bool                    need_more;      /* last iterate stalled at the wall */
+   /* Throttle for stalled MCU rows.  A row that starves at the resident
+    * frontier is rolled back and retried from scratch, so on a slow
+    * read the same row is decoded over and over - once per delivery -
+    * until enough bytes have arrived to finish it.  With a typical row
+    * costing far more than one read chunk that is the dominant cost
+    * (measured 20x redundant row decodes at 1 KiB per delivery on a
+    * 3.6 MiB image).
+    *
+    * Track the frontier at which the row stalled and a running estimate
+    * of how many bytes a row consumes (seeded from the first committed
+    * rows), then require roughly that much fresh data before retrying.
+    * The estimate only gates retries - it never affects decoded output,
+    * and a wrong guess costs at most one extra deferred tick. */
+   size_t                  stall_at;      /* frontier when row stalled  */
+   size_t                  row_start;     /* cursor at row attempt start*/
+   size_t                  row_bytes_est; /* observed bytes per MCU row */
 
    /* Iterative decode state --
     * NULL until rjpeg_start() allocates it. */
@@ -135,6 +168,14 @@ struct rjpeg
    uint8_t                *iter_output;       /* RGBA8888 output buffer        */
    unsigned                iter_out_row;      /* next output row to resample   */
    int                     iter_resample_ready; /* 1 = resample state inited   */
+   bool                    iter_rgba_used;    /* byte order the fused resample
+                                               * emitted with: supports_rgba is
+                                               * latched by rjpeg_process_image,
+                                               * which the task pipeline only
+                                               * calls after iteration, so the
+                                               * fusion runs with the default
+                                               * (BGRA) and the flag's real
+                                               * value arrives later          */
 
    /* Output byte order selector. Latched from the rjpeg_process_image
     * parameter and consulted by the resample+colorconvert callsites.
@@ -204,6 +245,18 @@ struct rjpeg_jpeg_s
    uint8_t *img_buffer;
    uint8_t *img_buffer_original;
    uint8_t *img_buffer_end;
+   /* Prefix decoding.  img_buffer_end is the RESIDENT frontier: every
+    * bounds check in the reader (marker scan, block byte reads, the
+    * bit-buffer refill) stops there, so a partial buffer never reads an
+    * un-arrived byte.  img_buffer_true_end is the real end of the file
+    * (== the frontier once the whole file is resident).  When the bit
+    * reader runs dry at the frontier while the true end is further
+    * ahead, it sets hit_wall instead of padding with zeros: the caller
+    * rewinds the current MCU row, feeds more, and retries.  With no
+    * prefix feeding, true_end == img_buffer_end and hit_wall never
+    * fires - the reader behaves exactly as before. */
+   uint8_t *img_buffer_true_end;
+   int      hit_wall;   /* refill reached the resident frontier, not EOF */
    int      img_n;
    uint32_t img_x;
    uint32_t img_y;
@@ -240,6 +293,11 @@ struct rjpeg_jpeg_s
       int dc_pred;
 
       int x,y,w2,h2;
+      int ring_h2;         /* plane rows actually allocated: equals h2
+                            * normally; smaller when the iterative
+                            * fused decode rings the planes (3 MCU-row
+                            * spans).  Every plane-row address is taken
+                            * modulo this, an identity at full size. */
       int      coeff_w;          /* number of 8x8 coefficient blocks */
       int      coeff_h;          /* number of 8x8 coefficient blocks */
    } img_comp[4];
@@ -247,6 +305,10 @@ struct rjpeg_jpeg_s
    /* Single arena allocation for all component buffers.
     * When non-NULL, raw_data/raw_coeff/linebuf point into this
     * arena and must NOT be individually freed. */
+   int    plane_ring;   /* 1 = component planes may be ring-sized (set
+                         * by the iterative driver before SOF; the
+                         * monolithic path always decodes whole images
+                         * ahead of resampling and needs full planes) */
    void  *comp_arena;
    size_t comp_arena_size;
 
@@ -440,6 +502,27 @@ static void rjpeg_grow_buffer_unsafe(rjpeg_jpeg *j)
       return;
    }
 
+   /* Prefix decoding: the refill has reached the resident frontier but
+    * the file continues past it.  Do NOT pad and do NOT set nomore -
+    * that would be irreversible and corrupt the current MCU row.  Flag
+    * the wall and leave code_bits as-is; the row driver checkpoints
+    * before each MCU row and rewinds when it sees hit_wall, so the
+    * partially-consumed row is retried intact once more bytes arrive.
+    * When the whole file is resident (true_end == img_buffer_end) this
+    * is never taken. */
+   if (     j->img_buffer     >= j->img_buffer_end
+         && j->img_buffer_end <  j->img_buffer_true_end)
+   {
+      j->hit_wall = 1;
+      /* Do NOT pad here.  Padding would let bit consumers proceed on
+       * fabricated bits and spin (they loop until code_bits>24).  Leave
+       * the bit buffer as-is: the huff decode guard below returns -1 on
+       * hit_wall, and the row driver rolls the row back and retries once
+       * fed.  When the whole file is resident this branch is never
+       * taken and the classic padding paths run. */
+      return;
+   }
+
    /* Fast path: bulk-read when ≥4 bytes remain in the buffer.
     * This avoids per-byte function call overhead and lets us
     * scan for 0xFF with simple comparisons on loaded bytes. */
@@ -552,8 +635,25 @@ handle_ff:
       }
       else
       {
+         int b;
+         /* Fewer than 4 bytes remain to the resident frontier.  If the
+          * frontier is below the true file end, those "missing" bytes
+          * have simply not arrived: flag the wall and stop instead of
+          * reading zero-padding into the bit buffer.  The row driver
+          * rolls back and retries once fed.  When the whole file is
+          * resident (frontier == true end) this is a real end-of-data
+          * and the classic byte-at-a-time padding below runs. */
+         if (     s->img_buffer     >= s->img_buffer_end
+               && s->img_buffer_end <  s->img_buffer_true_end)
+         {
+            j->hit_wall = 1;
+            while (j->code_bits <= 24)
+               j->code_bits += 8;
+            return;
+         }
+
          /* Fewer than 4 bytes remain: byte-at-a-time fallback */
-         int b = RJPEG_GET8(s);
+         b = RJPEG_GET8(s);
          if (b == 0xFF)
          {
             int c = RJPEG_GET8(s);
@@ -581,6 +681,13 @@ static INLINE int rjpeg_jpeg_huff_decode(rjpeg_jpeg *j, rjpeg_huffman *h)
 
    if (j->code_bits < 16)
       rjpeg_grow_buffer_unsafe(j);
+
+   /* If the refill stopped at the resident frontier (more file to
+    * come), the bits just padded in are not real: fail the decode so
+    * the MCU-row driver rolls back and retries once fed.  Harmless when
+    * the whole file is resident - hit_wall is never set then. */
+   if (j->hit_wall)
+      return -1;
 
    c = (j->code_buffer >> (32 - FAST_BITS)) & ((1 << FAST_BITS)-1);
    k = h->fast[c];
@@ -744,6 +851,8 @@ static INLINE int rjpeg_jpeg_decode_block(
 
    if (j->code_bits < 16)
       rjpeg_grow_buffer_unsafe(j);
+   if (j->hit_wall)
+      return 0;   /* refill stalled at resident frontier: fail, roll back */
    t = rjpeg_jpeg_huff_decode_nocheck(j, hdc);
 
    if (t < 0)
@@ -768,6 +877,8 @@ static INLINE int rjpeg_jpeg_decode_block(
        * here; both paths skip their internal checks. */
       if (j->code_bits < 16)
          rjpeg_grow_buffer_unsafe(j);
+      if (j->hit_wall)
+         return 0;   /* refill stalled at resident frontier: fail, roll back */
       c = (j->code_buffer >> (32 - FAST_BITS)) & ((1 << FAST_BITS)-1);
       r = fac[c];
       if (r)
@@ -2649,6 +2760,7 @@ static int rjpeg_process_frame_header(rjpeg_jpeg *z, int scan)
          z->img_comp[i].y        = (s->img_y * z->img_comp[i].v + v_max-1) / v_max;
          z->img_comp[i].w2       = z->img_mcu_x * z->img_comp[i].h * 8;
          z->img_comp[i].h2       = z->img_mcu_y * z->img_comp[i].v * 8;
+         z->img_comp[i].ring_h2  = z->img_comp[i].h2;
          z->img_comp[i].coeff_w  = (z->img_comp[i].w2 + 7) >> 3;
          z->img_comp[i].coeff_h  = (z->img_comp[i].h2 + 7) >> 3;
 
@@ -2702,8 +2814,22 @@ static int rjpeg_process_frame_header(rjpeg_jpeg *z, int scan)
          z->img_comp[i].w2       = z->img_mcu_x * z->img_comp[i].h * 8;
          z->img_comp[i].h2       = z->img_mcu_y * z->img_comp[i].v * 8;
 
+         /* Fused iterative decode: only three MCU-row spans of a
+          * plane are ever live (the span being written, the span
+          * pending resample, and the previous span's last row for
+          * the vertical resampler's continuity), so the plane can be
+          * a recycling window of that many rows.  See
+          * rjpeg_plane_ring_undo() for the cases that revert this. */
+         z->img_comp[i].ring_h2  = z->img_comp[i].h2;
+         if (z->plane_ring)
+         {
+            int span = z->img_comp[i].v * 8 * 3;
+            if (span < z->img_comp[i].ring_h2)
+               z->img_comp[i].ring_h2 = span;
+         }
+
          offsets_data[i] = arena_size;
-         arena_size += (size_t)z->img_comp[i].w2 * z->img_comp[i].h2 + 15;
+         arena_size += (size_t)z->img_comp[i].w2 * z->img_comp[i].ring_h2 + 15;
          arena_size = (arena_size + 15) & ~(size_t)15;
 
          /* linebuf: img_x + 3 bytes (resample scratch, used later) */
@@ -3958,6 +4084,7 @@ static int rjpeg_parse_entropy_one_mcu_row_interleaved(
          int comp_ha      = z->img_comp[n].ha;
          int comp_hd      = z->img_comp[n].hd;
          int comp_w2      = z->img_comp[n].w2;
+         int comp_rh2     = z->img_comp[n].ring_h2;
          uint8_t *comp_data = z->img_comp[n].data;
          rjpeg_huffman *hdc = z->huff_dc + comp_hd;
          rjpeg_huffman *hac = z->huff_ac + comp_ha;
@@ -3966,7 +4093,7 @@ static int rjpeg_parse_entropy_one_mcu_row_interleaved(
 
          for (y = 0; y < comp_v; ++y)
          {
-            int y2 = (mcu_row * comp_v + y) * 8;
+            int y2 = ((mcu_row * comp_v + y) * 8) % comp_rh2;
             for (x = 0; x < comp_h; ++x)
             {
                int x2 = (i * comp_h + x) * 8;
@@ -3989,6 +4116,12 @@ static int rjpeg_parse_entropy_one_mcu_row_interleaved(
       {
          if (z->code_bits < 24)
             rjpeg_grow_buffer_unsafe(z);
+         /* The restart marker for this interval may not have arrived
+          * yet: if the refill stalled at the resident frontier, fail
+          * the row so it rolls back rather than committing without the
+          * marker (and resetting predictors on stale state). */
+         if (z->hit_wall)
+            return 0;
          if (!RJPEG_RESTART(z->marker))
             return 1;
          rjpeg_jpeg_reset(z);
@@ -4019,12 +4152,17 @@ bool rjpeg_start(rjpeg_t *rjpeg)
    j->marker = RJPEG_MARKER_NONE;
    j->restart_interval = 0; j->todo = 0;
    j->comp_arena = NULL; j->comp_arena_size = 0;
+   j->plane_ring = 1;   /* iterative: fused decode may ring the planes */
    j->img_n = 0;
 
    /* Context fields embedded in j */
    j->img_buffer          = (uint8_t*)rjpeg->buff_data;
    j->img_buffer_original = (uint8_t*)rjpeg->buff_data;
-   j->img_buffer_end      = (uint8_t*)rjpeg->buff_data + rjpeg->buff_len;
+   /* img_buffer_end is the RESIDENT frontier; true_end is the real file
+    * end.  Equal when no prefix feeding is in play. */
+   j->img_buffer_end      = (uint8_t*)rjpeg->buff_data + rjpeg->avail_len;
+   j->img_buffer_true_end = (uint8_t*)rjpeg->buff_data + rjpeg->buff_len;
+   j->hit_wall            = 0;
 
    rjpeg->iter_j    = j;
    rjpeg->iter_state    = RJPEG_ITER_PARSE_HEADER;
@@ -4190,7 +4328,9 @@ static void rjpeg_output_rows(rjpeg_jpeg *z, rjpeg_resample *res,
             r->ystep = 0;
             r->line0 = r->line1;
             if (++r->ypos < z->img_comp[k].y)
-               r->line1 += z->img_comp[k].w2;
+               r->line1 = z->img_comp[k].data
+                  + (size_t)(r->ypos % (unsigned)z->img_comp[k].ring_h2)
+                  * z->img_comp[k].w2;
          }
       }
 
@@ -4237,6 +4377,55 @@ static void rjpeg_output_rows(rjpeg_jpeg *z, rjpeg_resample *res,
    }
 }
 
+/* Revert ring-sized baseline planes to full size.  Called before any
+ * entropy data has been decoded, when a condition incompatible with
+ * the fused ring shows up only at SOS time: a non-interleaved scan
+ * (scan_n != img_n decodes one component's whole plane per scan), or
+ * the fused resample failing to initialise.  Geometry (x, y, w2, h2)
+ * survives from the frame header; only the arena is re-cut. */
+static int rjpeg_plane_ring_undo(rjpeg_jpeg *z)
+{
+   size_t arena_size = 0;
+   size_t offsets_data[4], offsets_linebuf[4];
+   uint8_t *arena;
+   int i;
+
+   if (!z->plane_ring)
+      return 1;
+
+   for (i = 0; i < z->img_n; ++i)
+   {
+      z->img_comp[i].ring_h2 = z->img_comp[i].h2;
+      offsets_data[i] = arena_size;
+      arena_size += (size_t)z->img_comp[i].w2 * z->img_comp[i].h2 + 15;
+      arena_size = (arena_size + 15) & ~(size_t)15;
+      offsets_linebuf[i] = arena_size;
+      arena_size += (size_t)z->img_x + 3;
+      arena_size = (arena_size + 15) & ~(size_t)15;
+   }
+
+   arena = (uint8_t*)malloc(arena_size);
+   if (!arena)
+      return 0;
+
+   if (z->comp_arena)
+      free(z->comp_arena);
+   z->comp_arena      = arena;
+   z->comp_arena_size = arena_size;
+
+   for (i = 0; i < z->img_n; ++i)
+   {
+      z->img_comp[i].raw_data  = arena + offsets_data[i];
+      z->img_comp[i].data      = (uint8_t*)(((size_t)(arena + offsets_data[i]) + 15) & ~(size_t)15);
+      z->img_comp[i].linebuf   = arena + offsets_linebuf[i];
+      z->img_comp[i].coeff     = 0;
+      z->img_comp[i].raw_coeff = 0;
+   }
+
+   z->plane_ring = 0;
+   return 1;
+}
+
 /* Initialize the fused iterate+resample state after the header is parsed.
  * Sets up resample contexts and allocates the output buffer. */
 static int rjpeg_iterate_init_resample(rjpeg_t *rjpeg)
@@ -4255,7 +4444,17 @@ static int rjpeg_iterate_init_resample(rjpeg_t *rjpeg)
       return 0;
 
    rjpeg->iter_out_row = 0;
-   rjpeg->iter_resample_ready = 0; /* TODO: fix ystep state bug */
+   /* The fusion originally emitted right up to the boundary of the
+    * just-decoded MCU row.  The vertical resampler's in_far pointer
+    * (line1) crosses that boundary for the last output rows of the
+    * span - for 4:2:0, output row 16m+15 interpolates chroma from
+    * plane row 8m+8, the first row of the NEXT, not-yet-decoded MCU
+    * row - producing wrong pixels on every interior MCU-row seam
+    * (the "ystep state bug" this flag was parked over).  Emission now
+    * lags one MCU row behind decode, so every plane row the
+    * resampler can touch is already written; the final row is
+    * flushed when the last MCU row commits. */
+   rjpeg->iter_resample_ready = 1;
    return 1;
 }
 
@@ -4269,6 +4468,12 @@ bool rjpeg_iterate_image(rjpeg_t *rjpeg)
    j = rjpeg->iter_j;
    if (!j)
       return false;
+
+   /* Clear the wall flag on entry: it is set again only if this call
+    * actually stalls at the resident frontier.  Otherwise a stale flag
+    * from a prior wall would survive into the completion path and make
+    * a finished decode look like it still needs bytes. */
+   rjpeg->need_more = false;
 
    switch (rjpeg->iter_state)
    {
@@ -4334,9 +4539,31 @@ bool rjpeg_iterate_image(rjpeg_t *rjpeg)
          rjpeg->iter_mcu_row = 0;
 
          /* For non-interleaved single-component scans, fall back
-          * to the monolithic path (same rationale as progressive). */
+          * to the monolithic path (same rationale as progressive).
+          * Grayscale lands here too: a single-component scan uses the
+          * non-interleaved MCU geometry (one block per MCU) that the
+          * per-MCU-row driver does not speak.  The monolithic parser
+          * writes whole-plane addresses, so the fusion must stand
+          * down and any plane ring must be reverted first. */
          if (j->scan_n == 1)
          {
+            rjpeg->iter_resample_ready = 0;
+            if (j->plane_ring && !rjpeg_plane_ring_undo(j))
+            {
+               rjpeg->iter_state = RJPEG_ITER_ERROR;
+               return false;
+            }
+            /* The monolithic entropy path has no resident-frontier
+             * awareness.  If a prefix caller set avail below the full
+             * length, the buffer is still partial: yield need_more so
+             * the caller feeds the rest before this one-shot decode
+             * runs.  (rjpeg_header_ready already steers single-component
+             * scans away from early start, so this is a safety net.) */
+            if (j->img_buffer_end < j->img_buffer_true_end)
+            {
+               rjpeg->need_more = true;
+               return false;
+            }
             if (!rjpeg_parse_entropy_coded_data(j))
             {
                rjpeg->iter_state = RJPEG_ITER_ERROR;
@@ -4349,7 +4576,13 @@ bool rjpeg_iterate_image(rjpeg_t *rjpeg)
                {
                   if (mx == JPEG_MARKER_SOS)
                   {
-                     /* Multi-scan baseline is unusual but handle it */
+                     /* Multi-scan baseline is unusual but handle it.
+                      * Not under a plane ring though: earlier spans
+                      * have been recycled and a further scan cannot
+                      * be decoded over them (the fused output is
+                      * already complete at this point). */
+                     if (j->plane_ring)
+                        break;
                      if (!rjpeg_process_scan_header(j))
                         break;
                      if (!rjpeg_parse_entropy_coded_data(j))
@@ -4370,15 +4603,55 @@ bool rjpeg_iterate_image(rjpeg_t *rjpeg)
          rjpeg->iter_state = RJPEG_ITER_ENTROPY_ROWS;
 
          /* Initialize fused resample so we can process output rows
-          * as MCU-rows complete, overlapping entropy+resample. */
-         if (!rjpeg->iter_resample_ready)
+          * as MCU-rows complete, overlapping entropy+resample.
+          * Progressive never enters ENTROPY_ROWS (scans go through
+          * PROG_SCAN / FINISH_PROG and need full coefficient planes),
+          * so arming it there would only allocate the output buffer
+          * early for nothing.  The fusion (and with it the plane
+          * ring) also requires the single interleaved scan: a
+          * non-interleaved scan decodes one component's whole plane
+          * before the others exist, which neither the per-MCU-row
+          * emitter nor a three-span ring can serve. */
+         if (      !rjpeg->iter_resample_ready
+               &&  !j->progressive
+               &&   j->img_n > 1
+               &&   j->scan_n == j->img_n)
             rjpeg_iterate_init_resample(rjpeg);
+         if (!rjpeg->iter_resample_ready && j->plane_ring)
+         {
+            /* Fusion is not running (unsupported scan layout, or its
+             * setup failed): the sequential fallback needs whole
+             * planes. */
+            if (!rjpeg_plane_ring_undo(j))
+            {
+               rjpeg->iter_state = RJPEG_ITER_ERROR;
+               return false;
+            }
+         }
 
          return true; /* more work to do */
       }
 
       case RJPEG_ITER_ENTROPY_ROWS:
       {
+         /* Resume throttle: a stalled row is retried from scratch, so
+          * retrying after only a sliver of new data repeats the whole
+          * row decode and starves again a few bytes later.  Wait until
+          * enough fresh bytes have arrived to plausibly finish it. */
+         if (     rjpeg->stall_at != 0
+               && j->img_buffer_end < j->img_buffer_true_end)
+         {
+            size_t need = rjpeg->row_bytes_est;
+            /* Until a row has committed we have no estimate; fall back
+             * to requiring any forward progress. */
+            if (need == 0)
+               need = 1;
+            if (rjpeg->avail_len < rjpeg->stall_at + need)
+            {
+               rjpeg->need_more = true;
+               return false;
+            }
+         }
          /* Phase 2: Decode one MCU-row per call.
           * This is the key yield point that makes JPEG non-blocking. */
          if (rjpeg->iter_mcu_row >= j->img_mcu_y)
@@ -4411,22 +4684,126 @@ bool rjpeg_iterate_image(rjpeg_t *rjpeg)
             return false; /* iteration complete */
          }
 
-         if (!rjpeg_parse_entropy_one_mcu_row_interleaved(
+         /* Prefix decoding: before decoding this MCU row, snapshot the
+          * entropy state the row will mutate.  The row is a pure
+          * function of this snapshot plus the resident bytes, so if the
+          * decode runs into the resident frontier (hit_wall) we can
+          * restore the snapshot exactly and retry the same row once
+          * more of the file has arrived.  The component pixel writes for
+          * an un-committed row are simply overwritten on the retry.
+          *
+          * Cheap: a handful of scalars plus four DC predictors, saved
+          * once per MCU row (img_mcu_y times), not per block.  When the
+          * whole buffer is resident hit_wall never fires and the
+          * snapshot is dead weight the branch predictor hides. */
+         if (j->img_buffer_end < j->img_buffer_true_end)
+         {
+            uint8_t *save_buf   = j->img_buffer;
+            uint32_t save_cbuf  = j->code_buffer;
+            int      save_cbits = j->code_bits;
+            int      save_nomore= j->nomore;
+            unsigned char save_marker = j->marker;
+            int      save_todo  = j->todo;
+            int      save_eob   = j->eob_run;
+            int      save_dc0   = j->img_comp[0].dc_pred;
+            int      save_dc1   = j->img_comp[1].dc_pred;
+            int      save_dc2   = j->img_comp[2].dc_pred;
+            int      save_dc3   = j->img_comp[3].dc_pred;
+
+            j->hit_wall = 0;
+
+            if (!rjpeg_parse_entropy_one_mcu_row_interleaved(
+                     j, rjpeg->iter_mcu_row))
+            {
+               /* A genuine decode error, unless it was only the wall:
+                * on the wall, restore and ask for more. */
+               if (j->hit_wall)
+               {
+                  j->img_buffer          = save_buf;
+                  j->code_buffer         = save_cbuf;
+                  j->code_bits           = save_cbits;
+                  j->nomore              = save_nomore;
+                  j->marker              = save_marker;
+                  j->todo                = save_todo;
+                  j->eob_run             = save_eob;
+                  j->img_comp[0].dc_pred = save_dc0;
+                  j->img_comp[1].dc_pred = save_dc1;
+                  j->img_comp[2].dc_pred = save_dc2;
+                  j->img_comp[3].dc_pred = save_dc3;
+                  rjpeg->need_more       = true;
+                  rjpeg->stall_at        = rjpeg->avail_len;
+                  return false;   /* yield: caller feeds and re-enters */
+               }
+               rjpeg->iter_state = RJPEG_ITER_ERROR;
+               return false;
+            }
+
+            /* The row completed without erroring, but the refill may
+             * still have touched the wall on its final speculative
+             * grow (code_bits padded past the last real byte).  If the
+             * cursor ended at the frontier with the file continuing,
+             * the row's tail bits may be padding: roll back and retry
+             * so the row is never committed from un-arrived bytes. */
+            if (j->hit_wall)
+            {
+               j->img_buffer          = save_buf;
+               j->code_buffer         = save_cbuf;
+               j->code_bits           = save_cbits;
+               j->nomore              = save_nomore;
+               j->marker              = save_marker;
+               j->todo                = save_todo;
+               j->eob_run             = save_eob;
+               j->img_comp[0].dc_pred = save_dc0;
+               j->img_comp[1].dc_pred = save_dc1;
+               j->img_comp[2].dc_pred = save_dc2;
+               j->img_comp[3].dc_pred = save_dc3;
+               rjpeg->need_more       = true;
+               rjpeg->stall_at        = rjpeg->avail_len;
+               return false;
+            }
+         }
+         else if (!rjpeg_parse_entropy_one_mcu_row_interleaved(
                   j, rjpeg->iter_mcu_row))
          {
             rjpeg->iter_state = RJPEG_ITER_ERROR;
             return false;
          }
 
+         rjpeg->need_more   = false;
+         {
+            /* Bytes this row consumed; keep a simple running maximum so
+             * the throttle errs toward waiting rather than thrashing. */
+            size_t used = (size_t)(j->img_buffer - j->img_buffer_original);
+            if (used > rjpeg->row_start)
+            {
+               size_t got = used - rjpeg->row_start;
+               if (got > rjpeg->row_bytes_est)
+                  rjpeg->row_bytes_est = got;
+            }
+            rjpeg->row_start = used;
+         }
+         rjpeg->stall_at    = 0;   /* row committed: no pending stall */
          rjpeg->iter_mcu_row++;
 
-         /* Fused resample: the MCU-row we just decoded produced up to
-          * v_max*8 rows of component data.  Resample them now while
-          * the data is hot in cache, overlapping with the next
-          * entropy decode on the next iterate call. */
+         /* Fused resample, one MCU row behind decode: the vertical
+          * resampler's in_far row for the tail of a span is the first
+          * plane row of the FOLLOWING MCU row, so a span is only
+          * emitted once the row after it has been decoded.  The data
+          * read is then at worst one MCU row old - still
+          * cache-resident - and every plane row touched is valid.
+          * When the LAST MCU row commits there is no following row to
+          * wait for and the remainder is flushed to img_y (in_far's
+          * advance is bounded by comp.y at the image edge). */
          if (rjpeg->iter_resample_ready && rjpeg->iter_output)
          {
-            unsigned max_row = rjpeg->iter_mcu_row * j->img_v_max * 8;
+            unsigned max_row;
+            rjpeg->iter_rgba_used = rjpeg->supports_rgba;
+            if (rjpeg->iter_mcu_row >= j->img_mcu_y)
+               max_row = j->img_y;
+            else if (rjpeg->iter_mcu_row > 0)
+               max_row = (rjpeg->iter_mcu_row - 1) * j->img_v_max * 8;
+            else
+               max_row = 0;
             if (max_row > j->img_y)
                max_row = j->img_y;
             rjpeg_output_rows(rjpeg->iter_j, rjpeg->iter_res, rjpeg->iter_output,
@@ -4498,6 +4875,21 @@ bool rjpeg_iterate_image(rjpeg_t *rjpeg)
             rjpeg->iter_finish_row  = 0;
             rjpeg->iter_state       = RJPEG_ITER_FINISH_PROG;
             return true;
+         }
+
+         /* Safety net: this path decodes a whole scan in one pass with
+          * no resident-frontier awareness, so it must never run over a
+          * partial buffer.  rjpeg_header_ready already declines
+          * progressive files from early start, so a caller feeding a
+          * prefix does not get here; if one ever does, fail the load
+          * rather than decode un-arrived bytes.  (The state is not
+          * re-entrant mid-setup, so yielding for more would resume on
+          * an already-consumed marker - erroring is the honest
+          * outcome.) */
+         if (j->img_buffer_end < j->img_buffer_true_end)
+         {
+            rjpeg->iter_state = RJPEG_ITER_ERROR;
+            return false;
          }
 
          /* Process this SOS scan */
@@ -4646,6 +5038,21 @@ int rjpeg_process_image(rjpeg_t *rjpeg, void **buf_data,
          if (rjpeg->iter_resample_ready && rjpeg->iter_output
                && rjpeg->iter_out_row >= j->img_y)
          {
+            /* The fusion ran before this call latched supports_rgba,
+             * so it emitted with the default order.  If the caller
+             * wants the other one, swap R and B in place - one warm
+             * pass, and only on the mismatching configuration. */
+            if (rjpeg->iter_rgba_used != supports_rgba)
+            {
+               uint8_t *p   = rjpeg->iter_output;
+               uint8_t *end = p + (size_t)4 * j->img_x * j->img_y;
+               for (; p < end; p += 4)
+               {
+                  uint8_t t = p[0];
+                  p[0]      = p[2];
+                  p[2]      = t;
+               }
+            }
             *buf_data = rjpeg->iter_output;
             *width  = j->img_x;
             *height = j->img_y;
@@ -4667,7 +5074,20 @@ int rjpeg_process_image(rjpeg_t *rjpeg, void **buf_data,
       {
          /* Synchronous fallback -- do the full decode now.
           * This path is used by image_texture_load_internal()
-          * which calls iterate in a tight loop anyway. */
+          * which calls iterate in a tight loop anyway.
+          *
+          * The monolithic decoder reads the whole entropy stream in
+          * one pass with no resident-frontier awareness, so it must
+          * only run over a fully resident buffer.  If a prefix caller
+          * set avail below the full length and the iterative decode
+          * has not completed, the buffer is still partial: refuse
+          * rather than read past the frontier. */
+         if (rjpeg->avail_set && rjpeg->avail_len < rjpeg->buff_len)
+         {
+            free(proc);
+            return IMAGE_PROCESS_ERROR;
+         }
+
          j = (rjpeg_jpeg*)malloc(sizeof(*j));
          if (!j)
          {
@@ -4683,11 +5103,21 @@ int rjpeg_process_image(rjpeg_t *rjpeg, void **buf_data,
          j->marker = RJPEG_MARKER_NONE;
          j->restart_interval = 0; j->todo = 0;
          j->comp_arena = NULL; j->comp_arena_size = 0;
+         j->plane_ring = 0;   /* monolithic: full planes required */
 
          /* Context fields embedded in j */
          j->img_buffer          = (uint8_t*)rjpeg->buff_data;
          j->img_buffer_original = (uint8_t*)rjpeg->buff_data;
          j->img_buffer_end      = (uint8_t*)rjpeg->buff_data + size;
+         /* The prefix-decoding fields were only ever initialised on
+          * the iterative path; this malloc-init list predates them.
+          * Uninitialised hit_wall read in every entropy block decode
+          * (flagged by valgrind on the pre-change code too) - benign
+          * or fatal purely by heap-layout luck.  The monolithic path
+          * runs over a fully resident buffer, so the frontier is the
+          * end and no wall is ever hit. */
+         j->img_buffer_true_end = j->img_buffer_end;
+         j->hit_wall            = 0;
 
          rjpeg_setup_jpeg(j);
 
@@ -4774,6 +5204,19 @@ int rjpeg_process_image(rjpeg_t *rjpeg, void **buf_data,
    return IMAGE_PROCESS_ERROR;
 }
 
+/* Declare the output byte order before iteration starts.  The fused
+ * iterate+resample emits final pixels during rjpeg_iterate_image,
+ * long before rjpeg_process_image latches supports_rgba from its
+ * caller; without this the fusion emits the default (BGRA) and a
+ * caller wanting RGBA pays a full cold repair pass over the output.
+ * The task pipeline knows the video driver's preference at setup, so
+ * it can hand it over here. */
+void rjpeg_set_out_rgba(rjpeg_t *rjpeg, bool rgba)
+{
+   if (rjpeg)
+      rjpeg->supports_rgba = rgba;
+}
+
 bool rjpeg_set_buf_ptr(rjpeg_t *rjpeg, void *data, size_t len)
 {
    if (!rjpeg)
@@ -4781,8 +5224,130 @@ bool rjpeg_set_buf_ptr(rjpeg_t *rjpeg, void *data, size_t len)
 
    rjpeg->buff_data = (uint8_t*)data;
    rjpeg->buff_len  = len;
+   /* Default: whole buffer resident.  A prefix caller lowers this via
+    * rjpeg_set_avail after set_buf_ptr. */
+   if (!rjpeg->avail_set)
+      rjpeg->avail_len = len;
+   rjpeg->need_more = false;
 
    return true;
+}
+
+/* Prefix decoding: declare how many bytes from buff_data are resident.
+ * Monotonic, clamped to buff_len.  While the resident frontier is below
+ * buff_len, the baseline entropy row driver yields at the frontier with
+ * rjpeg_need_more() true instead of decoding past it; raise avail and
+ * iterate again.  Never calling this leaves the whole buffer resident
+ * (classic behaviour). */
+void rjpeg_set_avail(rjpeg_t *rjpeg, size_t avail)
+{
+   if (!rjpeg)
+      return;
+   if (avail > rjpeg->buff_len)
+      avail = rjpeg->buff_len;
+   if (!rjpeg->avail_set)
+   {
+      rjpeg->avail_set = true;
+      rjpeg->avail_len = avail;
+   }
+   else if (avail > rjpeg->avail_len)   /* monotonic: bytes never un-arrive */
+      rjpeg->avail_len = avail;
+
+   /* Push the new frontier into the live decode context if a decode is
+    * already running (the read progresses during iteration). */
+   if (rjpeg->iter_j)
+      rjpeg->iter_j->img_buffer_end =
+            (uint8_t*)rjpeg->buff_data + rjpeg->avail_len;
+}
+
+bool rjpeg_need_more(const rjpeg_t *rjpeg)
+{
+   return rjpeg ? rjpeg->need_more : false;
+}
+
+/* Prefix early-start gate: return true once the resident bytes contain
+ * the whole JPEG header - SOI through the SOS marker and its segment -
+ * so the one-shot header parse in rjpeg_start/iterate can run without
+ * hitting the frontier.  Walk the marker segments by length from SOI;
+ * SOS reached with its 2-byte length resident means entropy data starts
+ * next, and from there rjpeg_iterate_image feeds MCU rows against the
+ * growing frontier.  Cheap scan, no allocation, no decode. */
+bool rjpeg_header_ready(const uint8_t *data, size_t len)
+{
+   size_t p = 0;
+   if (!data || len < 2)
+      return false;
+   if (data[0] != JPEG_MARKER || data[1] != JPEG_MARKER_SOI)
+      return false;   /* not a JPEG */
+   p = 2;
+   for (;;)
+   {
+      uint8_t marker;
+      size_t seglen;
+      /* need FF + marker byte */
+      if (p + 1 >= len)
+         return false;
+      if (data[p] != JPEG_MARKER)
+         return false;             /* desync: not at a marker */
+      /* skip fill bytes (0xFF run) */
+      while (p < len && data[p] == JPEG_MARKER)
+         p++;
+      if (p >= len)
+         return false;
+      marker = data[p++];
+      /* SOF2 is a progressive frame.  Its scans are decoded whole by
+       * rjpeg_parse_entropy_coded_data, which has no resident-frontier
+       * awareness, and the surrounding marker walk is not re-entrant -
+       * yielding mid-setup leaves iter_marker on an already-consumed
+       * segment.  Decline the early start so a progressive file loads
+       * whole-buffer, exactly as it did before prefix decoding existed.
+       * Baseline (SOF0/SOF1) is unaffected: its MCU-row driver
+       * checkpoints and rolls back at the wall. */
+      if (marker == 0xC2)
+         return false;
+      if (marker == JPEG_MARKER_SOS)
+      {
+         /* SOS: the scan header (its 2-byte length plus that many
+          * bytes of component selectors) must be fully resident, since
+          * the one-shot header parse consumes all of it before the
+          * first entropy byte.  Requiring only the length field here
+          * would let decode start with the cursor mid-segment, so the
+          * first entropy read wall/rollback would fire at a boundary
+          * the header parse had not finished consuming. */
+         size_t sos_len;
+         if (p + 1 >= len)
+            return false;
+         sos_len = ((size_t)data[p] << 8) | data[p + 1];
+         if (sos_len < 2)
+            return false;
+         if (p + sos_len > len)          /* whole scan header resident? */
+            return false;
+         /* Prefix decoding only supports interleaved multi-component
+          * scans, which decode one MCU row per iterate call with
+          * checkpoint/rollback.  Single-component (e.g. grayscale)
+          * scans go through the monolithic entropy path, which has no
+          * resident-frontier awareness: decline the early start so they
+          * load whole-buffer as before.  The SOS component count is the
+          * byte right after the 2-byte length. */
+         if (p + 2 < len && data[p + 2] <= 1)
+            return false;
+         return true;
+      }
+      if (marker == JPEG_MARKER_EOI)
+         return false;             /* no scan: nothing to early-start */
+      /* Standalone markers (RSTn, TEM) carry no length. */
+      if ((marker >= 0xD0 && marker <= 0xD7) || marker == 0x01)
+         continue;
+      /* Everything else is a length-prefixed segment: skip its body. */
+      if (p + 1 >= len)
+         return false;
+      seglen = ((size_t)data[p] << 8) | data[p + 1];
+      if (seglen < 2)
+         return false;             /* malformed */
+      p += seglen;                 /* length includes the 2 length bytes */
+      if (p > len)
+         return false;             /* segment body not fully resident */
+   }
 }
 
 void rjpeg_free(rjpeg_t *rjpeg)

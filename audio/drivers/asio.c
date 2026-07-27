@@ -789,9 +789,26 @@ static void asio_deinterleave_to_buffers(ra_asio_t *ad,
          float tmp[2];
          for (i = 0; i < have; i++)
          {
+            double l, r;
             retro_spsc_read(&ad->ring, tmp, sizeof(tmp));
-            dl[i] = (int32_t)((double)tmp[0] * 2147483647.0);
-            dr[i] = (int32_t)((double)tmp[1] * 2147483647.0);
+            /* Symmetric full-scale (2^31) with round-half-away and
+             * saturation, matching convert_float_to_s16's semantics at
+             * 16-bit.  The previous (2^31 - 1) truncating form had an
+             * asymmetric transfer curve and doubled the quantisation
+             * error; it also relied on the frontend's float clamp for
+             * range safety.  Computed in double: float's 24-bit mantissa
+             * cannot address 32-bit steps, and the +-0.5 bias would be
+             * absorbed at float precision. */
+            l = (double)tmp[0] * 2147483648.0;
+            r = (double)tmp[1] * 2147483648.0;
+            l += (l >= 0.0) ? 0.5 : -0.5;
+            r += (r >= 0.0) ? 0.5 : -0.5;
+            if      (l >  2147483647.0) dl[i] = INT32_MAX;
+            else if (l < -2147483648.0) dl[i] = INT32_MIN;
+            else                        dl[i] = (int32_t)l;
+            if      (r >  2147483647.0) dr[i] = INT32_MAX;
+            else if (r < -2147483648.0) dr[i] = INT32_MIN;
+            else                        dr[i] = (int32_t)r;
          }
          for (; i < frames; i++) { dl[i] = 0; dr[i] = 0; }
          break;
@@ -805,11 +822,20 @@ static void asio_deinterleave_to_buffers(ra_asio_t *ad,
          for (i = 0; i < have; i++)
          {
             int32_t l, r;
+            float fl, fr;
             retro_spsc_read(&ad->ring, tmp, sizeof(tmp));
-            l = (int32_t)(tmp[0] * 8388607.0f);
-            r = (int32_t)(tmp[1] * 8388607.0f);
-            l = l >  8388607 ?  8388607 : (l < -8388608 ? -8388608 : l);
-            r = r >  8388607 ?  8388607 : (r < -8388608 ? -8388608 : r);
+            /* Symmetric full-scale (2^23), round-half-away, saturate -
+             * see the Int32 branch comment. */
+            fl = tmp[0] * 8388608.0f;
+            fr = tmp[1] * 8388608.0f;
+            fl += (fl >= 0.0f) ? 0.5f : -0.5f;
+            fr += (fr >= 0.0f) ? 0.5f : -0.5f;
+            if      (fl >  8388607.0f) l =  8388607;
+            else if (fl < -8388608.0f) l = -8388608;
+            else                       l = (int32_t)fl;
+            if      (fr >  8388607.0f) r =  8388607;
+            else if (fr < -8388608.0f) r = -8388608;
+            else                       r = (int32_t)fr;
             dl[i*3+0]=(char)(l&0xFF); dl[i*3+1]=(char)((l>>8)&0xFF); dl[i*3+2]=(char)((l>>16)&0xFF);
             dr[i*3+0]=(char)(r&0xFF); dr[i*3+1]=(char)((r>>8)&0xFF); dr[i*3+2]=(char)((r>>16)&0xFF);
          }
@@ -829,11 +855,24 @@ static void asio_deinterleave_to_buffers(ra_asio_t *ad,
          for (i = 0; i < have; i++)
          {
             int32_t l, r;
+            float fl, fr;
             retro_spsc_read(&ad->ring, tmp, sizeof(tmp));
-            l = (int32_t)(tmp[0] * 32767.0f);
-            r = (int32_t)(tmp[1] * 32767.0f);
-            dl[i] = (int16_t)(l > 32767 ? 32767 : (l < -32768 ? -32768 : l));
-            dr[i] = (int16_t)(r > 32767 ? 32767 : (r < -32768 ? -32768 : r));
+            /* Same semantics as convert_float_to_s16's scalar path:
+             * symmetric 0x8000 scale, round-half-away, saturate.  The
+             * previous 32767-scale truncating form cost ~6 dB of
+             * quantisation noise and skewed the transfer curve. */
+            fl = tmp[0] * 32768.0f;
+            fr = tmp[1] * 32768.0f;
+            fl += (fl >= 0.0f) ? 0.5f : -0.5f;
+            fr += (fr >= 0.0f) ? 0.5f : -0.5f;
+            if      (fl >  32767.0f) l =  32767;
+            else if (fl < -32768.0f) l = -32768;
+            else                     l = (int32_t)fl;
+            if      (fr >  32767.0f) r =  32767;
+            else if (fr < -32768.0f) r = -32768;
+            else                     r = (int32_t)fr;
+            dl[i] = (int16_t)l;
+            dr[i] = (int16_t)r;
          }
          for (; i < frames; i++) { dl[i] = 0; dr[i] = 0; }
          break;
@@ -979,6 +1018,29 @@ static void asio_atexit_cleanup(void)
  *  RetroArch audio_driver_t implementation
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* Prime the ring to the rate-control setpoint (half capacity) with
+ * silence.  Init/reclaim-time only - not on any streaming path.
+ *
+ * Streaming starts the moment ASIOStart is called, but the writer has
+ * produced nothing yet: an empty ring means a deterministic burst of
+ * underruns (a pop) on every fresh init and on every park/reclaim -
+ * i.e. every content load, fullscreen toggle and settings change.
+ * Half capacity is exactly where rate control holds the ring in
+ * steady state, so priming there adds no latency beyond the setpoint
+ * and no convergence transient: the stream begins already balanced,
+ * with silence draining ahead of the first real audio. */
+static void asio_prime_ring(ra_asio_t *ad)
+{
+   static const char zeros[512]; /* zero-initialised */
+   size_t left = retro_spsc_write_avail(&ad->ring) / 2;
+   while (left > 0)
+   {
+      size_t n = (left < sizeof(zeros)) ? left : sizeof(zeros);
+      retro_spsc_write(&ad->ring, zeros, n);
+      left -= n;
+   }
+}
+
 static void *ra_asio_init(const char *device, unsigned rate,
       unsigned latency, unsigned block_frames, unsigned *new_rate)
 {
@@ -1029,8 +1091,39 @@ static void *ra_asio_init(const char *device, unsigned rate,
       /* Discard any stale audio left over from the previous
        * session.  Safe here because the ASIO callback isn't
        * running yet (g_asio is still NULL until the next line),
-       * so the SPSC is single-threaded at this point. */
-      retro_spsc_clear(&ad->ring);
+       * so the SPSC is single-threaded at this point.  For the
+       * same reason it is safe to recreate the ring outright when
+       * the latency-derived size changed (audio settings changes
+       * reinit the driver through free()/init(), which lands here
+       * on the reuse path - without this, a latency change would
+       * silently keep the old ring size). */
+      {
+         size_t latency_frames = (size_t)ad->sample_rate * latency / 1000;
+         size_t period_frames  = (size_t)ad->buffer_frames * ASIO_RING_MULT;
+         size_t ring_frames    = (latency_frames > period_frames)
+               ? latency_frames : period_frames;
+         size_t want           = ring_frames * 2 * sizeof(float);
+         if (want > ad->ring_size || want * 2 <= ad->ring_size)
+         {
+            retro_spsc_free(&ad->ring);
+            ad->ring_initialized = false;
+            if (!retro_spsc_init(&ad->ring, want))
+            {
+               RARCH_ERR("[ASIO] Failed to resize ring buffer.\n");
+               g_asio_persistent = ad; /* Park it again */
+               return NULL;
+            }
+            ad->ring_initialized = true;
+            ad->ring_size        = retro_spsc_write_avail(&ad->ring);
+            RARCH_LOG("[ASIO] Ring buffer resized: %u frames (%.1f ms).\n",
+                  (unsigned)(ad->ring_size / (2 * sizeof(float))),
+                  (double)(ad->ring_size / (2 * sizeof(float)))
+                        * 1000.0 / ad->sample_rate);
+         }
+         else
+            retro_spsc_clear(&ad->ring);
+      }
+      asio_prime_ring(ad);
 
       g_asio = ad;
       ad->running = true;
@@ -1198,16 +1291,40 @@ static void *ra_asio_init(const char *device, unsigned rate,
    /* Create ring buffer BEFORE ASIO buffers — the driver may issue
     * a bufferSwitch callback during ASIOCreateBuffers, and the
     * callback needs the ring buffer to exist (even if empty).
-    * retro_spsc_init rounds capacity up to a power of 2; the
-    * over-allocation is small (factor of < 2) and irrelevant to
-    * the ASIO latency calculation, which uses ad->buffer_frames
-    * not the ring's actual byte capacity. */
-   ad->ring_size = pref_sz * 2 * sizeof(float) * ASIO_RING_MULT;
+    *
+    * Size the ring from the user's audio latency setting, floored at
+    * ASIO_RING_MULT device periods.  The previous sizing used device
+    * periods alone, which ignored the latency setting entirely: a pro
+    * interface at a typical 32-128 sample ASIO buffer produced a
+    * 1.3-5 ms ring at 96 kHz, far below main-thread scheduling jitter
+    * (the writer runs once per video frame), so the ring chronically
+    * underran and every underrun's zero-fill in bufferSwitch was an
+    * audible pop.  Like other drivers, the DRC steady state holds the
+    * ring about half full, so effective added latency is roughly half
+    * this size plus the device's own double buffer. */
+   {
+      size_t latency_frames = (size_t)ad->sample_rate * latency / 1000;
+      size_t period_frames  = (size_t)pref_sz * ASIO_RING_MULT;
+      size_t ring_frames    = (latency_frames > period_frames)
+            ? latency_frames : period_frames;
+      ad->ring_size = ring_frames * 2 * sizeof(float);
+   }
    if (!retro_spsc_init(&ad->ring, ad->ring_size))
    {
       RARCH_ERR("[ASIO] Failed to create ring buffer.\n");
       goto error;
    }
+   /* retro_spsc_init rounds capacity up to a power of 2.  Report the
+    * true capacity as the driver buffer size, so the frontend's rate
+    * control computes its setpoint against the ring's real bounds
+    * rather than the pre-rounding request.  An empty ring's write
+    * avail is exactly its capacity. */
+   ad->ring_size = retro_spsc_write_avail(&ad->ring);
+   asio_prime_ring(ad);
+   RARCH_LOG("[ASIO] Ring buffer: %u frames (%.1f ms).\n",
+         (unsigned)(ad->ring_size / (2 * sizeof(float))),
+         (double)(ad->ring_size / (2 * sizeof(float)))
+               * 1000.0 / ad->sample_rate);
    ad->ring_initialized = true;
 
 #ifdef HAVE_THREADS

@@ -25,6 +25,8 @@
 #include <retro_dirent.h>
 #include <string/stdstring.h>
 #include <file/config_file.h>
+#include <compat/strcasestr.h>
+#include <streams/file_stream.h>
 
 #include "../configuration.h"
 #include "../file_path_special.h"
@@ -50,9 +52,19 @@ typedef struct
    char *dir_autoconfig;
    char *dir_driver_autoconfig;
    config_file_t *autoconfig_file;
-   unsigned port;
+   /* External scan, carried between ticks.  The directory listing is
+    * walked a slice at a time rather than in one go: on a cold cache
+    * the eight hundred odd profiles that ship take tens of
+    * milliseconds here and far longer on the slow storage a handheld
+    * has, and this task runs on the main loop. */
+   struct RDIR   *scan_rdir;
+   config_file_t *scan_best;
+   unsigned       scan_max_affinity;
+   unsigned       scan_dir_idx;
+   unsigned       port;
    input_device_info_t device_info; /* unsigned alignment */
    uint8_t flags;
+   uint8_t scan_done;
 } autoconfig_handle_t;
 
 /*********************/
@@ -63,6 +75,19 @@ static void free_autoconfig_handle(autoconfig_handle_t *autoconfig_handle)
 {
    if (!autoconfig_handle)
       return;
+
+   /* A scan may be part way through a directory. */
+   if (autoconfig_handle->scan_rdir)
+   {
+      retro_closedir(autoconfig_handle->scan_rdir);
+      autoconfig_handle->scan_rdir = NULL;
+   }
+
+   if (autoconfig_handle->scan_best)
+   {
+      config_file_free(autoconfig_handle->scan_best);
+      autoconfig_handle->scan_best = NULL;
+   }
 
    if (autoconfig_handle->dir_autoconfig)
    {
@@ -249,17 +274,109 @@ static void input_autoconfigure_set_config_file(
  * (in the autoconfig directory) matching the connected
  * input device
  * > Returns 'true' if successful */
+/* Could this file possibly score above zero for the device we are
+ * looking for?
+ *
+ * A profile is only ever selected on a positive affinity, and affinity
+ * only becomes positive through a matching vendor+product id or a
+ * matching device name - input_phys merely adjusts a score that is
+ * already at least 20.  So a file containing neither the name nor the
+ * ids cannot win, and does not need parsing.
+ *
+ * That matters because parsing is the expensive part by a wide margin:
+ * building a config_file_t reads and hashes every binding in the file,
+ * some fifty entries, to answer questions about four of them.  Reading
+ * the bytes is cheap - one open, one read - and the file is read here
+ * either way, so a candidate is parsed from the buffer already in hand
+ * rather than opened a second time.
+ *
+ * The test is deliberately generous.  A false positive costs one parse
+ * that would have happened anyway; a false negative would silently
+ * pick the wrong profile, so anything uncertain must pass.  Hence:
+ *
+ *  - the name is matched as a substring, which is sound because the
+ *    affinity check compares it with string_is_equal - the exact text
+ *    has to be present for that to succeed;
+ *  - the ids are read by config_get_int, which uses strtol with base
+ *    0, so decimal, hexadecimal and octal are all legal spellings of
+ *    the same number and all three are looked for.
+ */
+static bool input_autoconfigure_file_may_match(
+      const char *buf,
+      const char *device_name,
+      unsigned vid, unsigned pid)
+{
+   char num[24];
+
+   if (!buf)
+      return false;
+
+   if (device_name && *device_name && strstr(buf, device_name))
+      return true;
+
+   if (vid && pid)
+   {
+      bool have_vid = false;
+      bool have_pid = false;
+
+      snprintf(num, sizeof(num), "%u", vid);
+      have_vid = (strstr(buf, num) != NULL);
+      if (!have_vid)
+      {
+         snprintf(num, sizeof(num), "0x%x", vid);
+         have_vid = (compat_strcasestr(buf, num) != NULL);
+      }
+      if (!have_vid)
+      {
+         snprintf(num, sizeof(num), "0%o", vid);
+         have_vid = (strstr(buf, num) != NULL);
+      }
+
+      if (have_vid)
+      {
+         snprintf(num, sizeof(num), "%u", pid);
+         have_pid = (strstr(buf, num) != NULL);
+         if (!have_pid)
+         {
+            snprintf(num, sizeof(num), "0x%x", pid);
+            have_pid = (compat_strcasestr(buf, num) != NULL);
+         }
+         if (!have_pid)
+         {
+            snprintf(num, sizeof(num), "0%o", pid);
+            have_pid = (strstr(buf, num) != NULL);
+         }
+      }
+
+      if (have_vid && have_pid)
+         return true;
+   }
+
+   return false;
+}
+
+/* How many directory entries one tick will look at.
+ *
+ * Each is an open, a read and a close - cheap warm, and the dominant
+ * cost cold or on slow storage, where it is per-file rather than per
+ * byte.  This task runs on the main loop, so the whole listing is not
+ * walked in one go. */
+#define AUTOCONFIG_SCAN_ENTRIES_PER_TICK 48
+
+/* Advance the external scan by one slice.
+ *
+ * Returns false while there is more to do, in which case the caller
+ * returns and is called again on the next tick.  Returns true when the
+ * scan is finished, with autoconfig_handle->scan_best holding the best
+ * profile found, if any. */
 static bool input_autoconfigure_scan_config_files_external(
       autoconfig_handle_t *autoconfig_handle)
 {
-   const char *dir_autoconfig           = autoconfig_handle->dir_autoconfig;
-   const char *dir_driver_autoconfig    = autoconfig_handle->dir_driver_autoconfig;
-   unsigned max_affinity                = 0;
-   bool match_found                     = false;
-   config_file_t *best_config           = NULL;
+   const char *dir_autoconfig        = autoconfig_handle->dir_autoconfig;
+   const char *dir_driver_autoconfig = autoconfig_handle->dir_driver_autoconfig;
    const char *dirs[2];
-   unsigned num_dirs = 0;
-   unsigned d;
+   unsigned    num_dirs = 0;
+   unsigned    budget   = AUTOCONFIG_SCAN_ENTRIES_PER_TICK;
 
    if (     (dir_autoconfig && *dir_autoconfig)
          && path_is_directory(dir_autoconfig))
@@ -269,83 +386,142 @@ static bool input_autoconfigure_scan_config_files_external(
          && path_is_directory(dir_driver_autoconfig))
       dirs[num_dirs++] = dir_driver_autoconfig;
 
-   for (d = 0; d < num_dirs; d++)
+   while (budget > 0)
    {
-      struct RDIR *rdir = retro_opendir(dirs[d]);
-      if (!rdir)
-         continue;
+      const char *entry_name;
+      char        config_file_path[PATH_MAX_LENGTH];
+      config_file_t *config = NULL;
+      unsigned    affinity  = 0;
 
-      while (retro_readdir(rdir))
+      if (autoconfig_handle->scan_dir_idx >= num_dirs)
+         break;                            /* every directory walked */
+
+      if (!autoconfig_handle->scan_rdir)
       {
-         const char *entry_name    = retro_dirent_get_name(rdir);
-         char config_file_path[PATH_MAX_LENGTH];
-         config_file_t *config     = NULL;
-         unsigned affinity         = 0;
-
-         if (     (!entry_name || !*entry_name)
-               || !string_is_equal_noncase(
-                     path_get_extension(entry_name), "cfg"))
-            continue;
-
-         fill_pathname_join_special(config_file_path,
-               dirs[d], entry_name, sizeof(config_file_path));
-
-         if (!(config = config_file_new_from_path_to_string(config_file_path)))
-            continue;
-
-         affinity = input_autoconfigure_get_config_file_affinity(
-               autoconfig_handle, config);
-
-         if (affinity > max_affinity)
+         if (!(autoconfig_handle->scan_rdir = retro_opendir(
+                     dirs[autoconfig_handle->scan_dir_idx])))
          {
-            if (best_config)
-               config_file_free(best_config);
-
-            best_config  = config;
-            config       = NULL;
-            max_affinity = affinity;
-
-            if (affinity >= 60)
-            {
-               retro_closedir(rdir);
-               goto done;
-            }
-         }
-         else
-         {
-            config_file_free(config);
-            config = NULL;
+            autoconfig_handle->scan_dir_idx++;
+            continue;
          }
       }
 
-      retro_closedir(rdir);
+      if (!retro_readdir(autoconfig_handle->scan_rdir))
+      {
+         retro_closedir(autoconfig_handle->scan_rdir);
+         autoconfig_handle->scan_rdir = NULL;
+         autoconfig_handle->scan_dir_idx++;
+         /* A directory that produced a match ends the search; the
+          * later directory is only a fallback. */
+         if (autoconfig_handle->scan_best)
+            autoconfig_handle->scan_dir_idx = num_dirs;
+         continue;
+      }
 
-      if (best_config)
-         break;
+      budget--;
+
+      entry_name = retro_dirent_get_name(autoconfig_handle->scan_rdir);
+      if (     (!entry_name || !*entry_name)
+            || !string_is_equal_noncase(
+                  path_get_extension(entry_name), "cfg"))
+         continue;
+
+      fill_pathname_join_special(config_file_path,
+            dirs[autoconfig_handle->scan_dir_idx], entry_name,
+            sizeof(config_file_path));
+
+      /* Read once, and only parse what could win.  The Bliss-Box path
+       * rewrites the product id before comparing, so its devices skip
+       * the filter and are parsed as before. */
+      {
+         int64_t  buf_len = 0;
+         char    *buf     = NULL;
+         bool     candidate;
+
+         if (!filestream_read_file(config_file_path,
+                  (void**)&buf, &buf_len) || !buf)
+            continue;
+
+#ifdef HAVE_BLISSBOX
+         candidate = (autoconfig_handle->device_info.vid == BLISSBOX_VID)
+               || input_autoconfigure_file_may_match(buf,
+                     autoconfig_handle->device_info.name,
+                     autoconfig_handle->device_info.vid,
+                     autoconfig_handle->device_info.pid);
+#else
+         candidate = input_autoconfigure_file_may_match(buf,
+               autoconfig_handle->device_info.name,
+               autoconfig_handle->device_info.vid,
+               autoconfig_handle->device_info.pid);
+#endif
+         if (!candidate)
+         {
+            free(buf);
+            continue;
+         }
+
+         config = config_file_new_from_string(buf, config_file_path);
+         free(buf);
+      }
+
+      if (!config)
+         continue;
+
+      affinity = input_autoconfigure_get_config_file_affinity(
+            autoconfig_handle, config);
+
+      if (affinity > autoconfig_handle->scan_max_affinity)
+      {
+         if (autoconfig_handle->scan_best)
+            config_file_free(autoconfig_handle->scan_best);
+
+         autoconfig_handle->scan_best         = config;
+         config                               = NULL;
+         autoconfig_handle->scan_max_affinity = affinity;
+
+         /* A vendor, product and physical location match is as good as
+          * it gets; nothing later can beat it. */
+         if (affinity >= 60)
+         {
+            retro_closedir(autoconfig_handle->scan_rdir);
+            autoconfig_handle->scan_rdir    = NULL;
+            autoconfig_handle->scan_dir_idx = num_dirs;
+            break;
+         }
+      }
+      else
+      {
+         config_file_free(config);
+         config = NULL;
+      }
    }
 
-done:
-   if (best_config)
+   if (autoconfig_handle->scan_dir_idx < num_dirs)
+      return false;                        /* resume on the next tick */
+
+   if (autoconfig_handle->scan_best)
    {
-      input_autoconfigure_set_config_file(
-            autoconfig_handle, best_config,
-            max_affinity % 10);
-      match_found = true;
+      /* Not a bare assignment: this attaches the file, records its
+       * name, and reads the display name for whichever alternative
+       * matched - which is the digit the affinity carries in its
+       * units place. */
+      input_autoconfigure_set_config_file(autoconfig_handle,
+            autoconfig_handle->scan_best,
+            autoconfig_handle->scan_max_affinity % 10);
+      autoconfig_handle->scan_best = NULL;
    }
 
    RARCH_DBG("[Autoconf] Config files scanned: driver \"%s\", name \"%s\" (%04x/%04x), phys \"%s\", affinity %d.\n",
          autoconfig_handle->device_info.joypad_driver,
          autoconfig_handle->device_info.name,
-         autoconfig_handle->device_info.vid, autoconfig_handle->device_info.pid,
+         autoconfig_handle->device_info.vid,
+         autoconfig_handle->device_info.pid,
          autoconfig_handle->device_info.phys,
-         max_affinity);
+         autoconfig_handle->scan_max_affinity);
 
-   return match_found;
+   return true;
 }
 
-/* Attempts to find an internal autoconfig definition
- * matching the connected input device
- * > Returns 'true' if successful */
 static bool input_autoconfigure_scan_config_files_internal(
       autoconfig_handle_t *autoconfig_handle)
 {
@@ -421,13 +597,30 @@ static void reallocate_port_if_needed(
    int player;
    char settings_value[NAME_MAX_LENGTH];
    char settings_value_device_name[NAME_MAX_LENGTH];
-   unsigned prev_assigned_player_slots[MAX_USERS] = {0};
+   unsigned prev_assigned_player_slots[MAX_USERS];
    unsigned int settings_value_vendor_id  = 0;
    unsigned int settings_value_product_id = 0;
    unsigned first_free_player_slot        = MAX_USERS + 1;
    bool device_has_reserved_slot          = false;
    bool no_reservation_at_all             = true;
    settings_t *settings                   = config_get_ptr();
+
+   if (detected_port >= MAX_USERS)
+      return;
+
+   /* The swaps below are transpositions of input_joypad_index[]: they
+    * preserve a one player <-> one pad mapping but cannot restore one,
+    * so a mapping that arrives with two players on the same pad keeps
+    * both of them there on every subsequent hotplug, and a single
+    * controller drives two libretro ports. Assert the invariant before
+    * relying on it. */
+   input_config_sanitize_joypad_indices();
+
+   /* MAX_USERS marks a pad index that no player is mapped to. Zero
+    * initialising this would instead claim such pads for player 1,
+    * making the reassignment below write to an unrelated slot. */
+   for (player = 0; player < MAX_USERS; player++)
+      prev_assigned_player_slots[player] = MAX_USERS;
 
    for (player = 0; player < MAX_USERS; player++)
    {
@@ -445,17 +638,28 @@ static void reallocate_port_if_needed(
       if (settings->uints.input_device_reservation_type[player] != INPUT_DEVICE_RESERVATION_NONE)
          no_reservation_at_all = false;
    }
-   if (first_free_player_slot > settings->uints.input_max_users)
+   /* 'input_max_users' is a count, so a slot index equal to it is
+    * already out of range; assigning a pad there leaves the device
+    * mapped to a disabled player and silently unusable. */
+   if (first_free_player_slot >= settings->uints.input_max_users)
    {
       RARCH_ERR("[Autoconf] No free and unreserved player slots found for adding new device"
             " \"%s\"! Detected port %d, max_users: %d, first free slot %d.\n",
             device_name, detected_port,
             settings->uints.input_max_users,
             first_free_player_slot+1);
-      RARCH_WARN("[Autoconf] Leaving detected player slot in place: %d.\n",
-            prev_assigned_player_slots[detected_port]);
+      if (prev_assigned_player_slots[detected_port] < MAX_USERS)
+         RARCH_WARN("[Autoconf] Leaving detected player slot in place: %d.\n",
+               prev_assigned_player_slots[detected_port]);
       return;
    }
+
+   /* Both reassignment branches below write through
+    * prev_assigned_player_slots[detected_port]. The sanitisation above
+    * makes the mapping total, so this cannot trigger; it keeps the
+    * writes in bounds if that ever stops holding. */
+   if (prev_assigned_player_slots[detected_port] >= MAX_USERS)
+      return;
 
    for (player = 0; player < MAX_USERS; player++)
    {
@@ -717,8 +921,17 @@ static void input_autoconfigure_connect_handler(retro_task_t *task)
    /* Scan in order of preference:
     * - External autoconfig files
     * - Internal autoconfig definitions */
-   if (!(match_found = input_autoconfigure_scan_config_files_external(
-         autoconfig_handle)))
+   /* The external scan walks the profile directory a slice at a time;
+    * until it reports itself finished there is nothing else to do this
+    * tick.  Everything below runs once, on the tick that completes it. */
+   if (!autoconfig_handle->scan_done)
+   {
+      if (!input_autoconfigure_scan_config_files_external(autoconfig_handle))
+         return;
+      autoconfig_handle->scan_done = 1;
+   }
+
+   if (!(match_found = (autoconfig_handle->autoconfig_file != NULL)))
       match_found = input_autoconfigure_scan_config_files_internal(
          autoconfig_handle);
 

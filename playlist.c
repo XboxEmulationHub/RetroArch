@@ -25,6 +25,7 @@
 #include <compat/posix_string.h>
 #include <string/stdstring.h>
 #include <streams/interface_stream.h>
+#include <streams/file_stream.h>
 #include <file/file_path.h>
 #include <file/archive_file.h>
 #include <lists/string_list.h>
@@ -89,6 +90,14 @@ struct content_playlist
    enum playlist_thumbnail_match_mode thumbnail_match_mode;
    enum playlist_sort_mode sort_mode;
 
+   /* Size of the file this playlist was read from, at the moment it was
+    * read.  Used only to decide whether a cached playlist may be reused
+    * rather than parsed again - see playlist_init_cached.  The VFS layer
+    * exposes no modification time portably, so this is a backstop for
+    * edits made outside the process; changes made inside it invalidate
+    * the cache explicitly. */
+   int64_t file_size;
+
    uint8_t flags;
 };
 
@@ -121,6 +130,10 @@ typedef struct
 
 /* TODO/FIXME - global state - perhaps move outside this file */
 static playlist_t *playlist_cached = NULL;
+/* Set when the cached playlist's file has been rewritten by something
+ * else, so the next request re-reads it.  See
+ * playlist_cached_after_write for why this is a flag and not a free. */
+static bool playlist_cached_stale  = false;
 
 typedef int (playlist_sort_fun_t)(
       const struct playlist_entry *a,
@@ -1699,11 +1712,88 @@ end:
    free(file);
 }
 
+/* A playlist file has just been written.  If the cached playlist is a
+ * different object reading the same path, its contents are now stale -
+ * a scan or a playlist-manager task writing the file the menu happens
+ * to have open is the ordinary way this happens.  Drop it rather than
+ * let a later reuse serve what is on disk no longer.  When the cached
+ * playlist is the one that was written, it is still authoritative; only
+ * its size stamp needs to catch up. */
+static void playlist_cached_after_write(playlist_t *written)
+{
+   if (!playlist_cached || !written || !*written->config.path)
+      return;
+   if (playlist_cached == written)
+   {
+      playlist_cached->file_size = path_get_size(written->config.path);
+      return;
+   }
+   if (string_is_equal(playlist_cached->config.path, written->config.path))
+   {
+      /* Mark it, do not free it.
+       *
+       * This runs from whatever happened to write the file, and the
+       * commonest case is the history list: launching an entry pushes
+       * it onto g_defaults.content_history, which is a different
+       * playlist_t for the same path as the one the menu is displaying
+       * from.  Freeing here would pull that object out from under
+       * every menu_displaylist caller still holding what
+       * playlist_get_cached returned - a use after free whose symptoms
+       * appear later and somewhere else entirely.
+       *
+       * The staleness is what matters, not the memory: flagging it
+       * makes the next playlist_init_cached re-read, which is a point
+       * where nothing is holding the old pointer. */
+      playlist_cached_stale = true;
+   }
+}
+
+/* Move @from onto @to, replacing whatever is there.
+ *
+ * POSIX rename() replaces atomically and that is the whole point of
+ * this, so try it first and take the single-syscall path where it
+ * works.  Windows' rename() refuses when the destination exists, so
+ * there the original is moved aside first: at every instant either the
+ * destination or the saved copy is a complete file, and if the second
+ * move fails the original is put back.  A failure anywhere leaves the
+ * existing playlist untouched, which is the outcome that matters. */
+static bool playlist_replace_file(const char *from, const char *to)
+{
+   char saved[PATH_MAX_LENGTH];
+   size_t _len;
+
+   if (filestream_rename(from, to) == 0)
+      return true;
+
+   /* Either the destination exists and this platform will not replace
+    * it, or the move itself failed.  Try moving the original aside. */
+   _len = strlcpy(saved, to, sizeof(saved));
+   if (_len + STRLEN_CONST(".old") >= sizeof(saved))
+      return false;
+   strlcpy(saved + _len, ".old", sizeof(saved) - _len);
+
+   filestream_delete(saved);          /* a leftover from a previous run */
+   if (filestream_rename(to, saved) != 0)
+      return false;                   /* original untouched; give up   */
+
+   if (filestream_rename(from, to) == 0)
+   {
+      filestream_delete(saved);
+      return true;
+   }
+
+   /* Put the original back rather than leave nothing behind. */
+   filestream_rename(saved, to);
+   return false;
+}
+
 void playlist_write_file(playlist_t *playlist)
 {
    size_t i, _len;
    intfstream_t *file = NULL;
    bool compressed    = false;
+   bool wrote_ok      = false;
+   char write_path[PATH_MAX_LENGTH];
 
    /* Playlist will be written if any of the
     * following are true:
@@ -1725,19 +1815,35 @@ void playlist_write_file(playlist_t *playlist)
           ))
       return;
 
+   /* Write beside the target and move it into place at the end, rather
+    * than truncating the real file and filling it in.  A crash, a power
+    * loss or a full disk part way through a write would otherwise leave
+    * the user with a truncated playlist - and for a large one that
+    * window is tens of milliseconds on every scan and every favourite
+    * added.  The temporary sits in the same directory so the move stays
+    * within one filesystem. */
+   _len = strlcpy(write_path, playlist->config.path, sizeof(write_path));
+   if (_len + STRLEN_CONST(".tmp") >= sizeof(write_path))
+   {
+      RARCH_ERR("[Playlist] Path too long to write safely: \"%s\".\n",
+            playlist->config.path);
+      return;
+   }
+   strlcpy(write_path + _len, ".tmp", sizeof(write_path) - _len);
+
 #if defined(HAVE_COMPRESSION)
    if (playlist->config.compress)
-      file = intfstream_open_rzip_file(playlist->config.path,
+      file = intfstream_open_rzip_file(write_path,
             RETRO_VFS_FILE_ACCESS_WRITE);
    else
 #endif
-      file = intfstream_open_file(playlist->config.path,
+      file = intfstream_open_file(write_path,
             RETRO_VFS_FILE_ACCESS_WRITE,
             RETRO_VFS_FILE_ACCESS_HINT_NONE);
 
    if (!file)
    {
-      RARCH_ERR("[Playlist] Failed to write to file: \"%s\".\n", playlist->config.path);
+      RARCH_ERR("[Playlist] Failed to write to file: \"%s\".\n", write_path);
       return;
    }
 
@@ -1775,6 +1881,11 @@ void playlist_write_file(playlist_t *playlist)
             playlist->sort_mode);
 
       playlist->flags  |=  (CNT_PLAYLIST_FLG_OLD_FMT);
+      /* intfstream_printf reports nothing useful per call here, so the
+       * old format's success is "we reached the end without bailing" -
+       * the same guarantee it gave before, now made explicit because
+       * the temporary is only moved into place on success. */
+      wrote_ok          = true;
    }
    else
 #endif
@@ -2071,10 +2182,14 @@ void playlist_write_file(playlist_t *playlist)
       rjsonwriter_raw(writer, "]\n", 2);
       rjsonwriter_raw(writer, "}\n", 2);
 
+      /* The writer's own failure is the signal that the temporary is
+       * incomplete; without it a short write would be moved over a
+       * good playlist. */
       if (!rjsonwriter_free(writer))
-      {
-         RARCH_ERR("[Playlist] Failed to write to file: \"%s\".\n", playlist->config.path);
-      }
+         RARCH_ERR("[Playlist] Failed to write to file: \"%s\".\n",
+               playlist->config.path);
+      else
+         wrote_ok = true;
 
       playlist->flags  &= ~(CNT_PLAYLIST_FLG_OLD_FMT);
    }
@@ -2086,10 +2201,25 @@ void playlist_write_file(playlist_t *playlist)
    else
       playlist->flags  &= ~(CNT_PLAYLIST_FLG_COMPRESSED);
 
-   RARCH_LOG("[Playlist] Written to file: \"%s\".\n", playlist->config.path);
 end:
    intfstream_close(file);
    free(file);
+
+   /* Only now does the new content replace the old one.  If anything
+    * above failed, the temporary is discarded and the playlist on disk
+    * is exactly what it was. */
+   if (wrote_ok && playlist_replace_file(write_path, playlist->config.path))
+   {
+      RARCH_LOG("[Playlist] Written to file: \"%s\".\n",
+            playlist->config.path);
+      playlist_cached_after_write(playlist);
+   }
+   else
+   {
+      filestream_delete(write_path);
+      RARCH_ERR("[Playlist] Failed to write to file: \"%s\".\n",
+            playlist->config.path);
+   }
 }
 
 /**
@@ -2851,7 +2981,8 @@ void playlist_free_cached(void)
 {
    if (playlist_cached && !(playlist_cached->flags & CNT_PLAYLIST_FLG_CACHED_EXT))
       playlist_free(playlist_cached);
-   playlist_cached = NULL;
+   playlist_cached       = NULL;
+   playlist_cached_stale = false;
 }
 
 playlist_t *playlist_get_cached(void)
@@ -2861,11 +2992,54 @@ playlist_t *playlist_get_cached(void)
    return NULL;
 }
 
+/* May the cached playlist stand in for the one being asked for?
+ *
+ * Reading a playlist is not cheap - a large one is tens of milliseconds
+ * of JSON parsing and six allocations per entry - and the menu asks for
+ * the same file every time it rebuilds a display list, so answering
+ * from the cache is the difference between paying that once and paying
+ * it on every navigation.
+ *
+ * The bar for reuse is deliberately high, because the previous
+ * behaviour of always re-reading was never wrong. Everything the parse
+ * depends on has to match: the file, and every config field that
+ * changes how it is read or what is kept from it.  Anything modified
+ * inside this process invalidates the cache where it happens, so this
+ * only has to catch changes made behind our back - for which the file
+ * size is the one signal the VFS layer offers portably. */
+static bool playlist_cached_is_reusable(const playlist_config_t *config)
+{
+   if (!playlist_cached || playlist_cached_stale)
+      return false;
+   if (!string_is_equal(playlist_cached->config.path, config->path))
+      return false;
+   if (     playlist_cached->config.capacity            != config->capacity
+         || playlist_cached->config.old_format          != config->old_format
+         || playlist_cached->config.compress            != config->compress
+         || playlist_cached->config.fuzzy_archive_match != config->fuzzy_archive_match
+         || playlist_cached->config.autofix_paths       != config->autofix_paths)
+      return false;
+   if (!string_is_equal(playlist_cached->base_content_directory
+            ? playlist_cached->base_content_directory : "",
+            config->base_content_directory))
+      return false;
+   /* Changed underneath us since it was read. */
+   if (playlist_cached->file_size != path_get_size(config->path))
+      return false;
+   return true;
+}
+
 bool playlist_init_cached(const playlist_config_t *config)
 {
    bool pl_compressed, pl_old_fmt;
-   playlist_t *playlist = playlist_init(config);
-   if (!playlist)
+   playlist_t *playlist;
+
+   if (playlist_cached_is_reusable(config))
+      return true;
+
+   playlist_free_cached();
+
+   if (!(playlist = playlist_init(config)))
       return false;
 
    pl_compressed   = ((playlist->flags & CNT_PLAYLIST_FLG_COMPRESSED) > 0);
@@ -2880,9 +3054,8 @@ bool playlist_init_cached(const playlist_config_t *config)
        (pl_old_fmt != playlist->config.old_format))
       playlist_write_file(playlist);
 
-   /* Free any previously cached playlist to prevent leaks */
-   playlist_free_cached();
-   playlist_cached      = playlist;
+   playlist_cached       = playlist;
+   playlist_cached_stale = false;
    return true;
 }
 
@@ -2927,6 +3100,8 @@ playlist_t *playlist_init(const playlist_config_t *config)
       goto error;
 
    /* Attempt to read any existing playlist file */
+   playlist->file_size = path_get_size(playlist->config.path);
+
    if (!playlist_read_file(playlist))
       goto error;
 

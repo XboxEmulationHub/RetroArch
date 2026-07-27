@@ -22,6 +22,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <poll.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "wayland_common.h"
@@ -40,6 +41,10 @@
 
 #ifdef HAVE_LIBDECOR_H
 #include <libdecor.h>
+#endif
+
+#ifndef CLOCK_MONOTONIC_RAW
+#define CLOCK_MONOTONIC_RAW 4
 #endif
 
 #define DEFAULT_WINDOWED_WIDTH 640
@@ -519,6 +524,11 @@ void gfx_ctx_wl_destroy_resources_common(gfx_ctx_wayland_data_t *wl)
       wp_viewporter_destroy(wl->viewporter);
    if (wl->fractional_scale_manager)
       wp_fractional_scale_manager_v1_destroy(wl->fractional_scale_manager);
+   if (wl->presentation)
+   {
+      wl_presentation_destroy_feedbacks(wl);
+      wp_presentation_destroy(wl->presentation);
+   }
    if (wl->compositor)
       wl_compositor_destroy(wl->compositor);
    if (wl->registry)
@@ -539,6 +549,7 @@ void gfx_ctx_wl_destroy_resources_common(gfx_ctx_wayland_data_t *wl)
    wl->seat                      = NULL;
    wl->relative_pointer_manager  = NULL;
    wl->pointer_constraints       = NULL;
+   wl->presentation              = NULL;
    wl->content_type              = NULL;
    wl->content_type_manager      = NULL;
    wl->cursor_shape_manager      = NULL;
@@ -595,6 +606,159 @@ void gfx_ctx_wl_update_title_common(void *data)
          }
       }
    }
+}
+
+static void presentation_handle_clock_id(void *data,
+                                         struct wp_presentation *presentation,
+                                         uint32_t clock_id)
+{
+   gfx_ctx_wayland_data_t *wl = data;
+
+   if (clock_id == CLOCK_MONOTONIC || clock_id == CLOCK_MONOTONIC_RAW)
+   {
+      wl->present_clock = true;
+      wl->present_clock_id = (clockid_t)clock_id;
+   }
+}
+
+static void presentation_feedback_sync_output(void *data,
+                                              struct wp_presentation_feedback *feedback,
+                                              struct wl_output *output)
+{
+}
+
+static void presentation_feedback_remove(gfx_ctx_wayland_data_t *wl,
+                                         struct wp_presentation_feedback *feedback)
+{
+   wl_present_feedback_t *fb, *tmp;
+   wl_list_for_each_safe(fb, tmp, &wl->feedbacks, link)
+   {
+      if (fb->feedback == feedback)
+      {
+         wl_list_remove(&fb->link);
+         wp_presentation_feedback_destroy(fb->feedback);
+         free(fb);
+         return;
+      }
+   }
+}
+
+static void presentation_feedback_presented(void *data,
+                                            struct wp_presentation_feedback *feedback,
+                                            uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec,
+                                            uint32_t refresh, uint32_t seq_hi, uint32_t seq_lo,
+                                            uint32_t flags)
+{
+   gfx_ctx_wayland_data_t *wl = data;
+   uint64_t                sec = ((uint64_t)tv_sec_hi << 32) | (uint64_t)tv_sec_lo;
+
+   presentation_feedback_remove(wl, feedback);
+
+   wl->last_ust         = sec * 1000000000ULL + (uint64_t)tv_nsec;
+   wl->last_msc         = ((uint64_t)seq_hi << 32) | (uint64_t)seq_lo;
+   wl->refresh_interval = (uint64_t)refresh;
+   wl->is_presented     = true;
+}
+
+static void presentation_feedback_discarded(void *data,
+                                            struct wp_presentation_feedback *feedback)
+{
+   gfx_ctx_wayland_data_t *wl = data;
+   presentation_feedback_remove(wl, feedback);
+}
+
+const struct wp_presentation_listener presentation_listener = {
+   presentation_handle_clock_id,
+};
+
+static const struct wp_presentation_feedback_listener presentation_feedback_listener = {
+   presentation_feedback_sync_output,
+   presentation_feedback_presented,
+   presentation_feedback_discarded,
+};
+
+void wl_presentation_dispatch_pending(gfx_ctx_wayland_data_t *wl)
+{
+   if (wl->presentation && wl->input.dpy)
+      wl_display_dispatch_pending(wl->input.dpy);
+}
+
+void wl_presentation_destroy_feedbacks(gfx_ctx_wayland_data_t *wl)
+{
+   wl_present_feedback_t *fb, *tmp;
+   wl_list_for_each_safe(fb, tmp, &wl->feedbacks, link)
+   {
+      wl_list_remove(&fb->link);
+      wp_presentation_feedback_destroy(fb->feedback);
+      free(fb);
+   }
+}
+
+void wl_request_presentation_feedback(gfx_ctx_wayland_data_t *wl)
+{
+   wl_present_feedback_t *fb = calloc(1, sizeof(*fb));
+   if (!fb)
+   {
+      RARCH_ERR("[Wayland] Failed to allocate feedback struct\n");
+      return;
+   }
+
+   fb->feedback = wp_presentation_feedback(wl->presentation, wl->surface);
+   if (!fb->feedback)
+   {
+      RARCH_ERR("[Wayland] Failed to create feedback object\n");
+      free(fb);
+      return;
+   }
+
+   wp_presentation_feedback_add_listener(fb->feedback,
+                                         &presentation_feedback_listener, wl);
+   wl_list_insert(&wl->feedbacks, &fb->link);
+}
+
+void wait_for_next_frame(gfx_ctx_wayland_data_t *wl)
+{
+   struct timespec ts;
+   struct timespec now;
+   clockid_t clock_type;
+   uint64_t now_ns;
+   uint64_t next_frame_ns;
+
+   if (!wl->present_clock || !wl->is_presented)
+      return;
+
+   if (wl->swap_interval == 0)
+      return;
+
+   if (wl->refresh_interval == 0)
+      return;
+
+   clock_type = (wl->present_clock_id == CLOCK_MONOTONIC_RAW)
+   ? CLOCK_MONOTONIC_RAW : CLOCK_MONOTONIC;
+
+   /* Calculate predicted next vblank:
+    * last_ust = absolute time the previous frame was displayed
+    * refresh_interval = compositor's prediction of time until next vblank
+    * So next_frame_ns = when the next frame should be displayed */
+   next_frame_ns = wl->last_ust + wl->refresh_interval;
+
+   if (clock_gettime(clock_type, &now) < 0)
+      return;
+
+   now_ns = (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+
+   if (now_ns >= next_frame_ns)
+      return;
+
+   ts.tv_sec  = (time_t)(next_frame_ns / 1000000000ULL);
+   ts.tv_nsec = (long)(next_frame_ns % 1000000000ULL);
+
+   clock_nanosleep(clock_type, TIMER_ABSTIME, &ts, NULL);
+
+   /* Consume the timing data so we don't re-use stale values.
+    * New data will arrive when the compositor dispatches the
+    * next presentation_feedback.presented event. */
+   wl->is_presented = false;
 }
 
 
@@ -880,6 +1044,12 @@ bool gfx_ctx_wl_init_common(
 
    wl_list_init(&wl->all_outputs);
    wl_list_init(&wl->current_outputs);
+   /* Must be initialised before the registry roundtrips below:
+    * if init fails after wp_presentation is bound (e.g. missing
+    * compositor/shm/xdg_shell), gfx_ctx_wl_destroy_resources_common()
+    * walks this list, and a calloc-zeroed wl_list is not a valid
+    * empty list. */
+   wl_list_init(&wl->feedbacks);
 
    frontend_driver_destroy_signal_handler_state();
 
@@ -984,6 +1154,12 @@ bool gfx_ctx_wl_init_common(
       RARCH_LOG("[Wayland] Compositor doesn't support the %s protocol.\n", xdg_toplevel_tag_manager_v1_interface.name);
    }
 
+   if (!wl->presentation)
+   {
+      RARCH_LOG("[Wayland]: Compositor doesn't support the %s protocol.\n", wp_presentation_interface.name);
+   }
+
+
    if (!wl->tearing_control_manager)
    {
       RARCH_LOG("[Wayland] Compositor doesn't support the %s protocol.\n", wp_tearing_control_manager_v1_interface.name);
@@ -1004,17 +1180,6 @@ bool gfx_ctx_wl_init_common(
    {
       wl->content_type = wp_content_type_manager_v1_get_surface_content_type(wl->content_type_manager, wl->surface);
       wp_content_type_v1_set_content_type(wl->content_type, WP_CONTENT_TYPE_V1_TYPE_GAME);
-   }
-
-   if (wl->tearing_control_manager)
-   {
-      bool video_vsync = settings->bools.video_vsync;
-      wl->tearing_control = wp_tearing_control_manager_v1_get_tearing_control(
-         wl->tearing_control_manager, wl->surface);
-      wp_tearing_control_v1_set_presentation_hint(wl->tearing_control,
-                                                  video_vsync
-                                                  ? WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC
-                                                  : WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC);
    }
 
    wl_surface_add_listener(wl->surface, &wl_surface_listener, wl);

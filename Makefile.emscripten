@@ -43,7 +43,6 @@ HAVE_GFX_WIDGETS = 1
 HAVE_RGUI = 1
 HAVE_SDL = 0
 HAVE_SDL2 = 0
-HAVE_ZLIB = 1
 HAVE_SHADERPIPELINE = 1
 HAVE_STATIC_VIDEO_FILTERS = 1
 HAVE_STATIC_AUDIO_FILTERS = 1
@@ -293,7 +292,7 @@ endif
 
 include Makefile.common
 
-DEF_FLAGS += $(INCLUDE_DIRS) -Ideps -Ideps/stb
+DEF_FLAGS += $(INCLUDE_DIRS) -Ideps
 
 CFLAGS += $(DEF_FLAGS)
 CXXFLAGS += $(DEF_FLAGS) -D__STDC_CONSTANT_MACROS
@@ -335,7 +334,7 @@ ifneq ($(ASSERTIONS), 0)
    LDFLAGS += -s ASSERTIONS=$(ASSERTIONS)
 endif
 
-CFLAGS += -Wall -I. -Ilibretro-common/include -Ideps/7zip -std=gnu99
+CFLAGS += -Wall -I. -Ilibretro-common/include -std=gnu99
 
 RARCH_OBJ := $(addprefix $(OBJDIR)/,$(OBJ))
 

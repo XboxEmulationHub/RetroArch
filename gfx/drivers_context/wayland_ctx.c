@@ -243,6 +243,17 @@ static void *gfx_ctx_wl_init(void *data)
    if (!gfx_ctx_wl_egl_init_context(wl))
       goto error;
 #endif
+   if (wl->tearing_control_manager)
+   {
+      settings_t *settings = config_get_ptr();
+      bool video_vsync     = settings->bools.video_vsync;
+      wl->tearing_control  = wp_tearing_control_manager_v1_get_tearing_control(
+         wl->tearing_control_manager, wl->surface);
+      wp_tearing_control_v1_set_presentation_hint(wl->tearing_control,
+                                                  video_vsync
+                                                  ? WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC
+                                                  : WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC);
+   }
    return wl;
 error:
    gfx_ctx_wl_destroy_resources(wl);
@@ -345,6 +356,7 @@ static void gfx_ctx_wl_set_swap_interval(void *data, int swap_interval)
 #ifdef HAVE_EGL
    egl_set_swap_interval(&wl->egl, swap_interval);
 #endif
+   wl->swap_interval = swap_interval;
 
    if (wl->tearing_control)
    {
@@ -504,7 +516,7 @@ static const struct wl_callback_listener wl_surface_frame_listener = {
 static void gfx_ctx_wl_swap_buffers(void *data)
 {
 #ifdef HAVE_EGL
-   struct wl_callback *cb;
+   struct wl_callback *cb         = NULL;
    gfx_ctx_wayland_data_t *wl     = (gfx_ctx_wayland_data_t*)data;
    settings_t *settings           = config_get_ptr();
    unsigned max_swapchain_images  = settings->uints.video_max_swapchain_images;
@@ -528,6 +540,27 @@ static void gfx_ctx_wl_swap_buffers(void *data)
       /* Set Wayland frame callback. */
       cb = wl_surface_frame(wl->surface);
       wl_callback_add_listener(cb, &wl_surface_frame_listener, wl);
+   }
+
+   if (wl->present_clock)
+      wl_presentation_dispatch_pending(wl);
+
+   /* Skip presentation-time pacing and feedback while the surface is
+    * suspended: the compositor is not scanning out the surface, so
+    * there are no vblank events to track and requesting feedback for
+    * a frame that will not be displayed is wasteful.  Keep the event
+    * queue moving (dispatch above) so the resume configure is seen. */
+   if (!wl->suspended)
+   {
+      /* The EGL frame-callback throttle above already paces to the
+       * compositor's cadence.  Running presentation-time pacing on top
+       * of it double-throttles the frame, so only pace here when that
+       * throttle is not engaged (e.g. >2 max swapchain images). */
+      if (!frame_throttle)
+         wait_for_next_frame(wl);
+
+      if (wl->present_clock)
+         wl_request_presentation_feedback(wl);
    }
 
    egl_swap_buffers(&wl->egl);

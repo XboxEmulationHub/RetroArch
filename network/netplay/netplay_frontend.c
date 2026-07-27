@@ -22,6 +22,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/types.h>
+#include <file/archive_file.h>
+#include <streams/interface_stream.h>
 
 #ifdef HAVE_CONFIG_H
 #include "../../config.h"
@@ -226,6 +228,73 @@ static bool netplay_process_savestate(netplay_t* netplay, retro_ctx_serialize_in
 #define NETPLAYSTATE_MEM_BLOCK "MEM "
 #define NETPLAYSTATE_CHEEVOS_BLOCK "ACHV"
 #define NETPLAYSTATE_END_BLOCK "END "
+
+#ifdef HAVE_NETWORKING
+/* The content fingerprint netplay advertises, compares and searches by.
+ *
+ * Netplay is the only thing in the frontend that wants this, so it is
+ * derived here and nowhere else.  A session that never hosts, joins or
+ * answers a discovery query never computes it - which for a core
+ * opening a multi-gigabyte disc image is the difference between
+ * reading that image and not touching it.
+ *
+ * The content path is the whole input, and it has to be read the way
+ * the scanner reads it, because the lobby searches the playlists the
+ * scanner wrote: an "archive#entry" path is hashed by decompressing
+ * the entry, and everything else by hashing the file.  Getting that
+ * split wrong yields zero, which reads as "no CRC" and quietly
+ * disables both the handshake check and the lookup.
+ *
+ * Soft-patched content is reported by the CRC of the ROM on disk, not
+ * of the patched bytes.  That is the useful answer: patched bytes
+ * match no playlist entry anywhere, so hashing them broke the lobby's
+ * lookup for every patched user, and two peers running the same patch
+ * agree on the unpatched file anyway.  What it gives up is the warning
+ * when one peer has applied a patch and the other has not - a warning
+ * that never blocked the session it warned about.
+ *
+ * Cached because the callers repeat: the LAN ad server answers every
+ * discovery query. Keyed on the content path, so a different load
+ * recomputes on its own without anything having to invalidate it.
+ */
+uint32_t netplay_content_crc(void)
+{
+   static char     cached_path[PATH_MAX_LENGTH] = {0};
+   static uint32_t cached_crc                   = 0;
+   const char     *path                         = path_get(RARCH_PATH_CONTENT);
+
+   if (!path || !*path)
+      return 0;
+
+   if (!string_is_equal(cached_path, path))
+   {
+      uint32_t crc = 0;
+
+      if (path_contains_compressed_file(path))
+      {
+         uint64_t size = 0;
+         crc = file_archive_get_file_crc32_and_size(path, &size);
+      }
+      else
+      {
+         intfstream_t *fd = intfstream_open_file(path,
+               RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+         if (fd)
+         {
+            if (!intfstream_get_crc(fd, &crc))
+               crc = 0;
+            intfstream_close(fd);
+            free(fd);
+         }
+      }
+
+      cached_crc = crc;
+      strlcpy(cached_path, path, sizeof(cached_path));
+   }
+   return cached_crc;
+}
+#endif
+
 
 #ifdef HAVE_NETPLAYDISCOVERY
 /** Initialize Netplay discovery (client) */
@@ -525,6 +594,7 @@ static void deinit_lan_ad_server_socket(void)
  *
  * Respond to any LAN ad queries that the netplay server has received.
  */
+
 static bool netplay_lan_ad_server(netplay_t *netplay)
 {
    uint32_t header;
@@ -647,7 +717,7 @@ static bool netplay_lan_ad_server(netplay_t *netplay)
          strlcpy(ad_packet_buffer.subsystem_name, "N/A",
             sizeof(ad_packet_buffer.subsystem_name));
 
-         ad_packet_buffer.content_crc = (int32_t)htonl(content_get_crc());
+         ad_packet_buffer.content_crc = (int32_t)htonl(netplay_content_crc());
       }
 
       if (*settings->paths.netplay_password)
@@ -1234,7 +1304,7 @@ static bool netplay_handshake_info(netplay_t *netplay,
             sizeof(info_buf.core_version));
    }
 
-   info_buf.content_crc   = htonl(content_get_crc()); /* Get our content CRC */
+   info_buf.content_crc   = htonl(netplay_content_crc());
    connection->ping_timer = cpu_features_get_time_usec(); /* Third ping */
 
    /* Send it off and wait for info back */
@@ -1680,7 +1750,7 @@ static bool netplay_handshake_pre_info(netplay_t *netplay,
    }
 
    /* Check the content CRC */
-   content_crc = content_get_crc();
+   content_crc = netplay_content_crc();
 
    if (content_crc && ntohl(info_buf.content_crc) != content_crc)
    {
@@ -6014,6 +6084,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
             size_t   load_ptr;
             uint32_t load_frame_count;
             uint32_t rd, wn;
+            enum trans_stream_error zerr = TRANS_STREAM_ERROR_NONE;
             struct compression_transcoder *ctrans = NULL;
             NETPLAY_ASSERT_MODUS(NETPLAY_MODUS_INPUT_FRAME_SYNC);
 
@@ -6134,9 +6205,21 @@ static bool netplay_get_cmd(netplay_t *netplay,
             ctrans->decompression_backend->set_out(
                ctrans->decompression_stream,
                (uint8_t*)netplay->buffer[load_ptr].state, state_size);
-            ctrans->decompression_backend->trans(
-               ctrans->decompression_stream,
-               true, &rd, &wn, NULL);
+            /* trans() returns true for a finalized stream and also for
+             * "input exhausted, codec still mid-stream" (reported as
+             * TRANS_STREAM_ERROR_AGAIN), so neither the return value nor
+             * a nonzero wn means the state decompressed.  A truncated or
+             * malformed payload from a peer would otherwise be loaded as
+             * a partially-filled state buffer. */
+            if (!ctrans->decompression_backend->trans(
+                     ctrans->decompression_stream,
+                     true, &rd, &wn, &zerr)
+                  || zerr != TRANS_STREAM_ERROR_NONE
+                  || wn != state_size)
+            {
+               RARCH_ERR("[Netplay] Failed to decompress peer save state.\n");
+               return netplay_cmd_nak(netplay, connection);
+            }
 
             if (memcmp(netplay->buffer[load_ptr].state, "NETPLAY", 7) != 0)
             {
@@ -8710,7 +8793,7 @@ static void netplay_announce(netplay_t *netplay)
 
       net_http_urlencode(&subsystemname, "N/A");
 
-      content_crc = content_get_crc();
+      content_crc = netplay_content_crc();
    }
 
    frontend_drv =

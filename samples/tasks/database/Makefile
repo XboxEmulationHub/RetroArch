@@ -4,7 +4,6 @@ use_neon     := 0
 release	    := release
 EXE_EXT	    :=
 TARGET       := database_task
-HAVE_ZLIB    := 1
 HAVE_7ZIP    := 1
 HAVE_THREADS := 1
 
@@ -90,6 +89,7 @@ flags   += -std=c99
 
 SOURCES_C := \
 	$(CORE_DIR)/samples/tasks/database/main.c \
+	$(LIBRETRO_COMM_DIR)/memory/mem_stats.c \
 	$(CORE_DIR)/tasks/task_database.c \
 	$(CORE_DIR)/tasks/task_database_cue.c \
 	$(CORE_DIR)/database_info.c \
@@ -115,8 +115,8 @@ SOURCES_C := \
 	$(LIBRETRO_COMM_DIR)/compat/compat_posix_string.c \
 	$(LIBRETRO_COMM_DIR)/compat/compat_strcasestr.c \
 	$(LIBRETRO_COMM_DIR)/compat/compat_strl.c \
+	$(LIBRETRO_COMM_DIR)/compat/compat_strldup.c \
 	$(LIBRETRO_COMM_DIR)/compat/fopen_utf8.c \
-	$(DEPS_DIR)/yxml/yxml.c \
 	$(LIBRETRO_COMM_DIR)/formats/json/rjson.c \
 	$(LIBRETRO_COMM_DIR)/formats/xml/rxml.c \
 	$(LIBRETRO_COMM_DIR)/encodings/encoding_crc32.c \
@@ -140,37 +140,20 @@ SOURCES_C := \
 
 DEFINES    = -DHAVE_LIBRETRODB -DHAVE_COMPRESSION
 
-ifeq ($(HAVE_ZLIB), 1)
-SOURCES_C += \
-				 $(LIBRETRO_COMM_DIR)/streams/trans_stream_zlib.c
-DEFINES += -DHAVE_ZLIB
-LIBS += -lz
 LIBS += -lm
-endif
 
 ifeq ($(HAVE_7ZIP), 1)
 SOURCES_C +=  \
 				 $(LIBRETRO_COMM_DIR)/file/archive_file_7z.c
-DEFINES += -DHAVE_7ZIP -D_7ZIP_ST
+DEFINES += -DHAVE_7ZIP
 INCDIRS += -I$(DEPS_DIR)
 
-SOURCES_C += $(DEPS_DIR)/7zip/7zArcIn.c \
-				 $(DEPS_DIR)/7zip/7zBuf.c \
-				 $(DEPS_DIR)/7zip/7zCrc.c \
-				 $(DEPS_DIR)/7zip/7zCrcOpt.c \
-				 $(DEPS_DIR)/7zip/7zDec.c \
-				 $(DEPS_DIR)/7zip/7zFile.c \
-				 $(DEPS_DIR)/7zip/7zStream.c \
-				 $(DEPS_DIR)/7zip/Bcj2.c \
-				 $(DEPS_DIR)/7zip/Bra.c \
-				 $(DEPS_DIR)/7zip/Bra86.c \
-				 $(DEPS_DIR)/7zip/BraIA64.c \
-				 $(DEPS_DIR)/7zip/CpuArch.c \
-				 $(DEPS_DIR)/7zip/Delta.c \
-				 $(DEPS_DIR)/7zip/LzFind.c \
-				 $(DEPS_DIR)/7zip/Lzma2Dec.c \
-				 $(DEPS_DIR)/7zip/LzmaDec.c \
-				 $(DEPS_DIR)/7zip/LzmaEnc.c
+SOURCES_C += $(LIBRETRO_COMM_DIR)/formats/7z/r7z_archive.c \
+				 $(LIBRETRO_COMM_DIR)/formats/7z/r7z_lzma.c \
+				 $(LIBRETRO_COMM_DIR)/formats/7z/r7z_lzma_stream.c \
+				 $(LIBRETRO_COMM_DIR)/formats/7z/r7z_lzma2.c \
+				 $(LIBRETRO_COMM_DIR)/formats/7z/r7z_bcj2.c \
+				 $(LIBRETRO_COMM_DIR)/formats/7z/r7z_filters.c
 endif
 
 ifeq ($(HAVE_THREADS), 1)

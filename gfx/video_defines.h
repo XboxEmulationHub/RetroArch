@@ -147,7 +147,7 @@ enum font_driver_render_api
    FONT_DRIVER_RENDER_D3D11_API,
    FONT_DRIVER_RENDER_D3D12_API,
    FONT_DRIVER_RENDER_PS2,
-   FONT_DRIVER_RENDER_VITA2D,
+   FONT_DRIVER_RENDER_GXM,
    FONT_DRIVER_RENDER_CTR,
    FONT_DRIVER_RENDER_WIIU,
    FONT_DRIVER_RENDER_VULKAN_API,
@@ -265,7 +265,11 @@ enum display_flags
    /* Set by a video driver that can present a native XRGB2101010 (10-bit
     * per channel) source frame without the frontend down-converting it to
     * XRGB8888 first. */
-   GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE
+   GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE,
+   /* Set by a context driver whose default framebuffer is FP16 scRGB
+    * (linear, 1.0 = 80 nits): the video driver must encode SDR content
+    * for HDR output itself (paper-white scaling etc.). */
+   GFX_CTX_FLAGS_SCRGB_FRAMEBUFFER
 };
 
 enum shader_uniform_type
@@ -315,11 +319,32 @@ struct font_glyph
    int advance_y;
 };
 
+/* Coverage bit depth of a font atlas. A8 is the default; A16 is
+ * produced when a higher-precision atlas was requested (HDR output)
+ * and the renderer supports it, with samples stored as native-endian
+ * uint16_t in 'buffer'. Consumers must check 'format' before
+ * interpreting the buffer or sizing uploads. */
+enum font_atlas_format
+{
+   FONT_ATLAS_FORMAT_A8 = 0,
+   FONT_ATLAS_FORMAT_A16
+};
+
 struct font_atlas
 {
-   uint8_t *buffer; /* Alpha channel. */
+   uint8_t *buffer; /* Coverage samples; layout per 'format'. */
    unsigned width;
    unsigned height;
+   /* Dirty region in pixels, covering every glyph cell updated since
+    * the consumer last cleared the dirty flag; x1/y1 are exclusive
+    * and the values are only meaningful while dirty is set.
+    * Consumers may upload just this region (or any superset of it,
+    * such as the full-width row band) instead of the whole atlas. */
+   unsigned dirty_x0;
+   unsigned dirty_y0;
+   unsigned dirty_x1;
+   unsigned dirty_y1;
+   enum font_atlas_format format;
    bool dirty;
 };
 

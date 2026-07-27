@@ -77,6 +77,14 @@ bool rwebm_video_set_buf_ptr(rwebm_video_t *webm, void *data, size_t len);
  * sources are unaffected. Off by default. */
 void rwebm_video_set_want_10bit(rwebm_video_t *webm, int want);
 
+/* Partial-read support for the still decode: declare how many leading
+ * bytes of the buffer are valid (monotonic; 0 means fully resident).
+ * With a short avail, rwebm_video_process_image returns
+ * IMAGE_PROCESS_WAIT instead of failing when it needs bytes that have
+ * not arrived (the header, at least two scanned frames, or the first
+ * displayed frame's blocks). */
+void rwebm_video_set_avail(rwebm_video_t *webm, size_t avail);
+
 /* True if the last rwebm_video_process_image() produced XRGB2101010. */
 bool rwebm_video_is_10bit(const rwebm_video_t *webm);
 
@@ -91,6 +99,17 @@ int rwebm_video_process_image(rwebm_video_t *webm, void **buf,
 
 typedef struct rwebm_video_stream rwebm_video_stream_t;
 
+/* Take ownership of the stream a successful rwebm_video_process_image
+ * left open, positioned just past the first displayed frame, so the
+ * caller can continue the video as an animation without re-opening
+ * (and re-pre-scanning) the file.  Returns NULL if no stream is held
+ * (no process call yet, it failed, or the stream was already
+ * detached).  The stream borrows the buffer given via
+ * rwebm_video_set_buf_ptr, which must outlive it; close it with
+ * rwebm_video_stream_close.  10-bit output requested for the still is
+ * dropped: detached streams emit 8-bit frames. */
+rwebm_video_stream_t *rwebm_video_detach_stream(rwebm_video_t *webm);
+
 /* The buffer is BORROWED and must remain valid and unmodified until
  * rwebm_video_stream_close. Returns NULL when the data is not a WebM
  * stream, has no video track with a compiled-in codec, or contains no
@@ -98,20 +117,69 @@ typedef struct rwebm_video_stream rwebm_video_stream_t;
 rwebm_video_stream_t *rwebm_video_stream_open(const uint8_t *buf,
       size_t len);
 
+/* Open against a partially-read buffer: 'avail' leading bytes are
+ * valid (raise later with the stream set_avail).  On NULL, *need_more
+ * distinguishes "feed more bytes and retry" from malformed data.  For WebM the
+ * pre-scan is truncated at the wall once two frames are known (call
+ * rwebm_video_stream_complete_scan when the file has fully arrived). */
+rwebm_video_stream_t *rwebm_video_stream_open_avail(const uint8_t *buf,
+      size_t len, size_t avail, int *need_more);
+
 void rwebm_video_stream_close(rwebm_video_stream_t *stream);
 
-/* num_frames is the number of coded video packets (an upper bound on
- * displayed frames when the stream carries non-shown frames).
- * loop_count is always 0: video loops indefinitely. */
+/* num_frames is the number of coded video packets, saturating at the
+ * pre-scan cap (a few thousand): treat it as "at least this many", an
+ * upper bound on displayed frames only below the cap (the stream may
+ * carry non-shown frames).  loop_count is always 0: video loops
+ * indefinitely. */
 void rwebm_video_stream_get_info(const rwebm_video_stream_t *stream,
       unsigned *width, unsigned *height, int *num_frames, int *loop_count);
 
 /* Decode the next displayed frame. Returns the frame pixels (valid until
  * the next call on this stream) and writes its display duration in ms
  * (0 when unknown; the caller applies its default), or NULL at the end
- * of one pass; call rwebm_video_stream_rewind to loop. */
+ * of one pass; call rwebm_video_stream_rewind to loop.  Pixels are in
+ * memory order R,G,B,A by default; see rwebm_video_stream_set_argb. */
 const uint32_t *rwebm_video_stream_next(rwebm_video_stream_t *stream,
       int *duration_ms);
+
+/* Select the channel order of subsequent frames: non-zero emits ARGB
+ * words (memory order B,G,R,A on little-endian), zero restores the
+ * default R,G,B,A memory order.  Applies to the 8-bit output paths;
+ * 10-bit XRGB2101010 output is unaffected.  The order is baked by the
+ * blit, so this costs nothing per frame - it exists so a caller whose
+ * upload format is ARGB does not need its own full-frame swizzle pass.
+ * Takes effect from the next decoded frame; may be changed between
+ * frames.  A stream detached from a still-image transfer starts at
+ * the default order. */
+void rwebm_video_stream_set_argb(rwebm_video_stream_t *stream, int argb);
+
+/* Partial-read support: raise the number of leading buffer bytes that
+ * are valid (monotonic).  A blocked step resumes once the needed
+ * block's bytes are inside the window; fully-resident streams never
+ * block. */
+void rwebm_video_stream_set_avail(rwebm_video_stream_t *stream,
+      size_t avail);
+
+/* Bounded-memory streaming support: media_floor is the fixed byte
+ * offset where the cluster data begins (nothing below it is ever
+ * read); consumed is the monotonic high-water byte offset the demuxer
+ * has read up to.  Together they bound the window a feeder must keep
+ * resident: [media_floor, consumed + lookahead). */
+size_t rwebm_video_stream_media_floor(rwebm_video_stream_t *stream);
+size_t rwebm_video_stream_consumed(rwebm_video_stream_t *stream);
+
+/* For a stream adopted from a still decoded against a partial read:
+ * once the whole file is in the buffer, finish the timestamp
+ * pre-scan the partial open truncated at its byte wall, making every
+ * per-frame duration identical to a stream opened over the complete
+ * file (a wall-truncated table otherwise paces frames past it by a
+ * single-interval estimate - for ms-rounded 30 fps content, a
+ * constant 33 where the true cadence alternates 33/34, i.e. a third
+ * of a millisecond of drift per frame until the table's cap).
+ * A bounded, header-only walk of at most the table cap's packets. */
+void rwebm_video_stream_complete_scan(rwebm_video_stream_t *stream,
+      const uint8_t *buf, size_t len);
 
 void rwebm_video_stream_rewind(rwebm_video_stream_t *stream);
 

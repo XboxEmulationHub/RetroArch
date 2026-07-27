@@ -35,6 +35,32 @@
 /* TODO/FIXME - global */
 static void *video_font_driver = NULL;
 
+/* Monotonic counter incremented whenever any font instance is
+ * freed. Consumers that cache per-font derived data (e.g. the
+ * smooth ticker glyph width cache in gfx_animation.c) key their
+ * entries on this value: font_data_t pointers can be recycled by
+ * the allocator across free/create cycles, so pointer equality
+ * alone cannot prove a cached entry still describes a live font */
+static uint32_t font_driver_generation = 0;
+
+uint32_t font_driver_get_generation(void)
+{
+   return font_driver_generation;
+}
+
+static enum font_atlas_format font_atlas_preferred_format =
+      FONT_ATLAS_FORMAT_A8;
+
+void font_renderer_set_preferred_atlas_format(enum font_atlas_format fmt)
+{
+   font_atlas_preferred_format = fmt;
+}
+
+enum font_atlas_format font_renderer_get_preferred_atlas_format(void)
+{
+   return font_atlas_preferred_format;
+}
+
 int font_renderer_create_default(
       const font_renderer_driver_t **drv,
       void **handle, const char *font_path, unsigned font_size)
@@ -47,11 +73,7 @@ int font_renderer_create_default(
       &coretext_font_renderer,
 #endif
 #ifdef HAVE_STB_FONT
-#if defined(VITA) || defined(ORBIS) || defined(WIIU) || defined(ANDROID) || (defined(_WIN32) && !defined(_XBOX) && !defined(_MSC_VER) && _MSC_VER >= 1400) || (defined(_WIN32) && !defined(_XBOX) && defined(_MSC_VER)) || defined(HAVE_LIBNX) || defined(__linux__) || defined (HAVE_EMSCRIPTEN) || defined(__APPLE__) || defined(HAVE_ODROIDGO2) || defined(__PS3__)
-      &stb_unicode_font_renderer,
-#else
-      &stb_unicode_font_renderer,
-#endif
+      &stb_font_renderer,
 #endif
       &bitmap_font_renderer,
       NULL
@@ -270,14 +292,14 @@ static bool font_init_first(
          }
          break;
 #endif
-#ifdef HAVE_VITA2D
-      case FONT_DRIVER_RENDER_VITA2D:
+#ifdef HAVE_GXM
+      case FONT_DRIVER_RENDER_GXM:
          {
-            void *data = vita2d_vita_font.init(
+            void *data = gxm_font.init(
                   video_data, font_path, font_size, is_threaded);
             if (data)
             {
-               *font_driver = &vita2d_vita_font;
+               *font_driver = &gxm_font;
                *font_handle = data;
                return true;
             }
@@ -1003,9 +1025,12 @@ void font_driver_free(font_data_t *font)
    if (font)
    {
       bool is_threaded        = false;
+
+      /* Invalidate any externally cached per-font derived data */
+      font_driver_generation++;
+
 #ifdef HAVE_THREADS
-      bool *is_threaded_tmp   = video_driver_get_threaded();
-      is_threaded             = *is_threaded_tmp;
+      is_threaded             = *video_driver_get_threaded();
 #endif
 
       font_driver_release_renderer_state(font->renderer,

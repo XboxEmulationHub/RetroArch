@@ -16,6 +16,7 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <memory/mem_stats.h>
 #include <stddef.h>
 
 #include <compat/strl.h>
@@ -381,7 +382,7 @@ static int filebrowser_parse(
          {
             const char *search_term = search_terms->terms[j];
             if (search_term && *search_term
-                && !strcasestr(file_path, search_term))
+                && !compat_strcasestr(file_path, search_term))
             {
                skip_entry = true;
                break;
@@ -1299,7 +1300,7 @@ static unsigned menu_displaylist_parse_core_manager_list(file_list_t *list,
                   const char *search_term = search_terms->terms[j];
                   if (   (search_term && *search_term)
                       && (core_info->display_name && *core_info->display_name)
-                      && !strcasestr(core_info->display_name, search_term))
+                      && !compat_strcasestr(core_info->display_name, search_term))
                   {
                      entry_valid = false;
                      break;
@@ -1925,6 +1926,12 @@ static unsigned menu_displaylist_parse_supported_cores(
    return count;
 }
 
+#if defined(HAVE_VULKAN) && defined(__APPLE__)
+/* Implemented in gfx/common/vulkan_common.c. Forward-declared here to
+ * avoid pulling the Vulkan headers into the menu translation unit. */
+const char *vulkan_get_moltenvk_version(void);
+#endif
+
 static unsigned menu_displaylist_parse_system_info(file_list_t *list)
 {
    char entry[NAME_MAX_LENGTH];
@@ -1952,6 +1959,27 @@ static unsigned menu_displaylist_parse_system_info(file_list_t *list)
          MENU_ENUM_LABEL_SYSTEM_INFO_ENTRY, MENU_SETTINGS_CORE_INFO_NONE,
          0, 0, NULL))
       count++;
+#endif
+
+#if defined(HAVE_VULKAN) && defined(__APPLE__)
+   /* MoltenVK Version */
+   {
+      const char *moltenvk_version = vulkan_get_moltenvk_version();
+      _len        = strlcpy(entry,
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_MOLTENVK_VERSION),
+            sizeof(entry));
+      _len       += strlcpy(entry + _len, ": ", sizeof(entry) - _len);
+      if (!moltenvk_version || !*moltenvk_version)
+         strlcpy(entry + _len,
+               msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NOT_AVAILABLE),
+               sizeof(entry) - _len);
+      else
+         strlcpy(entry + _len, moltenvk_version, sizeof(entry) - _len);
+      if (menu_entries_append(list, entry, "",
+            MENU_ENUM_LABEL_SYSTEM_INFO_ENTRY, MENU_SETTINGS_CORE_INFO_NONE,
+            0, 0, NULL))
+         count++;
+   }
 #endif
 
    /* Build Date */
@@ -2213,8 +2241,8 @@ static unsigned menu_displaylist_parse_system_info(file_list_t *list)
 
          /* Memory */
          {
-            uint64_t memory_total = frontend_driver_get_total_memory();
-            uint64_t memory_used  = memory_total - frontend_driver_get_free_memory();
+            uint64_t memory_total = mem_stats_total();
+            uint64_t memory_used  = memory_total - mem_stats_free();
             if (memory_used != 0 && memory_total != 0)
             {
                _len = strlcpy(entry,
@@ -2519,7 +2547,7 @@ static unsigned menu_displaylist_parse_system_info(file_list_t *list)
 #ifdef HAVE_7ZIP
          {SUPPORTS_7ZIP, "7zip"},
 #endif
-#ifdef HAVE_ZSTD
+#if defined(HAVE_ZSTD) || defined(HAVE_RZSTD)
          {SUPPORTS_ZSTD, "Zstandard"},
 #endif
 #ifdef HAVE_FFMPEG
@@ -2754,7 +2782,7 @@ static int menu_displaylist_parse_playlist(
             const char *search_term = search_terms->terms[j];
 
             if (   (search_term && *search_term)
-                && !strcasestr(menu_entry_lbl, search_term))
+                && !compat_strcasestr(menu_entry_lbl, search_term))
             {
                entry_valid = false;
                break;
@@ -2855,8 +2883,28 @@ static int menu_displaylist_parse_database_entry(menu_handle_t *menu,
    database_info_build_query_enum(query, sizeof(query),
          DATABASE_QUERY_ENTRY, info->path_b);
 
-   if (!(db_info = database_info_list_new(info->path, query)))
-      return -1;
+   /* The scan walks the entire .rdb; it runs on the task queue and
+    * the result arrives via the one-slot cache. While pending, show
+    * a placeholder - the task callback refreshes this list. */
+   if (!(db_info = menu_dbinfo_cache_get(info->path, query)))
+   {
+      /* A cached NULL means the scan already ran and failed -
+       * behave like the old synchronous failure path instead of
+       * re-pushing the scan on every rebuild. */
+      if (menu_dbinfo_cache_has(info->path, query))
+         return -1;
+
+      if (!menu_dbinfo_load_in_progress(NULL))
+         task_push_dbinfo_load(info->path, query);
+
+      menu_entries_append(info->list,
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_EXPLORE_INITIALISING_LIST),
+            msg_hash_to_str(MENU_ENUM_LABEL_EXPLORE_INITIALISING_LIST),
+            MENU_ENUM_LABEL_EXPLORE_INITIALISING_LIST,
+            FILE_TYPE_NONE, 0, 0, NULL);
+
+      return 0;
+   }
 
    _len = fill_pathname(path_base, path_basename(info->path), "",
          sizeof(path_base));
@@ -3139,17 +3187,11 @@ static int menu_displaylist_parse_database_entry(menu_handle_t *menu,
       info->flags |= MD_FLAG_NEED_PUSH_NO_PLAYLIST_ENTRIES;
 
    playlist_free(playlist);
-   database_info_list_free(db_info);
-   free(db_info);
+   /* db_info is owned by the dbinfo cache - do not free */
 
    return 0;
 
 error:
-   if (db_info)
-   {
-      database_info_list_free(db_info);
-      free(db_info);
-   }
    playlist_free(playlist);
 
    return -1;
@@ -3356,8 +3398,11 @@ static void menu_displaylist_set_new_playlist(
 
    menu->db_playlist_file[0]           = '\0';
 
-   if (playlist_get_cached())
-      playlist_free_cached();
+   /* The cache is not dropped here any more: playlist_init_cached
+    * decides whether the cached playlist can stand in for the one being
+    * asked for, and freeing it first would make that decision always
+    * come out "no" - which is exactly what made every rebuild of this
+    * list re-read and re-parse the same file. */
 
    /* Get proper playlist capacity */
    if (playlist_file_name && *playlist_file_name)
@@ -8881,7 +8926,7 @@ unsigned menu_displaylist_build_list(
                               entry_valid = false;
                         }
                         /* Normal label comparison */
-                        else if (!strcasestr(cheat_label, search_term))
+                        else if (!compat_strcasestr(cheat_label, search_term))
                            entry_valid = false;
                      }
 
@@ -10490,6 +10535,11 @@ unsigned menu_displaylist_build_list(
                {
                   if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                            MENU_ENUM_LABEL_VIDEO_HDR_PAPER_WHITE_NITS,
+                           PARSE_ONLY_FLOAT, false) == 0)
+                     count++;
+
+                  if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                           MENU_ENUM_LABEL_VIDEO_HDR_MAX_NITS,
                            PARSE_ONLY_FLOAT, false) == 0)
                      count++;
 
@@ -12288,6 +12338,7 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_MENU_THUMBNAIL_UPSCALE_THRESHOLD,             PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_MENU_RGUI_SWAP_THUMBNAILS,                    PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_MENU_RGUI_THUMBNAIL_DOWNSCALER,               PARSE_ONLY_UINT,   true},
+               {MENU_ENUM_LABEL_MENU_RGUI_THUMBNAIL_DITHER,                   PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_MENU_RGUI_THUMBNAIL_DELAY,                    PARSE_ONLY_UINT,   true},
                {MENU_ENUM_LABEL_MENU_THUMBNAIL_BACKGROUND_ENABLE,             PARSE_ONLY_BOOL,   true},
                {MENU_ENUM_LABEL_MENU_THUMBNAIL_PREVIEW_AUDIO,                 PARSE_ONLY_BOOL,   true},
@@ -12952,7 +13003,10 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                               input_config_get_bind_auto(port, retro_id);
                         size_t desc_len = input_config_get_bind_string(
                               settings, descriptor,
-                              keybind, auto_bind, sizeof(descriptor));
+                              keybind, auto_bind,
+                              &input_config_bind_labels[port][retro_id],
+                              &input_autoconf_bind_labels[port][retro_id],
+                              sizeof(descriptor));
 
                         if (!strstr(descriptor, "Auto"))
                         {
@@ -13659,7 +13713,11 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
             {
                unsigned i;
                const char *query             = (info->path_c && *info->path_c) ? info->path_c : NULL;
-               database_info_list_t *db_list = database_info_list_new(info->path, query);
+               /* Full .rdb scan - runs on the task queue; result
+                * arrives via the one-slot cache and this list is
+                * refreshed by the task callback. The cache owns the
+                * returned list. */
+               database_info_list_t *db_list = menu_dbinfo_cache_get(info->path, query);
 
                if (db_list)
                {
@@ -13671,9 +13729,21 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                            count++;
                   }
                }
+               else if (!menu_dbinfo_cache_has(info->path, query))
+               {
+                  /* Never scanned (a cached NULL means the scan
+                   * failed: fall through with no entries so the
+                   * empty-list fallback shows, without re-pushing) */
+                  if (!menu_dbinfo_load_in_progress(NULL))
+                     task_push_dbinfo_load(info->path, query);
 
-               database_info_list_free(db_list);
-               free(db_list);
+                  if (menu_entries_append(info->list,
+                        msg_hash_to_str(MENU_ENUM_LABEL_VALUE_EXPLORE_INITIALISING_LIST),
+                        msg_hash_to_str(MENU_ENUM_LABEL_EXPLORE_INITIALISING_LIST),
+                        MENU_ENUM_LABEL_EXPLORE_INITIALISING_LIST,
+                        FILE_TYPE_NONE, 0, 0, NULL))
+                     count++;
+               }
             }
 #endif
             if (info->path && *info->path)
@@ -13970,7 +14040,7 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
 
                               if (     (search_term && *search_term)
                                     && (entry->display_name && *entry->display_name)
-                                    && !strcasestr(entry->display_name, search_term))
+                                    && !compat_strcasestr(entry->display_name, search_term))
                               {
                                  entry_valid = false;
                                  break;

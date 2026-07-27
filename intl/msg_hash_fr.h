@@ -1123,6 +1123,7 @@ static const struct
    char s_d05c8ee3[25];
    char s_13bce77f[15];
    char s_1b2ee6c4[42];
+   char s_81589fd5[23];
    char s_26e9cde7[38];
    char s_b539ec6c[13];
    char s_f89e1cbc[71];
@@ -2012,6 +2013,7 @@ static const struct
    char s_519cd5f8[48];
    char s_43ac80a0[13];
    char s_6959ce80[18];
+   char s_886631ec[20];
    char s_ebe994b4[14];
    char s_1c62c301[8];
    char s_a8bb35b6[10];
@@ -2418,7 +2420,7 @@ static const struct
    char s_042502c4[55];
    char s_90ae9a9f[101];
    char s_81b79d5b_0[500];
-   char s_81b79d5b_1[37];
+   char s_81b79d5b_1[95];
    char s_c9235dab[55];
    char s_330be970_0[500];
    char s_330be970_1[109];
@@ -2936,6 +2938,7 @@ static const struct
    char s_87ac0bd1[81];
    char s_236ddb2d[124];
    char s_d27e63b2[249];
+   char s_2297ba83[323];
    char s_32728f95[116];
    char s_c4eae01a[148];
    char s_bb0852aa[220];
@@ -5525,6 +5528,7 @@ static const struct
    "\303\211changer les miniatures",
    "Ic\303\264nes ON/OFF",
    "Retarder l'affichage de la miniature (ms)",
+   "Tramage des miniatures",
    "M\303\251thode de r\303\251duction des miniatures",
    "Transparence",
    "Reprendre le contenu apr\303\250s l'utilisation de sauvegardes instantan\303\251es",
@@ -6427,6 +6431,7 @@ static const struct
    "Syst\303\250me d'exploitation de l'interface frontale",
    "Version Git ",
    "Version de Lakka ",
+   "Version de MoltenVK",
    "Alimentation ",
    "Charg\303\251",
    "En charge",
@@ -6859,11 +6864,12 @@ static const struct
    "Utiliser le r\303\251\303\251chantillonneur \303\240 virgule fixe (entier) plut\303\264t que cel"
    "ui \303\240 virgule flottante lorsqu'un c\305\223ur g\303\251n\303\250re un signal audio 16 bits"
    ". Cela \303\251vite la conversion aller-retour entre entier et virgule flottante et produit une "
-   "sortie identique au bit pr\303\250s sur toutes les plateformes, ce qui am\303\251liore le d\303"
-   "\251terminisme pour le jeu en r\303\251seau. Cette option n'a pas d'effet sur les c\305\223urs q"
-   "ui g\303\251n\303\250rent un signal audio \303\240 virgule flottante et utilise la conversion "
-   "\303\240 virgule flottante lorsqu'u",
-   "n filtre DSP incompatible est actif.",
+   "sortie identique au bit pr\303\250s sur toutes les plateformes, garantissant ainsi la reproducti"
+   "bilit\303\251 de la sortie audio d'une ex\303\251cution \303\240 l'autre et d'un syst\303\250me "
+   "\303\240 l'autre. Cette option n'a pas d'effet sur les c\305\223urs qui g\303\251n\303\250rent u"
+   "n signal audio \303\240 virgule flotta",
+   "nte et utilise la conversion \303\240 virgule flottante lorsqu'un filtre DSP incompatible est ac"
+   "tif.",
    "Les filtres audio DSP sont conserv\303\251s dans ce dossier.",
    "Format d'\303\251chantillon demand\303\251 par le pilote audio au p\303\251riph\303\251rique de "
    "sortie. 'Float' correspond \303\240 un nombre \303\240 virgule flottante 32\302\240bits, 'Int16'"
@@ -7705,6 +7711,11 @@ static const struct
    "ure et le chargement de sa miniature associ\303\251e. R\303\251gler sur une valeur d'au moins 25"
    "6 ms permet la navigation rapide sans \303\240-coups m\303\252me sur les appareils les plus lent"
    "s.",
+   "Effet de d\303\251grad\303\251 de couleurs lisse dans les miniatures et le fond d'\303\251cran o"
+   "btenu par tramage selon la palette limit\303\251e du menu. Le motif de tramage est agrandi, comm"
+   "e tous les autres \303\251l\303\251ments, lorsque le facteur d'\303\251chelle du menu est \303"
+   "\251lev\303\251, et peut appara\303\256tre comme une texture\302\240; d\303\251sactivez-le le ca"
+   "s \303\251ch\303\251ant.",
    "M\303\251thode de r\303\251\303\251chantillonnage utilis\303\251e lors de la r\303\251duction de"
    " grandes miniatures pour les adapter \303\240 l'\303\251cran.",
    "Activer l'affichage en arri\303\250re-plan du contenu lorsque le Menu rapide est actif. D\303"
@@ -9435,7 +9446,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_fr_blob_check[
-      (sizeof(msg_hash_fr_blob) == (214009u
+      (sizeof(msg_hash_fr_blob) == (214433u
 #ifdef ANDROID
        + 373u
 #endif
@@ -10949,6 +10960,7 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_RGUI_SWAP_THUMBNAILS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_RGUI_SWITCH_ICONS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_RGUI_THUMBNAIL_DELAY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_RGUI_THUMBNAIL_DITHER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_RGUI_THUMBNAIL_DOWNSCALER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_RGUI_TRANSPARENCY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SAVESTATE_RESUME,
@@ -11837,6 +11849,7 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_FRONTEND_OS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_GIT_VERSION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_LAKKA_VERSION,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_MOLTENVK_VERSION,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_POWER_SOURCE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_POWER_SOURCE_CHARGED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SYSTEM_INFO_POWER_SOURCE_CHARGING,
@@ -12758,6 +12771,7 @@ static const uint32_t msg_hash_fr_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_RGUI_SWAP_THUMBNAILS,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_RGUI_SWITCH_ICONS,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_RGUI_THUMBNAIL_DELAY,
+   (uint32_t)MENU_ENUM_SUBLABEL_MENU_RGUI_THUMBNAIL_DITHER,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_RGUI_THUMBNAIL_DOWNSCALER,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_RGUI_TRANSPARENCY,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SAVESTATE_RESUME,

@@ -394,11 +394,9 @@ typedef struct video_frame_info
    unsigned height;
    unsigned scale_width;
    unsigned scale_height;
-   unsigned xmb_theme;
    unsigned xmb_color_theme;
    unsigned menu_shader_pipeline;
    unsigned materialui_color_theme;
-   unsigned ozone_color_theme;
    unsigned custom_vp_width;
    unsigned custom_vp_height;
    unsigned custom_vp_full_width;
@@ -414,8 +412,6 @@ typedef struct video_frame_info
 
    float menu_wallpaper_opacity;
    float menu_framebuffer_opacity;
-   float menu_header_opacity;
-   float menu_footer_opacity;
    float refresh_rate;
    float font_size;
    float font_msg_pos_x;
@@ -608,14 +604,14 @@ typedef struct gfx_ctx_driver
     * active for this thread. */
    void (*make_current)(bool release);
 
-   /* Optional. Creates and binds a new window surface, destroying the original
-    * window surface if applicable. Returns true on success and false on error.
-    * Currently only for OpenGL. */
+   /* Optional. Creates and binds a replacement window surface without
+    * reinitializing the underlying graphics context/device. Returns true on
+    * success and false on error. */
    bool (*create_surface)(void *data);
 
-   /* Optional. Destroys the current window surface. Returns true on success or
-    * or if there is no currently bound window surface and false on error.
-    * Currently only for OpenGL. */
+   /* Optional. Destroys the current window surface without reinitializing the
+    * underlying graphics context/device. Returns true on success, or if no
+    * window surface is bound, and false on error. */
    bool (*destroy_surface)(void *data);
 } gfx_ctx_driver_t;
 
@@ -1501,7 +1497,7 @@ extern video_driver_t video_gl1;
 extern video_driver_t video_vulkan;
 extern video_driver_t video_metal;
 extern video_driver_t video_psp1;
-extern video_driver_t video_vita2d;
+extern video_driver_t video_gxm;
 extern video_driver_t video_ps2;
 extern video_driver_t video_ctr;
 extern video_driver_t video_gcm;

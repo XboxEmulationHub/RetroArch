@@ -23,11 +23,13 @@
 #include <string.h>
 
 #include <boolean.h>
+#include <retro_miscellaneous.h>
 
 #include <compat/msvc.h>
 #include <compat/strl.h>
 #include <file/file_path.h>
 #include <streams/file_stream.h>
+#include <string/stdstring.h>
 
 #include <encodings/crc32.h>
 
@@ -35,9 +37,10 @@
 #include "../msg_hash.h"
 #include "../verbosity.h"
 #include "../configuration.h"
+#include "patch_stream.h"
 
 #ifdef HAVE_XDELTA
-#include "../deps/xdelta3/xdelta3.h"
+#include <encodings/encoding_vcdiff.h>
 #endif
 
 enum bps_mode
@@ -692,109 +695,28 @@ static enum patch_error ips_apply_patch(
 }
 
 #if defined(HAVE_PATCH) && defined(HAVE_XDELTA)
+/* .xdelta patches are VCDIFF (RFC 3284); the decoder lives in
+ * libretro-common and this is only the shape adapter. */
 static enum patch_error xdelta_apply_patch(
         const uint8_t *patchdata, uint64_t patchlen,
         const uint8_t *sourcedata, uint64_t sourcelength,
         uint8_t **targetdata, uint64_t *targetlength)
 {
-   int ret;
-   enum patch_error error_patch = PATCH_SUCCESS;
-   xd3_stream stream;
-   xd3_config config;
-   xd3_source source;
+   uint8_t *out = NULL;
+   size_t   len = 0;
 
-   /* Validate the magic number, as given by RFC 3284 section 4.1 */
-   if (   patchlen      < 8
-       || patchdata[0] != 0xD6
-       || patchdata[1] != 0xC3
-       || patchdata[2] != 0xC4
-       || patchdata[3] != 0x00)
-      return PATCH_PATCH_INVALID_HEADER;
+   if (      patchlen     > (uint64_t)((size_t)-1)
+         ||  sourcelength > (uint64_t)((size_t)-1))
+      return PATCH_PATCH_INVALID;
 
-   xd3_init_config(&config, XD3_SKIP_EMIT);
-   /* The first pass is just to compute the buffer size,
-    * no need to emit patched data yet */
+   if (!vcdiff_decode(patchdata, (size_t)patchlen,
+            sourcedata, (size_t)sourcelength, &out, &len))
+      return PATCH_PATCH_INVALID;
 
-   if (xd3_config_stream(&stream, &config) != 0)
-      return PATCH_UNKNOWN;
-
-   memset(&source, 0, sizeof(source));
-   source.blksize  = sourcelength;
-   source.onblk    = sourcelength;
-   source.curblk   = sourcedata;
-   source.curblkno = 0;
-   xd3_set_source_and_size(&stream, &source, sourcelength);
-
-   do
-   { /* Make a first pass over the patch, to compute the target size.
-      * XDelta3 doesn't store the target size in the patch file,
-      * so we have to either compute it ourselves
-      * or keep reallocating a buffer as we go.
-      * I went with the former because it's simpler and fails sooner.
-      */
-      switch (ret = xd3_decode_input(&stream))
-      { /* xd3 works like a zlib-styled state machine (stream is the machine) */
-         case XD3_INPUT: /* When starting the first pass, provide the input */
-            xd3_avail_input(&stream, patchdata, patchlen);
-            RARCH_DBG("[xdelta] Provided %lu bytes of input to xd3_stream\n", patchlen);
-            break;
-         case XD3_GOTHEADER:
-         case XD3_WINSTART:
-            *targetlength += stream.winsize;
-            RARCH_DBG("[xdelta] Discovered a window of %lu bytes (target filesize is %lu bytes)\n", stream.winsize, *targetlength);
-            /* xdelta updates the active stream window in the GOTHEADER and WINSTART states */
-            break;
-         case XD3_OUTPUT:
-            xd3_consume_output(&stream); /* Need to call this after every output */
-            break;
-         case XD3_INVALID_INPUT:
-            error_patch = PATCH_PATCH_INVALID;
-            RARCH_ERR("[xdelta] Invalid input in xd3_stream (%s)\n", xd3_errstring(&stream));
-            goto cleanup_stream;
-         case XD3_INTERNAL:
-            error_patch = PATCH_UNKNOWN;
-            RARCH_ERR("[xdelta] Internal error in xd3_stream (%s)\n", xd3_errstring(&stream));
-            goto cleanup_stream;
-         case XD3_WINFINISH:
-            RARCH_DBG("[xdelta] Finished processing window #%d\n", stream.current_window);
-            break;
-         default:
-            RARCH_DBG("[xdelta] xd3_decode_input returned %ld (%s; %s)\n", ret, xd3_strerror(ret), stream.msg);
-      }
-   } while (stream.avail_in);
-
-   *targetdata = (uint8_t*)malloc(*targetlength);
-   /* NULL-check: xd3_decode_memory writes into *targetdata.
-    * Passing NULL is either a crash or an opaque xdelta error
-    * depending on the library version.  On OOM set
-    * PATCH_TARGET_ALLOC_FAILED to match the explicit ENOSPC
-    * error path below and skip the decode. */
-   if (!*targetdata)
-   {
-      error_patch = PATCH_TARGET_ALLOC_FAILED;
-      goto cleanup_stream;
-   }
-   switch (xd3_decode_memory(
-           patchdata, patchlen,
-           sourcedata, sourcelength,
-           *targetdata, targetlength, *targetlength, 0))
-   {
-      case 0: /* Success */
-         break;
-      case ENOSPC:
-         error_patch = PATCH_TARGET_ALLOC_FAILED;
-         free(*targetdata);
-         break;
-      default:
-         error_patch = PATCH_UNKNOWN;
-         free(*targetdata);
-         break;
-   }
-
-cleanup_stream:
-   xd3_close_stream(&stream);
-   xd3_free_stream(&stream);
-   return error_patch;
+   free(*targetdata);
+   *targetdata   = out;
+   *targetlength = (uint64_t)len;
+   return PATCH_SUCCESS;
 }
 #endif
 
@@ -955,6 +877,169 @@ static bool try_xdelta_patch(bool allow_xdelta,
  * Apply patch to the content file in-memory.
  *
  **/
+/* Does an indexed continuation patch exist for any format?  patch_content
+ * applies "<name>1", "<name>2", ... on top of the first patch, each as a
+ * further whole-buffer pass over the previous result.  A streamed first
+ * patch cannot carry that chain, so its presence disqualifies the
+ * streaming path and the caller falls back to the whole-buffer flow. */
+static bool patch_stream_indexed_exists(const char *name)
+{
+   char probe[PATH_MAX_LENGTH];
+   size_t _len;
+
+   if (string_is_empty(name))
+      return false;
+
+   _len = strlcpy(probe, name, sizeof(probe));
+   if (_len + 2 > sizeof(probe))
+      return false;
+   probe[_len]     = '1';
+   probe[_len + 1] = '\0';
+   return path_is_valid(probe);
+}
+
+/* Resolve which patch a load would apply and open a streaming applier for
+ * it, so the patch can advance as the content arrives instead of running
+ * as a separate pass afterwards.
+ *
+ * The selection rules are patch_content's, and deliberately so: the same
+ * preference gating, the same IPS -> BPS -> UPS attempt order.  Nothing
+ * here depends on the content itself - only on the preference flags and
+ * which patch files exist - which is exactly why the decision can be
+ * hoisted ahead of the load.
+ *
+ * Returns NULL, leaving the caller on the existing whole-buffer path,
+ * when there is nothing to apply, when the resolved patch is a format
+ * with no streaming applier for this build (xdelta, where support was
+ * compiled out), when indexed continuation patches are present, or on
+ * any read/parse failure.  In every one of those
+ * cases the caller loads as before and calls patch_content, so the
+ * fallback is the untouched original flow rather than a reimplementation
+ * of it.
+ *
+ * On success the caller owns the returned stream and must also free
+ * *patch_data, which the stream borrows and therefore needs alive until
+ * patch_stream_finish. */
+patch_stream_t *patch_content_stream_open(
+      bool is_ips_pref,
+      bool is_bps_pref,
+      bool is_ups_pref,
+      bool is_xdelta_pref,
+      const char *name_ips,
+      const char *name_bps,
+      const char *name_ups,
+      const char *name_xdelta,
+      size_t src_len,
+      void **patch_data,
+      const char **patch_path)
+{
+   bool allow_ups    = !is_bps_pref && !is_ips_pref && !is_xdelta_pref;
+   bool allow_ips    = !is_ups_pref && !is_bps_pref && !is_xdelta_pref;
+   bool allow_bps    = !is_ups_pref && !is_ips_pref && !is_xdelta_pref;
+   bool allow_xdelta = !is_bps_pref && !is_ups_pref && !is_ips_pref;
+   const char     *name = NULL;
+   patch_stream_t *ps   = NULL;
+   int64_t patch_size   = 0;
+   int     which        = -1; /* 0 ips, 1 bps, 2 ups */
+
+   const char *fmt = NULL;
+
+   *patch_data = NULL;
+   if (patch_path)
+      *patch_path = NULL;
+
+   /* Several explicitly-defined preferences: patch_content refuses the
+    * whole operation, so there is nothing to stream. */
+   if (    (unsigned)is_ips_pref
+         + (unsigned)is_bps_pref
+         + (unsigned)is_ups_pref
+         + (unsigned)is_xdelta_pref > 1)
+      return NULL;
+
+   /* patch_content's attempt order. */
+   if (allow_ips && !string_is_empty(name_ips) && path_is_valid(name_ips))
+   {
+      name  = name_ips;
+      which = 0;
+   }
+   else if (allow_bps && !string_is_empty(name_bps) && path_is_valid(name_bps))
+   {
+      name  = name_bps;
+      which = 1;
+   }
+   else if (allow_ups && !string_is_empty(name_ups) && path_is_valid(name_ups))
+   {
+      name  = name_ups;
+      which = 2;
+   }
+   else if (allow_xdelta && !string_is_empty(name_xdelta)
+         && path_is_valid(name_xdelta))
+   {
+      name  = name_xdelta;
+      which = 3;
+   }
+   else
+      return NULL;
+
+   /* An indexed continuation of any format means the whole-buffer chain
+    * has to run; do not stream the first patch out from under it. */
+   if (     patch_stream_indexed_exists(name_ips)
+         || patch_stream_indexed_exists(name_bps)
+         || patch_stream_indexed_exists(name_ups)
+         || patch_stream_indexed_exists(name_xdelta))
+      return NULL;
+
+   if (!filestream_read_file(name, patch_data, &patch_size))
+      return NULL;
+   if (patch_size <= 0)
+   {
+      free(*patch_data);
+      *patch_data = NULL;
+      return NULL;
+   }
+
+   switch (which)
+   {
+      case 0:
+         ps  = patch_stream_ips_open((const uint8_t*)*patch_data,
+               (size_t)patch_size, src_len);
+         fmt = "IPS";
+         break;
+      case 1:
+         ps  = patch_stream_bps_open((const uint8_t*)*patch_data,
+               (size_t)patch_size, src_len);
+         fmt = "BPS";
+         break;
+      case 2:
+         ps  = patch_stream_ups_open((const uint8_t*)*patch_data,
+               (size_t)patch_size, src_len);
+         fmt = "UPS";
+         break;
+      default:
+         /* Returns NULL when built without xdelta support, which the
+          * caller already reads as "not streamable" and answers with
+          * the whole-buffer pass. */
+         ps  = patch_stream_xdelta_open((const uint8_t*)*patch_data,
+               (size_t)patch_size, src_len);
+         fmt = "xdelta";
+         break;
+   }
+
+   if (!ps)
+   {
+      free(*patch_data);
+      *patch_data = NULL;
+      return NULL;
+   }
+
+   if (patch_path)
+      *patch_path = name;
+
+   RARCH_LOG("[Patch] Found \"%s\" file in \"%s\", streaming with content...\n",
+         fmt, name);
+   return ps;
+}
+
 bool patch_content(
       bool is_ips_pref,
       bool is_bps_pref,

@@ -19,6 +19,7 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <memory/mem_stats.h>
 #include "input/input_driver.h"
 #ifdef _WIN32
 #ifdef _XBOX
@@ -1079,8 +1080,11 @@ static void runloop_deinit_core_options(
        *   if config values change)
        * > Otherwise, create a new, empty config_file_t
        *   object */
-      if (path_is_valid(path_core_options))
-         conf_tmp = config_file_new_from_path_to_string(path_core_options);
+      /* config_file_new_from_path_to_string() returns NULL for a
+       * missing or unreadable file, and the empty-config fallback
+       * below already handles NULL, so a path_is_valid() stat first
+       * would only repeat the open's own lookup. */
+      conf_tmp = config_file_new_from_path_to_string(path_core_options);
 
       if (!conf_tmp)
          conf_tmp = config_file_new_alloc();
@@ -3209,7 +3213,8 @@ bool runloop_environment_cb(unsigned cmd, void *data)
                settings_t *settings = config_get_ptr();
                if (      settings->bools.run_ahead_secondary_instance
                      && (runloop_st->flags & RUNLOOP_FLAG_RUNAHEAD_SECONDARY_CORE_AVAILABLE)
-                     &&  secondary_core_ensure_exists(runloop_st, settings))
+                     && (secondary_core_ensure_exists(runloop_st, settings)
+                         == RUNAHEAD_COPY_READY))
                   result = RETRO_SAVESTATE_CONTEXT_RUNAHEAD_SAME_BINARY;
                else
 #endif
@@ -3420,8 +3425,8 @@ bool runloop_environment_cb(unsigned cmd, void *data)
       case RETRO_ENVIRONMENT_GET_MEMORY_STATUS:
       {
          struct retro_memory_status *memstat = (struct retro_memory_status *)data;
-         memstat->free  = frontend_driver_get_free_memory();
-         memstat->total = frontend_driver_get_total_memory();
+         memstat->free  = mem_stats_free();
+         memstat->total = mem_stats_total();
          /* If the active frontend driver cannot report memory, tell the core
           * the call is unsupported so it falls back to its own defaults. */
          if (memstat->free == 0 && memstat->total == 0)
@@ -3660,10 +3665,32 @@ bool runloop_environment_cb(unsigned cmd, void *data)
          /* Which HDR swapchain is presenting.  A core encoding its own gamut
           * needs this because the scRGB path rotates Rec.2020 -> Rec.709 on
           * the way to the display and the HDR10 path does not, so the same
-          * frame lands differently on the two. */
+          * frame lands differently on the two.
+          *
+          * The user setting is the request, not always what is presenting:
+          * the GL drivers can only build scRGB backbuffers regardless of
+          * the requested mode (WGL has no HDR10/metadata path), and the
+          * setting survives switches to drivers with no HDR path at all --
+          * only the D3D/Vulkan display checks force it back to 0.  Derive
+          * the answer from the swapchain that actually exists.  Before the
+          * video driver is up (a core querying from retro_load_game, the
+          * same window documented at SET_PIXEL_FORMAT's HDR10 gate) the
+          * capability flags are legitimately clear, so fall back to the
+          * setting rather than reporting HDR off on machines that will
+          * have it. */
          {
             settings_t *settings = config_get_ptr();
-            *(unsigned*)data     = settings->uints.video_hdr_mode;
+            unsigned mode        = settings->uints.video_hdr_mode;
+            if (mode > 0 && video_driver_get_ptr())
+            {
+               if (video_driver_test_all_flags(
+                        GFX_CTX_FLAGS_SCRGB_FRAMEBUFFER))
+                  mode = 2;
+               else if (!(video_driver_get_disp_flags()
+                        & VIDEO_FLAG_HDR_SUPPORT))
+                  mode = 0;
+            }
+            *(unsigned*)data     = mode;
          }
          break;
 
@@ -3688,6 +3715,18 @@ bool runloop_environment_cb(unsigned cmd, void *data)
          {
             settings_t *settings = config_get_ptr();
             *(float*)data = settings->floats.video_hdr_paper_white_nits;
+         }
+         break;
+
+      case RETRO_ENVIRONMENT_GET_HDR_MAX_NITS:
+         /* How bright the display can go.  Together with paper white this
+          * gives a core the headroom it has for highlights; without it a core
+          * has to guess, and the guess is too dark on a bright panel and clips
+          * on a dim one.  Not queryable from any platform portably, so this is
+          * the user's setting rather than a measurement. */
+         {
+            settings_t *settings = config_get_ptr();
+            *(float*)data = settings->floats.video_hdr_max_nits;
          }
          break;
 
@@ -7716,6 +7755,14 @@ int runloop_iterate(void)
    bsv_movie_dequeue_next(input_st);
 #endif
 
+#if defined(HAVE_DYNAMIC) && defined(HAVE_MENU)
+   /* Perform the parked remainder of a deferred (prefetched) menu
+    * load.  It runs here, not from the prefetch task's callback,
+    * because content_load() reinitializes the task queue - fatal
+    * from inside the queue's own dispatch. */
+   task_content_deferred_load_check();
+#endif
+
    /* Tick deferred shader compilation (one pass per frame) */
    video_driver_shader_deferred_tick();
 
@@ -8330,7 +8377,8 @@ bool core_set_cheat(retro_ctx_cheat_info_t *info)
    if (     (want_runahead)
          && (run_ahead_secondary_instance)
          && (runloop_st->flags & RUNLOOP_FLAG_RUNAHEAD_SECONDARY_CORE_AVAILABLE)
-         && (secondary_core_ensure_exists(runloop_st, settings))
+         && (secondary_core_ensure_exists(runloop_st, settings)
+             == RUNAHEAD_COPY_READY)
          && (runloop_st->secondary_core.retro_cheat_set))
       runloop_st->secondary_core.retro_cheat_set(
             info->index, info->enabled, info->code);
@@ -8370,7 +8418,8 @@ bool core_reset_cheat(void)
    if (   (want_runahead)
        && (run_ahead_secondary_instance)
        && (runloop_st->flags & RUNLOOP_FLAG_RUNAHEAD_SECONDARY_CORE_AVAILABLE)
-       && (secondary_core_ensure_exists(runloop_st, settings))
+       && (secondary_core_ensure_exists(runloop_st, settings)
+           == RUNAHEAD_COPY_READY)
        && (runloop_st->secondary_core.retro_cheat_reset))
       runloop_st->secondary_core.retro_cheat_reset();
 #endif
@@ -8603,7 +8652,11 @@ void core_run(void)
    else if (late_polling)
       current_core->flags &= ~RETRO_CORE_FLAG_INPUT_POLLED;
 
-   current_core->retro_run();
+   /* Content can be marked CORE_RUNNING after a failed/partial load
+    * (e.g. archive member opened with no core).  Never call through
+    * a NULL retro_run — that is an immediate SIGSEGV. */
+   if (current_core->retro_run)
+      current_core->retro_run();
 
 #ifdef HAVE_GAME_AI
    {

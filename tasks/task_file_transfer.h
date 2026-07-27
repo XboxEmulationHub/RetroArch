@@ -56,16 +56,29 @@ enum nbio_type
 enum nbio_status_flags
 {
    NBIO_FLAG_NONE = 0,
-   NBIO_FLAG_IMAGE_SUPPORTS_RGBA
+   NBIO_FLAG_IMAGE_SUPPORTS_RGBA,
+   /* Set by task_push_image_load: nbio->data is a
+    * struct nbio_image_handle.  Other nbio users (the audio mixer
+    * tasks) hang different structs off nbio->data, so accessors that
+    * reach through it must check this first. */
+   NBIO_FLAG_IMAGE_TASK
 };
 
 typedef int (*transfer_cb_t)(void *data, size_t len);
 
+struct data_transfer;
+
+/* Historical name: the task-transfer state, once built around an
+ * nbio handle.  Every load now travels a data_transfer prefix spine
+ * (filestream/VFS routing, 64-bit lengths, physical pages only as
+ * far as the read reaches, a hardware guard behind avail).  The nbio_
+ * prefix on this type and its accessors is vestigial: nbio is no
+ * longer part of the RetroArch build at all. */
 typedef struct nbio_handle
 {
    void *data;
    char *path;
-   struct nbio_t *handle;
+   struct data_transfer *xfer;
    transfer_cb_t  cb;
 
    unsigned status;
@@ -75,6 +88,15 @@ typedef struct nbio_handle
    enum nbio_type type;
    bool is_finished;
 } nbio_handle_t;
+
+/* Folders over the transfer for the shared call sites: one contract,
+ * whatever the load path underneath. */
+const uint8_t *nbio_xfer_ptr(nbio_handle_t *nbio, size_t *len);
+/* true while the fill has not yet reached a terminal */
+bool nbio_xfer_progress(nbio_handle_t *nbio, size_t *done, size_t *total);
+/* the read is over and delivered the whole file */
+bool nbio_xfer_complete_ok(nbio_handle_t *nbio);
+void nbio_xfer_close(nbio_handle_t *nbio);
 
 typedef struct
 {

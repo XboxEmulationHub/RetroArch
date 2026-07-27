@@ -3,17 +3,23 @@
  * A pure demuxer: it parses the ISO-BMFF box tree and hands out the
  * elementary-stream packets, without decoding.  See rmp4.h for the API.
  *
- * Scope: progressive (non-fragmented) files whose sample tables live in
- * moov/trak/mdia/minf/stbl.  The parser reads the boxes it needs (mvhd
+ * What it implements: progressive files whose sample tables live in
+ * moov/trak/mdia/minf/stbl - the parser reads the boxes it needs (mvhd
  * for the movie timescale and duration, per-trak mdhd/hdlr for the
  * track timescale and kind, stsd for the codec and its setup data, and
  * the stts/ctts/stss/stsz/stsc/stco|co64 tables to place every sample)
- * and then streams the samples out in file order.
+ * - as well as fragmented files (moof/traf/trun with trex defaults),
+ * streaming the samples out in file order either way.  Recognised
+ * codecs: H.264, VP8, VP9, AAC, Vorbis and Opus.
  *
  * The whole input is supplied up front and borrowed, not copied;
  * returned packet pointers alias into it.  Opus setup data is the one
  * exception: the dOps payload is repacked into an OpusHead held by the
  * demuxer (see rmp4.h).
+ *
+ * What it does not implement: seeking (delivery is file order only),
+ * edit lists (elst is ignored, so encoder-delay trimming is the
+ * caller's concern), encrypted streams, and muxing.
  *
  * SPDX-License-Identifier: MIT  (RetroArch libretro-common)
  */
@@ -135,9 +141,15 @@ struct rmp4
 {
    const uint8_t *buf;
    size_t         len;
+   /* Bytes actually read into the buffer so far (== len for a fully
+    * resident file); a partial reader raises it with rmp4_set_avail.
+    * rmp4_read_packet returns RMP4_READ_AGAIN, consuming nothing, for
+    * a sample whose bytes lie beyond it. */
+   size_t         avail;
    rmp4_itrack    trk[RMP4_MAX_TRACKS];
    int            num_tracks;
    int            fragmented;      /* an mvex box was present        */
+   uint64_t       media_max_end;   /* highest sample end delivered   */
    uint32_t       movie_timescale;
    uint64_t       movie_duration;   /* in movie timescale ticks       */
 };
@@ -983,23 +995,43 @@ static void rmp4_parse_moof(rmp4_t *m, const uint8_t *body, uint64_t size,
 
 /* ===== public API ===== */
 
-rmp4_t *rmp4_open_memory(const uint8_t *data, size_t size)
+rmp4_t *rmp4_open_memory_avail(const uint8_t *data, size_t size,
+      size_t avail, int *need_more)
 {
    rmp4_t  *m;
    uint64_t pos = 0, next;
    rmp4_box b;
-   int      seen_known = 0, have_moov = 0;
+   int      seen_known = 0, have_moov = 0, hit_wall = 0;
 
+   if (need_more)
+      *need_more = 0;
+   if (avail > size)
+      avail = size;
    if (!data || size < 16)
       return NULL;
 
    if (!(m = (rmp4_t*)calloc(1, sizeof(*m))))
       return NULL;
-   m->buf = data;
-   m->len = size;
+   m->buf   = data;
+   m->len   = size;
+   m->avail = avail;
 
-   while (pos < size && rmp4_box_at(data, (uint64_t)size, pos, &b, &next))
+   /* The top-level walk dereferences only box headers; bodies are
+    * skipped arithmetically, so an mdat crossing the available prefix
+    * costs nothing to hop over and a trailing moov becomes reachable
+    * exactly when its bytes arrive.  Box sizes are validated against
+    * the full file length; only actual reads (headers, and the moov
+    * body when parsed) are gated on the prefix. */
+   while (pos < size)
    {
+      /* Gate BEFORE parsing: the box header read below must lie
+       * wholly within the available prefix (16 covers the largest
+       * header; at worst this costs one extra retry near the wall,
+       * never a read past it). */
+      if (avail < size && pos + 16 > avail)
+      { hit_wall = 1; break; }
+      if (!rmp4_box_at(data, (uint64_t)size, pos, &b, &next))
+         break;
       switch (b.type)
       {
          case RMP4_FOURCC('f','t','y','p'):
@@ -1012,18 +1044,29 @@ rmp4_t *rmp4_open_memory(const uint8_t *data, size_t size)
             break;
          case RMP4_FOURCC('m','o','o','v'):
             seen_known = 1;
+            if ((uint64_t)(b.body - data) + b.size > avail)
+            { hit_wall = 1; break; }   /* moov body still arriving */
             if (rmp4_parse_moov(m, b.body, b.size))
                have_moov = 1;
             break;
          default:
             break;
       }
+      if (hit_wall || have_moov)
+         break;
       if (next <= pos)
          break;
       pos = next;
    }
 
-   if (!seen_known || !have_moov)
+   if (!have_moov)
+   {
+      rmp4_close(m);
+      if ((hit_wall || avail < size) && need_more)
+         *need_more = 1;
+      return NULL;
+   }
+   if (!seen_known)
    {
       rmp4_close(m);
       return NULL;
@@ -1034,6 +1077,16 @@ rmp4_t *rmp4_open_memory(const uint8_t *data, size_t size)
     * trex defaults exist. */
    if (m->fragmented)
    {
+      /* moof boxes interleave with the media data through to the end
+       * of the file, so a fragmented movie effectively needs the whole
+       * file resident before its sample tables exist. */
+      if (avail < size)
+      {
+         rmp4_close(m);
+         if (need_more)
+            *need_more = 1;
+         return NULL;
+      }
       pos = 0;
       while (pos < size && rmp4_box_at(data, (uint64_t)size, pos, &b, &next))
       {
@@ -1045,6 +1098,30 @@ rmp4_t *rmp4_open_memory(const uint8_t *data, size_t size)
       }
    }
    return m;
+}
+
+rmp4_t *rmp4_open_memory(const uint8_t *data, size_t size)
+{
+   return rmp4_open_memory_avail(data, size, size, NULL);
+}
+
+const int64_t *rmp4_track_pts(const rmp4_t *m, int track, uint32_t *count)
+{
+   if (!m || track < 0 || track >= m->num_tracks)
+      return NULL;
+   if (count)
+      *count = m->trk[track].count;
+   return m->trk[track].pts;
+}
+
+void rmp4_set_avail(rmp4_t *m, size_t avail)
+{
+   if (!m)
+      return;
+   if (avail > m->len)
+      avail = m->len;
+   if (avail > m->avail)   /* monotonic: bytes never un-arrive */
+      m->avail = avail;
 }
 
 void rmp4_close(rmp4_t *m)
@@ -1065,6 +1142,23 @@ void rmp4_close(rmp4_t *m)
 int rmp4_num_tracks(const rmp4_t *m)
 {
    return m ? m->num_tracks : 0;
+}
+
+size_t rmp4_media_floor(const rmp4_t *m)
+{
+   size_t lo = (size_t)-1;
+   int i;
+   if (!m)
+      return 0;
+   for (i = 0; i < m->num_tracks; i++)
+      if (m->trk[i].count > 0 && (size_t)m->trk[i].off[0] < lo)
+         lo = (size_t)m->trk[i].off[0];
+   return lo == (size_t)-1 ? 0 : lo;
+}
+
+size_t rmp4_consumed(const rmp4_t *m)
+{
+   return m ? (size_t)m->media_max_end : 0;
 }
 
 const rmp4_track *rmp4_get_track(const rmp4_t *m, int index)
@@ -1118,7 +1212,14 @@ int rmp4_read_packet(rmp4_t *m, rmp4_packet *pkt)
 
    {
       rmp4_itrack *t = &m->trk[best];
-      uint32_t     c = t->cursor++;
+      uint32_t     c = t->cursor;
+      /* Sample bytes not yet in the buffer: consume nothing and let
+       * the caller retry once more of the file has been read. */
+      if (t->off[c] + t->size[c] > (uint64_t)m->avail)
+         return RMP4_READ_AGAIN;
+      t->cursor++;
+      if (t->off[c] + t->size[c] > m->media_max_end)
+         m->media_max_end  = t->off[c] + t->size[c];
       pkt->data            = m->buf + t->off[c];
       pkt->size            = t->size[c];
       pkt->track           = best;
