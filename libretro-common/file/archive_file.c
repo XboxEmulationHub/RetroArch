@@ -50,41 +50,49 @@ static int file_archive_get_file_list_cb(
       struct archive_extract_userdata *userdata)
 {
    union string_list_elem_attr attr;
-   attr.i = RARCH_COMPRESSED_FILE_IN_ARCHIVE;
 
    if (valid_exts)
    {
-      size_t _len                  = strlen(path);
-      /* Checks if this entry is a directory or a file. */
-      char last_char               = path[_len - 1];
-      struct string_list ext_list  = {0};
+      size_t _len = strlen(path);
 
-      /* Skip if directory. */
-      if (last_char == '/' || last_char == '\\' )
+      /* Reject empty names before the strlen-1 read below: a malformed
+       * central directory can carry a zero-length name, which used to
+       * index path[SIZE_MAX]. */
+      if (_len == 0)
          return 1;
 
-      string_list_initialize(&ext_list);
-      if (string_split_noalloc(&ext_list, valid_exts, "|"))
+      /* Checks if this entry is a directory or a file.
+       * Skip if directory. */
+      if (path[_len - 1] == '/' || path[_len - 1] == '\\')
+         return 1;
+
+      /* The extension list is split once per walk by the caller and
+       * carried in userdata->ext - the same field, with the same
+       * meaning, that file_archive_extract_cb already reads.  It used
+       * to be split here instead, which meant one
+       * string_list_initialize / string_split_noalloc /
+       * string_list_deinitialize cycle per archive member: a pair of
+       * heap allocations per entry, for a list that cannot change
+       * during the walk.
+       *
+       * Gate the extension test on the split list but keep the
+       * directory skip above gated on valid_exts, so that a split
+       * which failed to allocate still skips directories and still
+       * falls through to append rather than rejecting everything -
+       * exactly what the old inline code did on that path. */
+      if (userdata->ext)
       {
          const char *file_ext = path_get_extension(path);
 
          if (!file_ext)
-         {
-            string_list_deinitialize(&ext_list);
             return 1;
-         }
 
-         if (!string_list_find_elem_prefix(&ext_list, ".", file_ext))
-         {
-            /* keep iterating */
-            string_list_deinitialize(&ext_list);
-            return -1;
-         }
+         if (!string_list_find_elem_prefix(userdata->ext, ".", file_ext))
+            return -1;  /* keep iterating */
       }
-
-      string_list_deinitialize(&ext_list);
    }
 
+   attr.i = RARCH_COMPRESSED_FILE_IN_ARCHIVE;
    return string_list_append(userdata->list, path, attr);
 }
 
@@ -227,7 +235,10 @@ int file_archive_parse_file_iterate(
             state->type = ARCHIVE_TRANSFER_ITERATE;
          }
          else
+         {
             state->type = ARCHIVE_TRANSFER_DEINIT_ERROR;
+            goto deinit_error;
+         }
          break;
       case ARCHIVE_TRANSFER_ITERATE:
          if (state->backend)
@@ -302,7 +313,9 @@ int file_archive_parse_file_iterate(
          }
          return -1;
       case ARCHIVE_TRANSFER_DEINIT_ERROR:
-         *returnerr = false;
+deinit_error:
+         if (returnerr)
+            *returnerr = false;
       case ARCHIVE_TRANSFER_DEINIT:
          if (state->context)
          {
@@ -426,6 +439,13 @@ bool file_archive_extract_file(
       if (    userdata.first_extracted_file_path 
           && *userdata.first_extracted_file_path)
          strlcpy(s, userdata.first_extracted_file_path, len);
+      /* The success path used to return here without freeing either
+       * the split extension list or the path strdup'd by
+       * file_archive_extract_cb, so every archive load through this
+       * function leaked both.  Only the failure path below cleaned
+       * up.  Fall through to the shared cleanup instead. */
+      free(userdata.first_extracted_file_path);
+      string_list_free(list);
       return true;
    }
 
@@ -444,6 +464,7 @@ bool file_archive_get_file_list_noalloc(struct string_list *list,
       const char *valid_exts)
 {
    struct archive_extract_userdata userdata;
+   bool ret;
 
    if (!list || !string_list_initialize(list))
       return false;
@@ -452,7 +473,10 @@ bool file_archive_get_file_list_noalloc(struct string_list *list,
    userdata.current_file_path[0]            = '\0';
    userdata.first_extracted_file_path       = NULL;
    userdata.extraction_directory            = NULL;
-   userdata.ext                             = NULL;
+   /* Split the extension list once for the whole walk rather than once
+    * per archive member; the listing callback reads it from here. */
+   userdata.ext                             = valid_exts
+      ? string_split(valid_exts, "|") : NULL;
    userdata.list                            = list;
    userdata.found_file                      = false;
    userdata.list_only                       = true;
@@ -460,10 +484,13 @@ bool file_archive_get_file_list_noalloc(struct string_list *list,
    userdata.transfer                        = NULL;
    userdata.dec                             = NULL;
 
-   if (!file_archive_walk(path, valid_exts,
-            file_archive_get_file_list_cb, &userdata))
-      return false;
-   return true;
+   ret = file_archive_walk(path, valid_exts,
+            file_archive_get_file_list_cb, &userdata);
+
+   if (userdata.ext)
+      string_list_free(userdata.ext);
+
+   return ret;
 }
 
 /**
@@ -481,7 +508,9 @@ struct string_list *file_archive_get_file_list(const char *path,
    userdata.current_file_path[0]            = '\0';
    userdata.first_extracted_file_path       = NULL;
    userdata.extraction_directory            = NULL;
-   userdata.ext                             = NULL;
+   /* Split once for the whole walk; see the twin above. */
+   userdata.ext                             = valid_exts
+      ? string_split(valid_exts, "|") : NULL;
    userdata.list                            = string_list_new();
    userdata.found_file                      = false;
    userdata.list_only                       = true;
@@ -490,13 +519,21 @@ struct string_list *file_archive_get_file_list(const char *path,
    userdata.dec                             = NULL;
 
    if (!userdata.list)
+   {
+      if (userdata.ext)
+         string_list_free(userdata.ext);
       return NULL;
+   }
    if (!file_archive_walk(path, valid_exts,
          file_archive_get_file_list_cb, &userdata))
    {
+      if (userdata.ext)
+         string_list_free(userdata.ext);
       string_list_free(userdata.list);
       return NULL;
    }
+   if (userdata.ext)
+      string_list_free(userdata.ext);
    return userdata.list;
 }
 
@@ -777,6 +814,7 @@ uint32_t file_archive_get_file_crc32_and_size(const char *path, uint64_t *size)
    file_archive_transfer_t state;
    struct archive_extract_userdata userdata        = {0};
    bool returnerr                                  = false;
+   bool found                                      = true;
    const char *archive_path                        = NULL;
    bool contains_compressed = path_contains_compressed_file(path);
 
@@ -803,11 +841,22 @@ uint32_t file_archive_get_file_crc32_and_size(const char *path, uint64_t *size)
 
    for (;;)
    {
+      /* Nothing left to look at.  Without this the loop spins: the
+       * iterate call is skipped once the transfer leaves ITERATE, and
+       * the two tests below then read a current_file_path that can no
+       * longer change.  A member that is not in the archive - or an
+       * archive that failed to open at all - hung here rather than
+       * returning. */
+      if (state.type != ARCHIVE_TRANSFER_ITERATE)
+      {
+         found = false;
+         break;
+      }
+
       /* Now find the first file in the archive. */
-      if (state.type == ARCHIVE_TRANSFER_ITERATE)
-         file_archive_parse_file_iterate(&state,
-                  &returnerr, path, NULL, NULL,
-                  &userdata);
+      file_archive_parse_file_iterate(&state,
+               &returnerr, path, NULL, NULL,
+               &userdata);
 
       /* If no path specified within archive, stop after
        * finding the first file.
@@ -826,6 +875,16 @@ uint32_t file_archive_get_file_crc32_and_size(const char *path, uint64_t *size)
    }
 
    file_archive_parse_file_iterate_stop(&state);
+
+   /* Report nothing rather than whichever entry the walk stopped on:
+    * the caller cannot tell a real checksum from a leftover one, and
+    * the scanner would match content against the wrong record. */
+   if (!found)
+   {
+      *size = 0;
+      return 0;
+   }
+
    *size = userdata.size;
    return userdata.crc;
 }

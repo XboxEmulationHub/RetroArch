@@ -359,6 +359,7 @@ OBJ += \
        core_backup.o \
        core_option_manager.o \
        $(LIBRETRO_COMM_DIR)/file/config_file.o \
+	$(LIBRETRO_COMM_DIR)/file/config_file_io.o \
        $(LIBRETRO_COMM_DIR)/file/config_file_userdata.o \
        runtime_file.o \
        disk_index_file.o
@@ -1518,6 +1519,12 @@ ifeq ($(HAVE_NETWORK_VIDEO), 1)
    OBJ += gfx/drivers/network_gfx.o
 endif
 
+ifeq ($(HAVE_HUB75), 1)
+   DEFINES += -DHAVE_HUB75
+   OBJ += gfx/drivers/hub75_gfx.o
+   LIBS += -lrt -lm -lpthread
+endif
+
 ifeq ($(HAVE_PLAIN_DRM), 1)
    OBJ += gfx/drivers/drm_gfx.o
    ifneq ($(HAVE_LAKKA), 1)
@@ -1664,7 +1671,10 @@ ifeq ($(HAVE_SDL3), 1)
    # Filter it out.
    LIBS += $(filter-out -lSDL3main -lSDLmain -lSDL_main,$(SDL3_LIBS))
 	DEFINES += -DHAVE_SDL3
-   OBJ += input/drivers_joypad/sdl3_joypad.o
+   OBJ += input/drivers_joypad/sdl3_joypad.o \
+          input/drivers/sdl3_input.o \
+          gfx/drivers/sdl3_gfx.o \
+          gfx/common/sdl3_common.o
 else ifeq ($(HAVE_SDL2), 1)
    HAVE_SDL_COMMON = 1
    OBJ += gfx/drivers/sdl2_gfx.o \
@@ -2542,7 +2552,8 @@ ifeq ($(HAVE_NETWORKING), 1)
              deps/rcheevos/src/rapi/rc_api_user.o \
 
       # RVZ/WIA disc image support for RetroAchievements
-      ifneq ($(filter 1,$(HAVE_ZSTD) $(HAVE_RZSTD)),)
+      HAVE_CHEEVOS_RVZ ?= $(if $(filter 1,$(HAVE_ZSTD) $(HAVE_RZSTD)),1,0)
+      ifeq ($(HAVE_CHEEVOS_RVZ), 1)
          DEFINES += -DHAVE_CHEEVOS_RVZ
          OBJ += cheevos/cheevos_rvz.o
       endif

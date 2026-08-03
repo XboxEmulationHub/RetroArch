@@ -34,7 +34,7 @@
 #include <unistd.h>
 #endif
 
-#if (defined(__linux__) || defined(__unix__) || defined(DINGUX)) && !defined(EMSCRIPTEN)
+#if (defined(__linux__) || defined(__unix__) || defined(DINGUX)) && !defined(__EMSCRIPTEN__)
 #include <signal.h>
 #endif
 
@@ -89,7 +89,7 @@
 #include <retro_miscellaneous.h>
 #include <lists/dir_list.h>
 
-#ifdef EMSCRIPTEN
+#ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
 #include "frontend/drivers/platform_emscripten.h"
 #include "gfx/common/gl_common.h"
@@ -140,6 +140,7 @@
 #ifdef HAVE_NETWORKING
 #include <net/net_compat.h>
 #include <net/net_socket.h>
+#include <net/net_http.h>
 #endif
 
 #include <audio/audio_resampler.h>
@@ -1611,6 +1612,8 @@ void drivers_init(
       menu_st->flags             |= MENU_ST_FLAG_DATA_OWN;
 #endif
 
+   DRIVER_FLAGS_NORMALIZE(flags);
+
    /* Content av_info based automatic swap interval must be set early. */
    runloop_set_video_swap_interval(settings);
 
@@ -1855,6 +1858,8 @@ void driver_uninit(int flags, enum driver_lifetime_flags lifetime_flags)
    dispgfx_widget_t *p_dispwidget   = dispwidget_get_ptr();
 #endif
 
+   DRIVER_FLAGS_NORMALIZE(flags);
+
    core_info_deinit_list();
    core_info_free_current_core();
 
@@ -1867,7 +1872,7 @@ void driver_uninit(int flags, enum driver_lifetime_flags lifetime_flags)
     * use-after-free crashes on D3D12/Vulkan under threaded video.
     *
     * No-op when threaded video is not active. */
-   if (     (flags & DRIVERS_VIDEO_INPUT)
+   if (     (flags & DRIVER_VIDEO_AND_INPUT_MASK)
          && VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
          && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE))
       video_thread_wait_idle();
@@ -1926,10 +1931,10 @@ void driver_uninit(int flags, enum driver_lifetime_flags lifetime_flags)
       wifi_driver_ctl(RARCH_WIFI_CTL_DEINIT, NULL);
 #endif
 
-   if (flags & DRIVER_LED)
+   if (flags & DRIVER_LED_MASK)
       led_driver_free();
 
-   if (flags & DRIVERS_VIDEO_INPUT)
+   if (flags & DRIVER_VIDEO_AND_INPUT_MASK)
    {
       video_driver_free_internal();
 #ifdef HAVE_THREADS
@@ -1944,9 +1949,6 @@ void driver_uninit(int flags, enum driver_lifetime_flags lifetime_flags)
 
    if (flags & DRIVER_AUDIO_MASK)
       audio_driver_deinit();
-
-   if ((flags & DRIVER_VIDEO_MASK))
-      video_st->data = NULL;
 
    if ((flags & DRIVER_INPUT_MASK))
       input_state_get_ptr()->current_data = NULL;
@@ -2071,6 +2073,33 @@ bool driver_ctl(enum driver_ctl_state state, void *data)
                audio_output_sample_rate   = settings->uints.audio_output_sample_rate;
 
             video_monitor_set_refresh_rate(*hz);
+
+            /* With no content loaded it is the dummy core that is
+             * running, and its retro_get_system_av_info() reports
+             * timing.fps as whatever GET_TARGET_REFRESH_RATE answered
+             * at core init - that is, the display rate.  Nothing
+             * re-queries it when the display rate changes afterwards,
+             * so it goes stale the moment the user switches mode.
+             *
+             * That matters because audio_driver_menu_sample() emits
+             * timing.sample_rate / timing.fps frames per runloop
+             * iteration, while the runloop is driven at the *actual*
+             * display rate.  A stale fps scales the menu audio feed by
+             * (real rate / stale fps): after a 120 Hz -> 60 Hz switch
+             * it is halved, so the mixer - which audio_driver_flush()
+             * advances by the post-resample output frame count -
+             * starves and menu BGM garbles.
+             *
+             * driver_adjust_system_rates() below cannot repair this,
+             * because it derives audio_st->input from this very
+             * timing.fps and so re-derives the same wrong answer.
+             *
+             * Only the dummy core gets this treatment: a real core's
+             * fps is a property of the emulated system, not of the
+             * display, and must never be overwritten here. */
+            if (     *hz > 0.0f
+                  && runloop_st->current_core_type == CORE_TYPE_DUMMY)
+               video_st->av_info.timing.fps = *hz;
 
             /* Sets audio monitor rate to new value. */
             audio_st->src_ratio_orig   =
@@ -6283,6 +6312,11 @@ void main_exit(void *args)
    retroarch_ctl(RARCH_CTL_STATE_FREE,  NULL);
    global_free(p_rarch);
    task_queue_deinit();
+#ifdef HAVE_NETWORKING
+   /* After task_queue_deinit(), so no transfer can still be holding a
+    * pooled connection. */
+   net_http_deinit();
+#endif
 
    ui_companion_driver_deinit();
    retroarch_config_deinit();
@@ -6351,6 +6385,13 @@ int rarch_main(int argc, char *argv[], void *data)
    settings_t *settings;
    struct rarch_state *p_rarch         = &rarch_st;
    runloop_state_t *runloop_st         = runloop_state_get_ptr();
+   /* Register file access for the config parser before anything can
+    * load a config - including config-from-string paths that carry
+    * '#include' directives, which resolve through this interface.
+    * The constructors in config_file_io.c self-register too; this
+    * explicit call just removes any ordering dependency on which
+    * config API gets used first. */
+   config_file_set_io_default(config_file_io_filestream());
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
    video_driver_modify_disp_flags(VIDEO_FLAG_SHADER_PRESETS_NEED_RELOAD, 0);
 #endif
@@ -6550,7 +6591,7 @@ int rarch_main(int argc, char *argv[], void *data)
    return 0;
 }
 
-#if defined(EMSCRIPTEN)
+#if defined(__EMSCRIPTEN__)
 
 bool platform_emscripten_finish_deferred_sleep(void);
 
@@ -6802,7 +6843,7 @@ static void retroarch_print_features(void)
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_SDL2,            "SDL2",            "SDL2 input/audio/video drivers");
 #endif
 #ifdef HAVE_SDL3
-   _len += _PSUPP_BUF(buf, _len, SUPPORTS_SDL3,            "SDL3",            "SDL3 joypad driver");
+   _len += _PSUPP_BUF(buf, _len, SUPPORTS_SDL3,            "SDL3",            "SDL3 input/video drivers");
 #endif
 #ifdef HAVE_X11
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_X11,             "X11",             "X11 input/video drivers");
@@ -8431,7 +8472,7 @@ bool retroarch_main_init(int argc, char *argv[])
       }
 #elif defined(WEBOS)
       {
-         char str_output[128];
+         char str_output[256];
          char osbuf[128];
          int major = 0, minor = 0;
          frontend_state_t *frontend_st = frontend_state_get_ptr();
@@ -8754,6 +8795,14 @@ void retroarch_init_task_queue(void)
 #endif
 
    task_queue_deinit();
+#ifdef HAVE_NETWORKING
+   /* Before task_queue_init(), which is what spawns the task thread.
+    * net_http's DNS cache and connection pool locks used to be
+    * created lazily on first use, so the first two concurrent
+    * transfers of the process could each create one and then lock
+    * different objects. */
+   net_http_init();
+#endif
    task_queue_init(threaded_enable, runloop_task_msg_queue_push);
 }
 
@@ -8853,6 +8902,12 @@ bool retroarch_ctl(enum rarch_ctl_state state, void *data)
                   net_st->room_list  = NULL;
                }
                net_st->room_count = 0;
+#ifdef HAVE_NETPLAYDISCOVERY
+               /* Same story for the LAN discovery list, which is grown
+                * by the scan task and only ever truncated between
+                * scans. */
+               netplay_discovery_free_hosts();
+#endif
             }
 #endif
 #ifdef HAVE_COMMAND

@@ -38,7 +38,7 @@
 #include <unistd.h>
 #endif
 
-#if (defined(__linux__) || defined(__unix__) || defined(DINGUX)) && !defined(EMSCRIPTEN)
+#if (defined(__linux__) || defined(__unix__) || defined(DINGUX)) && !defined(__EMSCRIPTEN__)
 #include <signal.h>
 #endif
 
@@ -87,7 +87,7 @@
 #include <queues/message_queue.h>
 #include <lists/dir_list.h>
 
-#ifdef EMSCRIPTEN
+#ifdef __EMSCRIPTEN__
 #include "frontend/drivers/platform_emscripten.h"
 #endif
 
@@ -239,6 +239,55 @@
 
 #if TARGET_OS_IPHONE
 #include "JITSupport.h"
+#define EXEC_MEM_MAX_ALLOCS 64
+static struct
+{
+   void    *rx;
+   void    *rw;
+   size_t   size;
+   unsigned mode;
+} exec_mem_ledger[EXEC_MEM_MAX_ALLOCS];
+static unsigned exec_mem_ledger_count = 0;
+
+static void exec_mem_ledger_add(void *rx, void *rw, size_t size, unsigned mode)
+{
+   if (exec_mem_ledger_count < EXEC_MEM_MAX_ALLOCS)
+   {
+      exec_mem_ledger[exec_mem_ledger_count].rx   = rx;
+      exec_mem_ledger[exec_mem_ledger_count].rw   = rw;
+      exec_mem_ledger[exec_mem_ledger_count].size = size;
+      exec_mem_ledger[exec_mem_ledger_count].mode = mode;
+      exec_mem_ledger_count++;
+   }
+}
+
+/* Either mapping identifies the block: a core juggling both does not always
+ * know which one it is holding, and we are the side with the table. */
+static bool exec_mem_ledger_remove(void *ptr)
+{
+   for (unsigned i = 0; i < exec_mem_ledger_count; i++)
+   {
+      if (exec_mem_ledger[i].rx == ptr || exec_mem_ledger[i].rw == ptr)
+      {
+         exec_mem_free(exec_mem_ledger[i].rx, exec_mem_ledger[i].rw,
+                       exec_mem_ledger[i].size,
+                       exec_mem_ledger[i].mode == RETRO_EXEC_MEM_MODE_DUAL_MAP);
+         exec_mem_ledger[i] = exec_mem_ledger[--exec_mem_ledger_count];
+         return true;
+      }
+   }
+   return false;
+}
+
+static void exec_mem_ledger_free_all(void)
+{
+   for (unsigned i = 0; i < exec_mem_ledger_count; i++)
+      exec_mem_free(exec_mem_ledger[i].rx, exec_mem_ledger[i].rw,
+                    exec_mem_ledger[i].size,
+                    exec_mem_ledger[i].mode == RETRO_EXEC_MEM_MODE_DUAL_MAP);
+   exec_mem_ledger_count = 0;
+   exec_mem_pool_reset();
+}
 #endif
 
 #if HAVE_GAME_AI
@@ -3407,16 +3456,39 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
       case RETRO_ENVIRONMENT_GET_TARGET_REFRESH_RATE:
       {
-         /* Try to use the polled refresh rate first.  */
-         float target_refresh_rate = video_driver_get_refresh_rate();
+         /* "The refresh rate the frontend is targeting."  That is
+          * settings->floats.video_refresh_rate: every part of the sync
+          * stack paces to it - driver_adjust_system_rates(),
+          * audio_driver_monitor_adjust_system_rates() and
+          * video_driver_monitor_adjust_system_rates() all derive from
+          * that setting and never from the polled value.
+          *
+          * video_driver_get_refresh_rate() answers a different
+          * question: what the display reports it is capable of.  On a
+          * fixed-mode desktop display the two coincide, which is why
+          * asking the display used to be harmless.  They diverge on an
+          * adaptive panel: an iOS ProMotion device reports 120 Hz from
+          * [UIScreen maximumFramesPerSecond] while the CADisplayLink -
+          * and therefore the runloop - is deliberately being driven at
+          * the configured 60 Hz.
+          *
+          * Answering 120 there makes the dummy core advertise
+          * timing.fps 120 while the runloop iterates 60 times a second,
+          * so audio_driver_menu_sample() emits half the frames per
+          * second it should and menu BGM crackles from startup.
+          *
+          * Keep the polled rate only as the fallback for a config that
+          * has no usable value yet. */
+         float target_refresh_rate = 0.0f;
 
-         /* If the above function failed [possibly because it is not
-          * implemented], use the refresh rate set in the config instead. */
-         if (target_refresh_rate == 0.0f)
-         {
-            if (settings)
-               target_refresh_rate = settings->floats.video_refresh_rate;
-         }
+         if (settings)
+            target_refresh_rate    = settings->floats.video_refresh_rate;
+
+         /* If the config has nothing sane, fall back to asking the
+          * display [possibly 0 if unimplemented, which is a valid
+          * answer for this envcall]. */
+         if (target_refresh_rate <= 0.0f)
+            target_refresh_rate    = video_driver_get_refresh_rate();
 
          *(float *)data = target_refresh_rate;
          break;
@@ -3654,12 +3726,57 @@ bool runloop_environment_cb(unsigned cmd, void *data)
       case RETRO_ENVIRONMENT_GET_JIT_CAPABLE:
          {
 #if TARGET_OS_IPHONE
-            *(bool*)data             = jit_available();
+            /* iOS 26 changed how w/x memory can be acquired, and this API isn't helpful anymore */
+            if (__builtin_available(iOS 26, tvOS 26, *))
+               *(bool*)data          = false;
+            else
+               *(bool*)data          = jit_available();
 #else
             *(bool*)data             = true;
 #endif
          }
          break;
+
+      case RETRO_ENVIRONMENT_EXEC_MEM_ALLOC:
+         {
+            struct retro_exec_mem_alloc *alloc =
+               (struct retro_exec_mem_alloc *)data;
+            if (!alloc || alloc->version < 1)
+               return false;
+#if TARGET_OS_IPHONE
+            if (!exec_mem_alloc(&alloc->size, &alloc->mode,
+                                &alloc->rx, &alloc->rw))
+            {
+               alloc->mode = RETRO_EXEC_MEM_MODE_UNAVAILABLE;
+               alloc->rx   = NULL;
+               alloc->rw   = NULL;
+               return true;
+            }
+            if (alloc->size > 0)
+               exec_mem_ledger_add(alloc->rx, alloc->rw,
+                                   alloc->size, alloc->mode);
+#else
+            if (alloc->size > 0)
+               return false;
+            alloc->mode = RETRO_EXEC_MEM_MODE_UNRESTRICTED;
+            alloc->rx   = NULL;
+            alloc->rw   = NULL;
+#endif
+            return true;
+         }
+
+      case RETRO_ENVIRONMENT_EXEC_MEM_FREE:
+         {
+#if TARGET_OS_IPHONE
+            struct retro_exec_mem_free *f =
+               (struct retro_exec_mem_free *)data;
+            if (!f)
+               return false;
+            return exec_mem_ledger_remove(f->rx);
+#else
+            return false;
+#endif
+         }
 
       case RETRO_ENVIRONMENT_GET_HDR_OUTPUT_MODE:
          /* Which HDR swapchain is presenting.  A core encoding its own gamut
@@ -4339,6 +4456,9 @@ void runloop_event_deinit_core(void)
    {
       RARCH_LOG("[Core] Unloading core...\n");
       runloop_st->current_core.retro_deinit();
+#if TARGET_OS_IPHONE
+      exec_mem_ledger_free_all();
+#endif
    }
 
    /* retro_deinit() may call
@@ -6014,7 +6134,12 @@ static enum runloop_state_enum runloop_check_state(
    }
 
    frame_count = video_st->frame_count;
-   is_alive    = video_st->current_video
+   /* current_video and data have independent lifetimes: driver_uninit()
+    * clears data while leaving the vtable pointer installed, and only
+    * retroarch_deinit_drivers() clears current_video.  Every alive()
+    * implementation dereferences its argument, so the handle has to be
+    * checked as well as the vtable. */
+   is_alive    = (video_st->current_video && video_st->data)
       ? video_st->current_video->alive(video_st->data)
       : true;
    is_focused  = VIDEO_HAS_FOCUS(video_st);
@@ -7853,7 +7978,7 @@ int runloop_iterate(void)
          /* FIXME: This is an ugly way to tell Netplay this... */
          netplay_driver_ctl(RARCH_NETPLAY_CTL_PAUSE, NULL);
 #endif
-#if defined(EMSCRIPTEN) && !defined(EMSCRIPTEN_ASYNCIFY) && !defined(PROXY_TO_PTHREAD)
+#if defined(__EMSCRIPTEN__) && !defined(EMSCRIPTEN_ASYNCIFY) && !defined(PROXY_TO_PTHREAD)
          platform_emscripten_deferred_sleep(10);
 #else
 #if defined(HAVE_COCOATOUCH)
@@ -8084,7 +8209,7 @@ end:
 
             if (sleep_ms > 0)
             {
-#if defined(EMSCRIPTEN) && !defined(EMSCRIPTEN_ASYNCIFY) && !defined(PROXY_TO_PTHREAD)
+#if defined(__EMSCRIPTEN__) && !defined(EMSCRIPTEN_ASYNCIFY) && !defined(PROXY_TO_PTHREAD)
                platform_emscripten_deferred_sleep(sleep_ms);
 #else
 #if defined(HAVE_COCOATOUCH)

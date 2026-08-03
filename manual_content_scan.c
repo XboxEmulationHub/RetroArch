@@ -90,6 +90,13 @@ static char scan_file_exts_core[PATH_MAX_LENGTH];
 static char scan_file_exts_custom[PATH_MAX_LENGTH];
 static char scan_dat_file_path[PATH_MAX_LENGTH];
 static char scan_content_dir[DIR_MAX_LENGTH];
+/* Number of bytes held back when populating
+ * manual_content_scan_task_config_t::system_name, so that the file
+ * extensions appended to it downstream (".lpl", ".rdb") still fit in
+ * the fixed-size buffers that carry them.  See the comment in
+ * manual_content_scan_get_task_config(). */
+#define MANUAL_CONTENT_SCAN_SYSTEM_NAME_EXT_RESERVE 4
+
 static char scan_system_name_content_dir[DIR_MAX_LENGTH];
 static char scan_system_name_database[NAME_MAX_LENGTH];
 static char scan_system_name_custom[NAME_MAX_LENGTH];
@@ -319,20 +326,55 @@ bool manual_content_scan_set_menu_content_dir(const char *content_dir)
 {
    size_t _len;
    const char *dir_name = NULL;
-
    char _tmpbuf[PATH_MAX_LENGTH];
-   fill_pathname_expand_special(_tmpbuf, content_dir, sizeof(_tmpbuf));
-   content_dir = _tmpbuf;
 
-   /* Sanity check */
+   /* Sanity check before the expansion.  It used to sit after
+    * content_dir had been reassigned to _tmpbuf, by which point it
+    * could never fire - and fill_pathname_expand_special() had
+    * already dereferenced the caller's pointer. */
    if (!content_dir || !*content_dir)
       goto error;
 
+   fill_pathname_expand_special(_tmpbuf, content_dir, sizeof(_tmpbuf));
+   content_dir = _tmpbuf;
+
+   if (!*content_dir)
+      goto error;
+
    /* Copy directory path to settings struct.
-    * Remove trailing slash, if required */
-   if ((_len = strlcpy(
-         scan_content_dir, content_dir,
-         sizeof(scan_content_dir))) <= 0)
+    * Remove trailing slash, if required.
+    *
+    * strlcpy() returns the length of its source, not the number of
+    * bytes it wrote, and the source can be longer than the
+    * destination here: _tmpbuf is PATH_MAX_LENGTH while
+    * scan_content_dir is DIR_MAX_LENGTH, which is half of it on
+    * every platform.  Indexing with the return value therefore ran
+    * off the end of the buffer for any content directory longer than
+    * DIR_MAX_LENGTH - a deeply nested folder picked in the file
+    * browser is enough:
+    *
+    *   AddressSanitizer: heap-buffer-overflow
+    *   READ of size 1 ... located 1022 bytes after 1024-byte region
+    */
+   _len = strlcpy(scan_content_dir, content_dir,
+         sizeof(scan_content_dir));
+
+   if (_len == 0)
+      goto error;
+
+   /* A path that did not fit is rejected rather than kept truncated.
+    * Truncation cuts mid-component, so what remains is a different
+    * directory: scanning ".../subdirectory_number_041/subdirectory_n"
+    * either finds nothing, with no indication why, or finds whatever
+    * happens to sit at that shortened path.  The tail also becomes
+    * the content-directory system name, so a scan that did produce
+    * entries would file them under a fragment of a folder name.
+    *
+    * Nothing is lost by refusing: a path this long already produced
+    * one of those two outcomes.  Failing here instead surfaces it as
+    * an invalid content directory, which is what the menu already
+    * reports for the other rejections above. */
+   if (_len >= sizeof(scan_content_dir))
       goto error;
 
    if (scan_content_dir[_len - 1] == PATH_DEFAULT_SLASH_C())
@@ -1319,7 +1361,21 @@ bool manual_content_scan_get_task_config(
       else if (scan_settings.db_selection == MANUAL_CONTENT_SCAN_SELECT_DB_SPECIFIC)
          scan_settings.system_name_type = MANUAL_CONTENT_SCAN_SYSTEM_NAME_DATABASE;
    }
-   /* Get target playlist ("system name") */
+   /* Get target playlist ("system name")
+    *
+    * The system name is not a leaf value: the scan pipeline appends a
+    * file extension to it repeatedly, each time into a buffer that is
+    * also NAME_MAX_LENGTH bytes.  system_name -> database_name gains
+    * ".lpl" (below), database_name -> rdb_name gains ".rdb"
+    * (task_database.c), and the basename of that is then copied back
+    * into a NAME_MAX_LENGTH buffer by
+    * database_info_list_iterate_found_match().
+    *
+    * Copying up to sizeof(system_name) - 1 here therefore yields a name
+    * that provably cannot survive the round trip: at 255 characters the
+    * ".lpl" is silently dropped, ".rdb" pushes the string to 259, and
+    * the final copy overflows its 256-byte destination.  Reserve room
+    * for the longest extension so every hop stays representable. */
    switch (scan_settings.system_name_type)
    {
       case MANUAL_CONTENT_SCAN_SYSTEM_NAME_CONTENT_DIR:
@@ -1328,7 +1384,8 @@ bool manual_content_scan_get_task_config(
          strlcpy(
                task_config->system_name,
                scan_system_name_content_dir,
-               sizeof(task_config->system_name));
+               sizeof(task_config->system_name)
+                  - MANUAL_CONTENT_SCAN_SYSTEM_NAME_EXT_RESERVE);
          task_config->target_is_single_determined_playlist = true;
          break;
       case MANUAL_CONTENT_SCAN_SYSTEM_NAME_CUSTOM:
@@ -1337,7 +1394,8 @@ bool manual_content_scan_get_task_config(
          strlcpy(
                task_config->system_name,
                scan_system_name_custom,
-               sizeof(task_config->system_name));
+               sizeof(task_config->system_name)
+                  - MANUAL_CONTENT_SCAN_SYSTEM_NAME_EXT_RESERVE);
          task_config->target_is_single_determined_playlist = true;
          break;
       case MANUAL_CONTENT_SCAN_SYSTEM_NAME_DATABASE:
@@ -1346,7 +1404,8 @@ bool manual_content_scan_get_task_config(
          strlcpy(
                task_config->system_name,
                scan_system_name_database,
-               sizeof(task_config->system_name));
+               sizeof(task_config->system_name)
+                  - MANUAL_CONTENT_SCAN_SYSTEM_NAME_EXT_RESERVE);
          task_config->target_is_single_determined_playlist = true;
          break;
       case MANUAL_CONTENT_SCAN_SYSTEM_NAME_AUTO:

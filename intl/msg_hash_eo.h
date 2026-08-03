@@ -14,6 +14,7 @@
 
 static const struct
 {
+   char s_74d0bdad[23];
    char s_54d907f5[8];
    char s_9a250c33[32];
    char s_dec692c9[35];
@@ -38,6 +39,8 @@ static const struct
    char s_76fae911[39];
    char s_56581215[41];
    char s_6b45243b[17];
+   char s_43585d45[29];
+   char s_43585d53[27];
    char s_ea6df2a1[106];
    char s_bfb33e98[87];
    char s_87603f77[22];
@@ -2399,6 +2402,7 @@ static const struct
    char s_aa0659db[23];
    char s_49757b91[23];
    char s_660eb9c4[23];
+   char s_b6ca9df2[20];
 #if defined(RARCH_MOBILE)
    char s_b754294b[57];
    char s_b754294c[57];
@@ -2447,7 +2451,6 @@ static const struct
    char s_daf6d7e2[41];
    char s_042502c4[52];
    char s_90ae9a9f[89];
-   char s_81b79d5b[397];
    char s_c9235dab[64];
    char s_330be970[449];
    char s_98b02857[220];
@@ -4175,6 +4178,7 @@ static const struct
    char s_2dbb6496[28];
 } msg_hash_eo_blob =
 {
+   "AI-serva datumtraktejo",
    "Imitilo",
    "1-bita, maksimuma valoro = 0x01",
    "16-bita, maksimuma valoro = 0xFFFF",
@@ -4199,6 +4203,8 @@ static const struct
    "Ruli sekvan trompon se valoro < memoro",
    "Ruli sekvan trompon se valoro \342\211\240 memoro",
    "Agordi al valoro",
+   "Permana horizontala \305\235topado",
+   "Permana vertikala \305\235topado",
    "Servilo de RetroAchievements estas neatingebla. Oni reprovos \304\235is sukcese a\305\255 la apl"
    "ika\304\265o estos fermita.",
    "\304\210iuj pendantaj petoj estis sukcese sinkronigitaj kun la servilo de RetroAchievements.",
@@ -6763,6 +6769,7 @@ static const struct
    "Ombrigila anta\305\255agordo",
    "Ombrigila anta\305\255agordo",
    "Ombrigila anta\305\255agordo",
+   "Eliga bitprofundeco",
 #if defined(RARCH_MOBILE)
    "Videja biaso X por la ankropunkto (vertikala orienti\304\235o)",
    "Videja biaso Y por la ankropunkto (vertikala orienti\304\235o)",
@@ -6828,11 +6835,6 @@ static const struct
    "A\305\255tomate silentigi sonon kiam uzante rapidpluigon.",
    "Rapidpluigi sonon kiam rapidpluigante la ludon. Evitas kraketadon sed \305\235an\304\235as la to"
    "non.",
-   "Uzi la fikspunktan (entjeran) resonpecigilon anstata\305\255 la glitpunktan kiam kerno eligas 16"
-   "-bitan sonon. Evitas la duoblan konverton el entjero al glita\304\265o kaj produktas bit-identan"
-   " eligon sur \304\211iu platformo, farante sonan eligon ludeblaj trans sistemojn. Havas nenian ef"
-   "ikon sur kernoj, kiuj eligas glitpunktajn sonojn, kaj retropa\305\235as al glitpunkta vojo kiam "
-   "nekongrua filtrilo DSP estas aktiva.",
    "Filtriloj de sono DSP estas enmemorigitaj en \304\211i tiu dosierujo.",
    "Sonspeciga formato postulata de la sonpelilo de la eligaparato. \"Glita\304\265o\" postulas 32-b"
    "itan glitpunkta\304\265on; \"Int16\", 16-bitan entjeron. Nur influas pelilojn, kiuj povas intert"
@@ -9082,7 +9084,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_eo_blob_check[
-      (sizeof(msg_hash_eo_blob) == (173165u
+      (sizeof(msg_hash_eo_blob) == (172867u
 #ifdef ANDROID
        + 312u
 #endif
@@ -9500,6 +9502,7 @@ typedef char msg_hash_eo_blob_check[
 
 static const uint32_t msg_hash_eo_ids[] =
 {
+   (uint32_t)MENU_ENUM_LABEL_AI_SERVICE_BACKEND,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_HANDLER_TYPE_EMU,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_MEMORY_SIZE_1,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_MEMORY_SIZE_16,
@@ -9524,6 +9527,8 @@ static const uint32_t msg_hash_eo_ids[] =
    (uint32_t)MENU_ENUM_LABEL_CHEAT_TYPE_RUN_NEXT_IF_LT,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_TYPE_RUN_NEXT_IF_NEQ,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_TYPE_SET_TO_VALUE,
+   (uint32_t)MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_PADDING_H,
+   (uint32_t)MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_PADDING_V,
    (uint32_t)MENU_ENUM_LABEL_CHEEVOS_SERVER_DISCONNECTED,
    (uint32_t)MENU_ENUM_LABEL_CHEEVOS_SERVER_RECONNECTED,
    (uint32_t)MENU_ENUM_LABEL_EXPLORE_DELETE_VIEW,
@@ -11879,6 +11884,7 @@ static const uint32_t msg_hash_eo_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_APPEND_TWO,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_PREPEND_TWO,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_TWO,
+   (uint32_t)MENU_ENUM_LABEL_VIDEO_SWAPCHAIN_BIT_DEPTH,
 #if defined(RARCH_MOBILE)
    (uint32_t)MENU_ENUM_LABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
@@ -11927,7 +11933,6 @@ static const uint32_t msg_hash_eo_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_ENABLE_MENU,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FASTFORWARD_MUTE,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FASTFORWARD_SPEEDUP,
-   (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FASTPATH_S16,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FILTER_DIR,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FORMAT_NEGOTIATION,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_LATENCY,

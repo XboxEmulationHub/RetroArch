@@ -14,6 +14,7 @@
 
 static const struct
 {
+   char s_74d0bdad[27];
    char s_54d907f5[12];
    char s_9a250c33[28];
    char s_dec692c9[31];
@@ -987,6 +988,7 @@ static const struct
    char s_d264a13e[30];
    char s_d3213ff3[34];
    char s_ac60056b[12];
+   char s_54d6b95e[18];
    char s_1ad09b45[19];
    char s_87064238[35];
    char s_2a273dd7[20];
@@ -3443,6 +3445,7 @@ static const struct
    char s_2dbb6496[26];
 } msg_hash_fi_blob =
 {
+   "Teko\303\244lypalvelun taustaosa",
    "Emulaattori",
    "1-Bit, Enimm\303\244isarvo = 0x01",
    "16-Bit, Enimm\303\244isarvo = 0xFFFF",
@@ -4472,6 +4475,7 @@ static const struct
    "Ota valinta\303\244\303\244ni k\303\244ytt\303\266\303\266n",
    "Ota \"vieritys\303\244\303\244net\" k\303\244ytt\303\266\303\266n",
    "Aloitussivu",
+   "Mipmap-k\303\244sittely",
    "Pikkukuvan taustat",
    "Esikatselukuvien suurennuksen arvo",
    "Pehme\303\244 tekstinauha",
@@ -7458,7 +7462,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_fi_blob_check[
-      (sizeof(msg_hash_fi_blob) == (124205u
+      (sizeof(msg_hash_fi_blob) == (124250u
 #ifdef HAVE_LAKKA
        + 257u
 #endif
@@ -7765,6 +7769,7 @@ typedef char msg_hash_fi_blob_check[
 
 static const uint32_t msg_hash_fi_ids[] =
 {
+   (uint32_t)MENU_ENUM_LABEL_AI_SERVICE_BACKEND,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_HANDLER_TYPE_EMU,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_MEMORY_SIZE_1,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_MEMORY_SIZE_16,
@@ -8738,6 +8743,7 @@ static const uint32_t msg_hash_fi_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SOUND_OK,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SOUND_SCROLL,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_STARTUP_PAGE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_TEXTURE_MIPMAPPING,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_THUMBNAIL_BACKGROUND_ENABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_THUMBNAIL_UPSCALE_THRESHOLD,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_TICKER_SMOOTH,

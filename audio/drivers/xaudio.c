@@ -40,6 +40,8 @@
 #endif
 #endif
 
+#include <retro_atomic.h>
+
 #ifdef HAVE_MMDEVICE
 #include "../common/mmdevice_common.h"
 #include "../common/mmdevice_common_inline.h"
@@ -56,6 +58,11 @@ typedef struct xaudio2 xaudio2_t;
 
 #define MAX_BUFFERS      16
 #define MAX_BUFFERS_MASK (MAX_BUFFERS - 1)
+/* Padding width used to isolate the cross-thread fields of struct
+ * xaudio2 on their own cache line.  64 covers x86-64, AArch64 and
+ * modern ARM/PowerPC; Apple Silicon's effective coherency granule is
+ * 128, where this still removes the sharing, just less tightly. */
+#define XA_CACHE_LINE    64
 /* Bytes writable without blocking: free queue slots minus what the
  * current staging sub-buffer has already consumed.  The previous form
  * ignored bufptr, overstating free space by up to one sub-buffer
@@ -63,11 +70,11 @@ typedef struct xaudio2 xaudio2_t;
  * the nonblocking clamp.  At a full queue this reports 0 rather than
  * underflowing size_t on the bufptr subtraction; the staging remainder
  * it forgoes there cannot be flushed without blocking anyway. */
-#define XAUDIO2_WRITE_AVAILABLE(handle) \
-   (((handle)->buffers < MAX_BUFFERS - 1) \
-    ? ((handle)->bufsize * (MAX_BUFFERS - (handle)->buffers - 1) \
-       - (handle)->bufptr) \
-    : 0)
+/* Bytes-writable computation lives in xaudio2_write_available()
+ * below the struct definition: it reads the cross-thread `buffers`
+ * counter exactly once, with acquire semantics.  The macro it
+ * replaces read the field twice, so the occupancy report could mix
+ * two different counter values. */
 #define XAUDIO_TIMEOUT   256
 
 enum xa_flags
@@ -138,8 +145,8 @@ struct xaudio2
 #if defined(__cplusplus) && !defined(CINTERFACE)
    xaudio2() :
       buf(0), pXAudio2(0), pMasterVoice(0),
-      pSourceVoice(0), hEvent(0), buffers(0), bufsize(0),
-      bufptr(0), write_buffer(0)
+      pSourceVoice(0), bufsize(0), bufptr(0),
+      write_buffer(0), hEvent(0), buffers(0)
    {}
 
    virtual ~xaudio2() {}
@@ -147,7 +154,7 @@ struct xaudio2
    STDMETHOD_(void, OnBufferStart) (void *) {}
    STDMETHOD_(void, OnBufferEnd) (void *)
    {
-      InterlockedDecrement((LONG volatile*)&buffers);
+      retro_atomic_fetch_sub_int(&buffers, 1);
       SetEvent(hEvent);
    }
    STDMETHOD_(void, OnLoopEnd) (void *) {}
@@ -164,20 +171,46 @@ struct xaudio2
    IXAudio2MasteringVoice *pMasterVoice;
    IXAudio2SourceVoice *pSourceVoice;
    WAVEFORMATEX wf;
-   HANDLE hEvent;
 
-   unsigned long volatile buffers;
+   /* Producer-only (emulator thread).  bufptr and write_buffer are
+    * stored on every chunk copied in xa_write. */
    size_t bufsize;
    unsigned bufptr;
    unsigned write_buffer;
+
+   /* A full cache line of padding on either side of the cross-thread
+    * pair below, so no allocation alignment can put a producer-only
+    * field on the same line as `buffers`.  See the commit message. */
+   char _pad0[XA_CACHE_LINE];
+
+   /* Touched by the XAudio2 engine thread: OnBufferEnd decrements
+    * `buffers` and signals `hEvent`.  The producer reads both.
+    * retro_atomic rather than raw Interlocked + volatile: the
+    * Interlocked RMWs were full barriers, but the producer-side
+    * plain volatile reads carried no acquire ordering, which is
+    * real on Windows-on-ARM (MSVC defaults to /volatile:iso on
+    * ARM64, unlike /volatile:ms on x86/x64). */
+   HANDLE hEvent;
+   retro_atomic_int_t buffers;
+
+   char _pad1[XA_CACHE_LINE];
 };
+
+static INLINE size_t xaudio2_write_available(xaudio2_t *handle)
+{
+   int buffers = retro_atomic_load_acquire_int(&handle->buffers);
+   if (buffers < MAX_BUFFERS - 1)
+      return handle->bufsize * (size_t)(MAX_BUFFERS - buffers - 1)
+            - handle->bufptr;
+   return 0;
+}
 
 #if !defined(__cplusplus) || defined(CINTERFACE)
 static void WINAPI xa_voice_on_buffer_end(IXAudio2VoiceCallback *handle_, void *data)
 {
    xaudio2_t *handle = (xaudio2_t*)handle_;
    (void)data;
-   InterlockedDecrement((LONG volatile*)&handle->buffers);
+   retro_atomic_fetch_sub_int(&handle->buffers, 1);
    SetEvent(handle->hEvent);
 }
 
@@ -353,6 +386,11 @@ static xaudio2_t *xaudio2_new(unsigned *rate, unsigned channels,
    handle = new xaudio2;
 #else
    handle = (xaudio2_t*)calloc(1, sizeof(*handle));
+   /* calloc zero-fill is not a portable initializer for an atomic -
+    * initialize it explicitly.  (The C++ path handles this in the
+    * constructor's mem-initializer list.) */
+   if (handle)
+      retro_atomic_int_init(&handle->buffers, 0);
 #endif
 
    if (!handle)
@@ -533,7 +571,7 @@ static ssize_t xa_write(void *data, const void *s, size_t len)
 
    if (xa->flags & XA2_FLAG_NONBLOCK)
    {
-      size_t avail = XAUDIO2_WRITE_AVAILABLE(xa->xa);
+      size_t avail = xaudio2_write_available(xa->xa);
 
       if (avail == 0)
          return 0;
@@ -560,7 +598,8 @@ static ssize_t xa_write(void *data, const void *s, size_t len)
       {
          XAUDIO2_BUFFER xa2buffer;
 
-         while (handle->buffers == MAX_BUFFERS - 1)
+         while (retro_atomic_load_acquire_int(&handle->buffers)
+               == MAX_BUFFERS - 1)
             if (!(WaitForSingleObject(handle->hEvent, XAUDIO_TIMEOUT) == WAIT_OBJECT_0))
                return -1;
 
@@ -582,7 +621,7 @@ static ssize_t xa_write(void *data, const void *s, size_t len)
             return 0;
          }
 
-         InterlockedIncrement((LONG volatile*)&handle->buffers);
+         retro_atomic_fetch_add_int(&handle->buffers, 1);
          handle->bufptr       = 0;
          handle->write_buffer = (handle->write_buffer + 1) & MAX_BUFFERS_MASK;
       }
@@ -653,7 +692,7 @@ static void xa_free(void *data)
 static size_t xa_write_avail(void *data)
 {
    xa_t *xa = (xa_t*)data;
-   return XAUDIO2_WRITE_AVAILABLE(xa->xa);
+   return xaudio2_write_available(xa->xa);
 }
 
 static size_t xa_buffer_size(void *data)

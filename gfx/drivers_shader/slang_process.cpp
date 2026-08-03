@@ -757,6 +757,12 @@ static bool glslang_parse_meta(const struct shader_line_buf *lines,
  * ----------------------------------------------------------------------- */
 bool glslang_compile_shader(const char *shader_path, glslang_output *output)
 {
+   return glslang_compile_shader_cached(shader_path, output, NULL);
+}
+
+bool glslang_compile_shader_cached(const char *shader_path,
+      glslang_output *output, void *include_cache)
+{
 #if defined(HAVE_GLSLANG)
    struct shader_line_buf lines;
    char cache_filename[PATH_MAX_LENGTH];
@@ -766,7 +772,8 @@ bool glslang_compile_shader(const char *shader_path, glslang_output *output)
 
    RARCH_LOG("[Slang] Compiling shader: \"%s\".\n", shader_path);
 
-   if (!glslang_read_shader_file(shader_path, &lines, true, false))
+   if (!glslang_read_shader_file_cached(shader_path, &lines, true, false,
+            include_cache))
       goto error;
 
    /* Compute cache key from preprocessed source (vertex + fragment stages) */
@@ -897,13 +904,21 @@ bool slang_preprocess_parse_parameters(glslang_meta& meta,
 bool slang_preprocess_parse_parameters(const char *shader_path,
       struct video_shader *shader)
 {
+   return slang_preprocess_parse_parameters_cached(shader_path, shader,
+         NULL);
+}
+
+bool slang_preprocess_parse_parameters_cached(const char *shader_path,
+      struct video_shader *shader, void *include_cache)
+{
    struct shader_line_buf lines;
 
    memset(&lines, 0, sizeof(lines));
 
    if (shader_line_buf_init(&lines))
    {
-      if (glslang_read_shader_file(shader_path, &lines, true, false))
+      if (glslang_read_shader_file_cached(shader_path, &lines, true, false,
+               include_cache))
       {
          glslang_meta meta = glslang_meta{};
          if (glslang_parse_meta(&lines, &meta))

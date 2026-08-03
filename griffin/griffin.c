@@ -194,6 +194,7 @@ CONFIG FILE
 
 #ifdef HAVE_CONFIGFILE
 #include "../libretro-common/file/config_file.c"
+#include "../libretro-common/file/config_file_io.c"
 #include "../libretro-common/file/config_file_userdata.c"
 #endif
 
@@ -321,7 +322,7 @@ VIDEO CONTEXT
 #include "../gfx/display_servers/dispserv_android.c"
 #elif defined(__QNX__)
 #include "../gfx/drivers_context/qnx_ctx.c"
-#elif defined(EMSCRIPTEN)
+#elif defined(__EMSCRIPTEN__)
 #include "../gfx/drivers_context/emscriptenegl_ctx.c"
 #elif defined(__PS3__)
 #include "../gfx/drivers_context/ps3_ctx.c"
@@ -750,7 +751,7 @@ INPUT
 #elif defined(__QNX__)
 #include "../input/drivers/qnx_input.c"
 #include "../input/drivers_joypad/qnx_joypad.c"
-#elif defined(EMSCRIPTEN)
+#elif defined(__EMSCRIPTEN__)
 #include "../input/drivers/rwebinput_input.c"
 #include "../input/drivers_joypad/rwebpad_joypad.c"
 #elif defined(DJGPP)
@@ -886,7 +887,7 @@ CAMERA
 #include "../camera/camera_driver.c"
 #if defined(ANDROID)
 #include "../camera/drivers/android.c"
-#elif defined(EMSCRIPTEN)
+#elif defined(__EMSCRIPTEN__)
 #include "../camera/drivers/rwebcam.c"
 #endif
 
@@ -967,6 +968,9 @@ AUDIO
 
 #if defined(HAVE_SDL3)
 #include "../input/drivers_joypad/sdl3_joypad.c"
+#include "../input/drivers/sdl3_input.c"
+#include "../gfx/drivers/sdl3_gfx.c"
+#include "../gfx/common/sdl3_common.c"
 #elif defined(HAVE_SDL2)
 #include "../audio/drivers/sdl_audio.c"
 #include "../input/drivers/sdl_input.c"

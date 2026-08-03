@@ -107,6 +107,7 @@ SOURCES_C := \
 	$(CORE_DIR)/libretro-db/rmsgpack_dom.c \
 	$(LIBRETRO_COMM_DIR)/file/archive_file.c \
 	$(LIBRETRO_COMM_DIR)/file/config_file.c \
+	$(LIBRETRO_COMM_DIR)/file/config_file_io.c \
 	$(LIBRETRO_COMM_DIR)/file/file_path.c \
 	$(LIBRETRO_COMM_DIR)/file/file_path_io.c \
 	$(LIBRETRO_COMM_DIR)/file/retro_dirent.c \
@@ -174,6 +175,18 @@ CXXFLAGS  += $(DEFINES)
 
 OBJECTS    = $(SOURCES_C:.c=.o)
 
+# The index pairing test links the same objects but its own entry
+# point, so the scanner's main() is swapped out for it.
+SCAN_TEST         := database_scan_test
+SCAN_TEST_MAIN    := $(CORE_DIR)/samples/tasks/database/database_scan_test.o
+SCAN_TEST_OBJECTS  = $(filter-out $(CORE_DIR)/samples/tasks/database/main.o,$(OBJECTS)) \
+	$(SCAN_TEST_MAIN)
+
+INDEX_TEST        := database_index_test
+INDEX_TEST_MAIN   := $(CORE_DIR)/samples/tasks/database/database_index_test.o
+INDEX_TEST_OBJECTS = $(filter-out $(CORE_DIR)/samples/tasks/database/main.o,$(OBJECTS)) \
+	$(INDEX_TEST_MAIN)
+
 OBJOUT   = -o
 LINKOUT  = -o
 
@@ -193,6 +206,17 @@ all: $(TARGET)$(EXE_EXT)
 $(TARGET)$(EXE_EXT): $(OBJECTS)
 	$(LD)  $(LINKOUT)$@ $(SHARED) $(OBJECTS) $(LDFLAGS) $(LIBS)
 
+$(INDEX_TEST)$(EXE_EXT): $(INDEX_TEST_OBJECTS)
+	$(LD)  $(LINKOUT)$@ $(SHARED) $(INDEX_TEST_OBJECTS) $(LDFLAGS) $(LIBS)
+
+# Builds its own databases, so it needs nothing but a writable dir.
+$(SCAN_TEST)$(EXE_EXT): $(SCAN_TEST_OBJECTS)
+	$(LD)  $(LINKOUT)$@ $(SHARED) $(SCAN_TEST_OBJECTS) $(LDFLAGS) $(LIBS)
+
+check: $(INDEX_TEST)$(EXE_EXT) $(SCAN_TEST)$(EXE_EXT)
+	./$(INDEX_TEST)$(EXE_EXT)
+	./$(SCAN_TEST)$(EXE_EXT)
+
 %.o: %.c
 	$(CC) $(INCFLAGS) $(CFLAGS) -c $(OBJOUT)$@ $<
 
@@ -200,4 +224,7 @@ $(TARGET)$(EXE_EXT): $(OBJECTS)
 	$(CXX) $(INCFLAGS) $(CXXFLAGS) -c $(OBJOUT)$@ $<
 
 clean:
-	rm -f $(OBJECTS)
+	rm -f $(OBJECTS) $(INDEX_TEST_MAIN) $(SCAN_TEST_MAIN) \
+	      $(TARGET)$(EXE_EXT) $(INDEX_TEST)$(EXE_EXT) $(SCAN_TEST)$(EXE_EXT)
+
+.PHONY: all check clean

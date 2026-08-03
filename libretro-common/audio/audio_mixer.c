@@ -20,6 +20,44 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+/* audio_mixer -- fixed-voice sound-effect and music mixer.
+ * <audio/audio_mixer.h> declares the API.
+ *
+ * The model: a sound is loaded once from a memory buffer
+ * (audio_mixer_load_wav / _ogg / _flac / _mp3 / _m4a / _opus / _weba /
+ * _mod, each present when its codec is built in), then played on one
+ * of AUDIO_MIXER_MAX_VOICES voices with a volume, an optional repeat,
+ * and a stop callback; audio_mixer_mix and audio_mixer_mix_s16 fold
+ * every live voice into the frontend's output block at the rate given
+ * to audio_mixer_init, resampling each voice from its source rate.
+ * Sounds are shared and immutable; voices hold the playback state.
+ *
+ * Two voice pipelines, kept apart on purpose.  audio_mixer_play makes
+ * a float voice mixed by audio_mixer_mix; audio_mixer_play_s16 makes a
+ * fixed-point voice, resampled by the integer sinc resampler (quality
+ * mapped in audio_mixer_i16_quality) and mixed with integer gain and
+ * saturation by audio_mixer_mix_s16.  Nothing is decoded in one
+ * pipeline and converted into the other - a WAV sound keeps its source
+ * bytes so either pipeline builds from the original, and frame counts
+ * are tracked per pipeline because the two resamplers need not agree
+ * to the sample.  audio_mixer_has_float_voices lets the frontend skip
+ * the float mix entirely when nothing needs it.
+ *
+ * WAV plays from a decoded buffer (or streams, via load_wav_stream);
+ * every compressed format streams: those voices pull PCM through
+ * audio_transfer in AUDIO_MIXER_TEMP_BUFFER-sized blocks as the mix
+ * consumes it, which is also where repeat is implemented - a loop is
+ * audio_transfer_seek back to the first frame, not a reload.  Sounds
+ * can borrow their compressed bytes from a larger owned object
+ * (data_owner/data_release) instead of copying, and windowed sources -
+ * a file still arriving - bound the header parse with the resident
+ * byte count and, for Ogg-Opus, the injected end granule, with
+ * multichannel sources folded to stereo by the downmix tables.
+ *
+ * Voices are claimed and released from mixer and caller threads;
+ * under HAVE_THREADS each voice carries a lock, and stop callbacks
+ * run outside it. */
+
 #ifdef HAVE_CONFIG_H
 #include "../../config.h"
 #endif
@@ -2229,6 +2267,7 @@ static void audio_mixer_mix_stream(float* buffer, size_t num_frames,
    unsigned buf_free                = (unsigned)(num_frames * 2);
    unsigned temp_samples            = 0;
    float* pcm                       = NULL;
+   int rewound                      = 0;
 
    if (!voice->types.stream.stream)
       return;
@@ -2275,12 +2314,21 @@ again:
 
       if (temp_samples == 0)
       {
-         if (voice->repeat)
+         /* A repeat that comes back empty from the start of the stream
+          * has nothing left to hand out, and going round again would
+          * not change that - it would spin here forever, holding the
+          * mixer, with no frame ever produced.  One rewind is allowed
+          * per empty read; a second in a row ends the voice the way a
+          * stream that simply finished does. */
+         if (     voice->repeat
+               && !rewound
+               && audio_transfer_seek(voice->types.stream.stream, type, 0))
          {
+            rewound = 1;
+
             if (voice->stop_cb)
                voice->stop_cb(voice->sound, AUDIO_MIXER_SOUND_REPEATED);
 
-            audio_transfer_seek(voice->types.stream.stream, type, 0);
             goto again;
          }
 
@@ -2290,6 +2338,12 @@ again:
          audio_mixer_release(voice);
          return;
       }
+
+      /* Frames came out, so the next empty read is a fresh end of
+       * stream and gets its own rewind.  A sound shorter than one
+       * mixing buffer loops more than once per call and must not be
+       * cut off by the guard above. */
+      rewound = 0;
 
       if (voice->types.stream.resampler)
       {
@@ -2343,6 +2397,7 @@ static void audio_mixer_mix_stream_s16(int16_t* buffer, size_t num_frames,
    unsigned buf_free     = (unsigned)(num_frames * 2);
    unsigned temp_samples = 0;
    int16_t *pcm          = NULL;
+   int rewound           = 0;
 
    if (!voice->types.stream.stream)
       return;
@@ -2389,11 +2444,16 @@ again:
       }
       if (temp_samples == 0)
       {
-         if (voice->repeat)
+         /* See audio_mixer_mix_stream: one rewind per empty read, so a
+          * repeat that yields nothing twice ends the voice instead of
+          * spinning here with no frame ever produced. */
+         if (     voice->repeat
+               && !rewound
+               && audio_transfer_seek(voice->types.stream.stream, type, 0))
          {
+            rewound = 1;
             if (voice->stop_cb)
                voice->stop_cb(voice->sound, AUDIO_MIXER_SOUND_REPEATED);
-            audio_transfer_seek(voice->types.stream.stream, type, 0);
             goto again;
          }
          if (voice->stop_cb)
@@ -2401,6 +2461,8 @@ again:
          audio_mixer_release(voice);
          return;
       }
+
+      rewound = 0;
 
       info.data_in       = temp_buffer;
       info.data_out      = voice->types.stream.buffer_s16;

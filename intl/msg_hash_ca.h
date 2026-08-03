@@ -14,6 +14,7 @@
 
 static const struct
 {
+   char s_74d0bdad[18];
    char s_54d907f5[9];
    char s_9a250c33[27];
    char s_dec692c9[31];
@@ -38,6 +39,8 @@ static const struct
    char s_76fae911[68];
    char s_56581215[69];
    char s_6b45243b[14];
+   char s_43585d45[30];
+   char s_43585d53[27];
    char s_ea6df2a1[161];
    char s_bfb33e98[96];
    char s_87603f77[25];
@@ -1112,6 +1115,7 @@ static const struct
    char s_d05c8ee3[23];
    char s_13bce77f[22];
    char s_1b2ee6c4[30];
+   char s_81589fd5[25];
    char s_26e9cde7[32];
    char s_b539ec6c[15];
    char s_f89e1cbc[57];
@@ -2173,6 +2177,7 @@ static const struct
    char s_bfa23080[8];
    char s_723d3966[7];
    char s_ec326380[6];
+   char s_8a86d1de[32];
    char s_8fc1e4da[7];
    char s_14ed14d0[11];
    char s_5c87e95b[19];
@@ -2350,10 +2355,10 @@ static const struct
    char s_f4b6d13e[35];
    char s_25e89959[4];
    char s_a7468d68[32];
-   char s_b1d6fea6[15];
    char s_aa0659db[18];
    char s_49757b91[18];
    char s_660eb9c4[18];
+   char s_b6ca9df2[34];
 #if defined(RARCH_MOBILE)
    char s_b754294b[97];
    char s_b754294c[97];
@@ -2402,7 +2407,6 @@ static const struct
    char s_daf6d7e2[59];
    char s_042502c4[68];
    char s_90ae9a9f[115];
-   char s_81b79d5b[439];
    char s_c9235dab[60];
    char s_330be970_0[500];
    char s_330be970_1[43];
@@ -2919,6 +2923,7 @@ static const struct
    char s_87ac0bd1[63];
    char s_236ddb2d[110];
    char s_d27e63b2[224];
+   char s_2297ba83[282];
    char s_32728f95[84];
    char s_c4eae01a[111];
    char s_bb0852aa[171];
@@ -4126,6 +4131,7 @@ static const struct
    char s_2dbb6496[36];
 } msg_hash_ca_blob =
 {
+   "Servei IA de fons",
    "Emulador",
    "1-Bit, Valor m\303\240xim = 0x01",
    "16 Bits, valor m\303\240xim = 0xFFFF",
@@ -4150,6 +4156,8 @@ static const struct
    "Executa el seg\303\274ent truc si el valor \303\251s inferior al de la mem\303\262ria",
    "Executa el seg\303\274ent truc si el valor \303\251s diferent del de la mem\303\262ria",
    "Assigna valor",
+   "Separaci\303\263 horitzontal manual",
+   "Separaci\303\263 vertical manual",
    "El servidor de RetroAchievements no est\303\240 disponible. Es seguir\303\240 intentant la conne"
    "xi\303\263 fins que es confirmi la comunicaci\303\263 o fins que es tanqui l'aplicaci\303\263.",
    "Totes les sol\302\267licituds pendents han sigut sincronitzades amb el servidor de RetroAchievem"
@@ -5457,6 +5465,7 @@ static const struct
    "Intercanvia miniatures",
    "Icones d'interruptors",
    "Retard en les miniatures (ms)",
+   "Tramat de les miniatures",
    "M\303\250tode d'escalat de miniatures",
    "Transpar\303\250ncia",
    "Reprendre contingut despr\303\251s d'utilitzar un desat r\303\240pid",
@@ -6532,6 +6541,7 @@ static const struct
    "Ampliat",
    "S\303\272per",
    "Ample",
+   "Llindar m\303\240xim de la brillantor",
    "Apagat",
    "Brillantor",
    "L\303\255nies d'escaneig",
@@ -6711,10 +6721,10 @@ static const struct
    "Disposici\303\263 vertical de miniatures",
    "S\303\255",
    "Clau de transmissi\303\263 de Youtube",
-   "bideo_hdr_mode",
    "Shader predefinit",
    "Shader predefinit",
    "Shader predefinit",
+   "Profunditat de la sortida en bits",
 #if defined(RARCH_MOBILE)
    "Compensaci\303\263 de l'eix X del punt d'ancoratge de l'\303\240rea de visualitzaci\303\263 (ori"
    "entaci\303\263 vertical)",
@@ -6786,12 +6796,6 @@ static const struct
    "\240pid.",
    "Accelera l'\303\240udio a l'emprar l'avan\303\247ament r\303\240pid. Defugir\303\241 sorolls en "
    "l'\303\240udio per\303\262 canviant la seva tonalitat.",
-   "Fes servir un valor fix (enter) per remostrejar en comptes d'un valor decimal si la sortida d'"
-   "\303\240udio \303\251s de 16 bits. Soluciona els canvis constants d'enter a decimal i produeix u"
-   "na sortida id\303\250ntica per cada plataforma, i aix\303\262 ajuda al joc en xarxa. No t\303"
-   "\251 cap efecte en els nuclis que utilitzen un valor decimal en la sortida d'\303\240udio i torn"
-   "a a la ruta de valor decimal si un filtre DSP incompatible o el mesclador d'\303\240udio est\303"
-   "\240 actiu.",
    "Els filtres d'\303\240udio DSP s'emmagatzemen en aquesta carpeta.",
    "El format de mostreig que sol\302\267licitar\303\240 el controlador d'\303\240udio del dispositi"
    "u de sortida. 'Decimal' sol\302\267licita un decimal de 32 bits, 'Int16' per enters de 16 bits. "
@@ -7568,6 +7572,10 @@ static const struct
    "Aplica un retard entre el moment en qu\303\250 se selecciona un element d'una llista de reproduc"
    "ci\303\263 i la c\303\240rrega de la miniatura corresponent. Un valor m\303\255nim de 256 ms eli"
    "mina qualsevol retard, tamb\303\251 en els equips m\303\251s lents.",
+   "Suavitza l'efecte de les bandes de color en les miniatures i en el fons de pantalla aplicant un "
+   "filtre de tramat que respecta la limitada paleta del men\303\272. El patr\303\263 del tramat es "
+   "magnifica en augmentar l'escala del men\303\272 i es podria fer visible; desactiva aquesta opci"
+   "\303\263 si passa.",
    "Selecciona el m\303\250tode de redimensionat perqu\303\250 les miniatures entrin a la pantalla.",
    "Mostra el contingut en el fons del men\303\272 r\303\240pid. Desactivar la transpar\303\250ncia "
    "pot canviar els colors del tema.",
@@ -9224,7 +9232,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_ca_blob_check[
-      (sizeof(msg_hash_ca_blob) == (199195u
+      (sizeof(msg_hash_ca_blob) == (199189u
 #ifdef ANDROID
        + 281u
 #endif
@@ -9639,6 +9647,7 @@ typedef char msg_hash_ca_blob_check[
 
 static const uint32_t msg_hash_ca_ids[] =
 {
+   (uint32_t)MENU_ENUM_LABEL_AI_SERVICE_BACKEND,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_HANDLER_TYPE_EMU,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_MEMORY_SIZE_1,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_MEMORY_SIZE_16,
@@ -9663,6 +9672,8 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_LABEL_CHEAT_TYPE_RUN_NEXT_IF_LT,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_TYPE_RUN_NEXT_IF_NEQ,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_TYPE_SET_TO_VALUE,
+   (uint32_t)MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_PADDING_H,
+   (uint32_t)MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_PADDING_V,
    (uint32_t)MENU_ENUM_LABEL_CHEEVOS_SERVER_DISCONNECTED,
    (uint32_t)MENU_ENUM_LABEL_CHEEVOS_SERVER_RECONNECTED,
    (uint32_t)MENU_ENUM_LABEL_EXPLORE_DELETE_VIEW,
@@ -10733,6 +10744,7 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_RGUI_SWAP_THUMBNAILS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_RGUI_SWITCH_ICONS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_RGUI_THUMBNAIL_DELAY,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_RGUI_THUMBNAIL_DITHER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_RGUI_THUMBNAIL_DOWNSCALER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_RGUI_TRANSPARENCY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_SAVESTATE_RESUME,
@@ -11793,6 +11805,7 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_EXPANDED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_SUPER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_WIDE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MAX_NITS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MODE_OFF,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_PAPER_WHITE_NITS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SCANLINES,
@@ -11970,10 +11983,10 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_XMB_VERTICAL_THUMBNAILS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_YES,
    (uint32_t)MENU_ENUM_LABEL_VALUE_YOUTUBE_STREAM_KEY,
-   (uint32_t)MENU_ENUM_LABEL_VIDEO_HDR_ENABLE,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_APPEND_TWO,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_PREPEND_TWO,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_TWO,
+   (uint32_t)MENU_ENUM_LABEL_VIDEO_SWAPCHAIN_BIT_DEPTH,
 #if defined(RARCH_MOBILE)
    (uint32_t)MENU_ENUM_LABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
@@ -12022,7 +12035,6 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_ENABLE_MENU,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FASTFORWARD_MUTE,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FASTFORWARD_SPEEDUP,
-   (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FASTPATH_S16,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FILTER_DIR,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FORMAT_NEGOTIATION,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_LATENCY,
@@ -12538,6 +12550,7 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_RGUI_SWAP_THUMBNAILS,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_RGUI_SWITCH_ICONS,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_RGUI_THUMBNAIL_DELAY,
+   (uint32_t)MENU_ENUM_SUBLABEL_MENU_RGUI_THUMBNAIL_DITHER,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_RGUI_THUMBNAIL_DOWNSCALER,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_RGUI_TRANSPARENCY,
    (uint32_t)MENU_ENUM_SUBLABEL_MENU_SAVESTATE_RESUME,

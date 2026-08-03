@@ -14,6 +14,7 @@
 
 static const struct
 {
+   char s_74d0bdad[23];
    char s_54d907f5[12];
    char s_9a250c33[27];
    char s_dec692c9[30];
@@ -38,6 +39,8 @@ static const struct
    char s_76fae911[49];
    char s_56581215[50];
    char s_6b45243b[18];
+   char s_43585d45[32];
+   char s_43585d53[28];
    char s_ea6df2a1[127];
    char s_bfb33e98[92];
    char s_87603f77[22];
@@ -2209,6 +2212,7 @@ static const struct
    char s_bfa23080[12];
    char s_723d3966[7];
    char s_ec326380[8];
+   char s_8a86d1de[11];
    char s_8fc1e4da[3];
    char s_14ed14d0[5];
    char s_5c87e95b[11];
@@ -2392,9 +2396,11 @@ static const struct
    char s_f4b6d13e[29];
    char s_25e89959[4];
    char s_a7468d68[22];
+   char s_b1d6fea6[9];
    char s_aa0659db[25];
    char s_49757b91[25];
    char s_660eb9c4[25];
+   char s_b6ca9df2[28];
 #if defined(RARCH_MOBILE)
    char s_b754294b[59];
    char s_b754294c[59];
@@ -2444,7 +2450,7 @@ static const struct
    char s_042502c4[83];
    char s_90ae9a9f[110];
    char s_81b79d5b_0[500];
-   char s_81b79d5b_1[59];
+   char s_81b79d5b_1[155];
    char s_c9235dab[52];
    char s_330be970_0[500];
    char s_330be970_1[55];
@@ -3507,6 +3513,8 @@ static const struct
    char s_698d5124[108];
    char s_7e43d750[245];
    char s_87ca7bc6[212];
+   char s_cfa51e8c_0[500];
+   char s_cfa51e8c_1[18];
    char s_b62c2f7e[364];
    char s_456fcbc9[361];
    char s_82fab47a[30];
@@ -4173,6 +4181,7 @@ static const struct
    char s_2dbb6496[29];
 } msg_hash_ga_blob =
 {
+   "C\303\272ltaca Seirbh\303\255se AI",
    "Aithriseoir",
    "1-Giot\303\241n, Uasluach = 0x01",
    "16-Giot\303\241n, Uasluach = 0xFFFF",
@@ -4197,6 +4206,8 @@ static const struct
    "Rith an Ch\303\251ad Aicearra Eile M\303\241 Luach < Cuimhne",
    "Rith an Ch\303\251ad Aicearra Eile M\303\241 Luach != Cuimhne",
    "Socraigh go Luach",
+   "P\303\241ip\303\251ar Cothrom\303\241nach L\303\241imhe",
+   "P\303\241ip\303\251ar Ingearach L\303\241imhe",
    "N\303\255 f\303\251idir teacht ar fhreastala\303\255 RetroAchievements. D\303\251anfaidh s\303"
    "\251 iarracht eile go n-\303\251ireoidh leis n\303\263 go nd\303\272nfar an aip.",
    "T\303\241 gach iarratas ar feitheamh sioncr\303\263naithe go rath\303\272il le freastala\303\255"
@@ -6728,6 +6739,7 @@ static const struct
    "Leathnaithe",
    "S\303\272par",
    "Leathan",
+   "Gile Buaic",
    "As",
    "Gile",
    "Scanl\303\255nte",
@@ -6912,9 +6924,11 @@ static const struct
    "Socr\303\272 Ingearach Mionsamhail",
    "T\303\241",
    "Eochair Sruth YouTube",
+   "M\303\263d HDR",
    "R\303\251amhshocr\303\272 Sc\303\241th\303\263ra",
    "R\303\251amhshocr\303\272 Sc\303\241th\303\263ra",
    "R\303\251amhshocr\303\272 Sc\303\241th\303\263ra",
+   "Doimhneacht Giot\303\241n Aschuir",
 #if defined(RARCH_MOBILE)
    "Claonadh Ancaire Radharcphoirt X (Treoshu\303\255omh Portr\303\241ide)",
    "Claonadh Ancaire Radharcphoirt Y (Treoshu\303\255omh Portr\303\241ide)",
@@ -6996,13 +7010,15 @@ static const struct
    "Luasaigh an fhuaim agus t\303\272 ag luasgh\303\251ar\303\272 ar aghaidh. Coscann s\303\251 scoi"
    "lteadh ach athra\303\255onn s\303\251 an ph\303\241irc.",
    "Bain \303\272s\303\241id as an athshampl\303\263ir pointe seasta (sl\303\241nuimhir) in ionad an"
-   " athshampl\303\263ra sn\303\241mhphointe nuair a bh\303\255onn cro\303\255 ag aschur fuaime 16-g"
-   "iot\303\241n. Seachna\303\255onn s\303\251 an turas cruinn sl\303\241nuimhir go sn\303\241mhphoi"
-   "nte agus t\303\241irgeann s\303\251 aschur at\303\241 comhionann leis an ngiot\303\241n ar gach "
-   "ard\303\241n, rud a fh\303\241gann go bhfuil an t-aschur fuaime in-athchruthaithe ar fud rithean"
-   "na agus c\303\263ras. N\303\255l aon \303\251ifeacht aige ar chro\303\255the a aschurann fuaim s"
-   "n\303\241mhphointe, agus titeann s\303\251 ar ais chuig an gcos\303\241n sn\303\241mhp",
-   "hointe agus scagaire DSP neamh-chomhoiri\303\272nach gn\303\255omhach.",
+   " athshampl\303\263ra sn\303\241mhphointe nuair a aschurann cro\303\255 fuaim 16-giot\303\241n. G"
+   "infidh s\303\251 aschur at\303\241 comhionann leis an ngiot\303\241n ar gach ard\303\241n, rud a"
+   " fh\303\241gann go bhfuil an fhuaim in-athchruthaithe ar fud ritheanna agus c\303\263ras. T\303"
+   "\241 s\303\251 seo le haghaidh in-athchruthaitheachta, n\303\255 luas: i gc\303\241s ina bhfuil "
+   "FPU veicteoir ag an LAP, b\303\255onn an t-athshampl\303\263ir sl\303\241nuimhir n\303\255os moi"
+   "lle, toisc nach veicteoir\303\255tear ach an ceann sn\303\241mhphoint",
+   "e. Gan aon \303\251ifeacht ar chro\303\255the a aschurann fuaim sn\303\241mhphointe; titeann s"
+   "\303\251 ar ais go sn\303\241mhphointe agus scagaire DSP neamh-chomhoiri\303\272nach gn\303\255o"
+   "mhach.",
    "St\303\263r\303\241iltear scagair\303\255 DSP fuaime san eolaire seo.",
    "Form\303\241id shamplach a iarrann an tiom\303\241na\303\255 fuaime \303\263n bhfeiste aschuir. "
    "Iarrann 'Float' sn\303\241mhphointe 32-giot\303\241n, iarrann 'Int16' sl\303\241nuimhir 16-giot"
@@ -8934,6 +8950,15 @@ static const struct
    "\303\255omh\303\241 n\303\255os gile, n\303\255os s\303\241ithithe a chruth\303\272. Chun dathan"
    "na at\303\241 n\303\255os d\303\255lse don dearadh cluiche bunaidh a fh\303\241il, socraigh \303"
    "\251 seo go Cruinne.",
+   "An gile is f\303\251idir le do thaispe\303\241ntas a bhaint amach, i nits. Socra\303\255onn s"
+   "\303\251 seo c\303\251 mh\303\251ad sp\303\241is at\303\241 os cionn Gile le haghaidh buaicphoin"
+   "t\303\255, ionas go mbeidh a fhios ag cro\303\255leac\303\241in a dh\303\251anann HDR iad f\303"
+   "\251in c\303\251 chomh fada is f\303\251idir leo dul sula dtosa\303\255onn siad ag rolladh amach"
+   ". Seice\303\241il sonra\303\255ocht do thaispe\303\241ntais; m\303\241 t\303\241 amhras ort, f"
+   "\303\241g \303\251 ag 1000. M\303\241 shocra\303\255tear \303\251 seo n\303\255os airde n\303"
+   "\241 mar is f\303\251idir leis an taispe\303\241int a bhaint amach i nd\303\241ir\303\255re, gea"
+   "rrtar mionsonra\303\255 geala seach",
+   "as rolladh amach.",
    "Socra\303\255onn s\303\251 seo an leibh\303\251al gile HDR i nits. \303\232s\303\241id i gcomhar"
    " le socruithe gile fisici\303\272la do thaispe\303\241ntais. Mar phointe tosaigh, socraigh seo g"
    "o 80 agus gile do thaispe\303\241ntais go dt\303\255 an leibh\303\251al is airde. N\303\263 is f"
@@ -9812,7 +9837,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_ga_blob_check[
-      (sizeof(msg_hash_ga_blob) == (202880u
+      (sizeof(msg_hash_ga_blob) == (203625u
 #ifdef ANDROID
        + 390u
 #endif
@@ -10227,6 +10252,7 @@ typedef char msg_hash_ga_blob_check[
 
 static const uint32_t msg_hash_ga_ids[] =
 {
+   (uint32_t)MENU_ENUM_LABEL_AI_SERVICE_BACKEND,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_HANDLER_TYPE_EMU,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_MEMORY_SIZE_1,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_MEMORY_SIZE_16,
@@ -10251,6 +10277,8 @@ static const uint32_t msg_hash_ga_ids[] =
    (uint32_t)MENU_ENUM_LABEL_CHEAT_TYPE_RUN_NEXT_IF_LT,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_TYPE_RUN_NEXT_IF_NEQ,
    (uint32_t)MENU_ENUM_LABEL_CHEAT_TYPE_SET_TO_VALUE,
+   (uint32_t)MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_PADDING_H,
+   (uint32_t)MENU_ENUM_LABEL_CHEEVOS_APPEARANCE_PADDING_V,
    (uint32_t)MENU_ENUM_LABEL_CHEEVOS_SERVER_DISCONNECTED,
    (uint32_t)MENU_ENUM_LABEL_CHEEVOS_SERVER_RECONNECTED,
    (uint32_t)MENU_ENUM_LABEL_EXPLORE_DELETE_VIEW,
@@ -12414,6 +12442,7 @@ static const uint32_t msg_hash_ga_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_EXPANDED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_SUPER,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_WIDE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MAX_NITS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MODE_OFF,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_PAPER_WHITE_NITS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SCANLINES,
@@ -12597,9 +12626,11 @@ static const uint32_t msg_hash_ga_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_XMB_VERTICAL_THUMBNAILS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_YES,
    (uint32_t)MENU_ENUM_LABEL_VALUE_YOUTUBE_STREAM_KEY,
+   (uint32_t)MENU_ENUM_LABEL_VIDEO_HDR_ENABLE,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_APPEND_TWO,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_PREPEND_TWO,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_TWO,
+   (uint32_t)MENU_ENUM_LABEL_VIDEO_SWAPCHAIN_BIT_DEPTH,
 #if defined(RARCH_MOBILE)
    (uint32_t)MENU_ENUM_LABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_X,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_VIEWPORT_BIAS_PORTRAIT_Y,
@@ -13710,6 +13741,7 @@ static const uint32_t msg_hash_ga_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HARD_SYNC_FRAMES,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_EXPAND_GAMUT,
+   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_MAX_NITS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_PAPER_WHITE_NITS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SCANLINES,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SETTINGS,

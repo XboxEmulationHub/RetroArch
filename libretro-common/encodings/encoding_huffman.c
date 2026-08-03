@@ -171,6 +171,7 @@ int rhuff_dec_build(rhuff_dec_t *d)
    uint16_t codes[RHUFF_MAX_CODES];
    uint32_t curstart;
    uint32_t i;
+   size_t   covered;
    int      len;
 
    if (!d || !d->lookup)
@@ -215,8 +216,28 @@ int rhuff_dec_build(rhuff_dec_t *d)
          codes[i] = (uint16_t)(histo[d->lengths[i]]++);
    }
 
-   for (i = 0; i < d->lookup_entries; i++)
-      d->lookup[i] = 0;
+   /* A zero entry marks a bit pattern the tree does not cover, so the
+    * table has to start zeroed unless the fills below are known to
+    * write every entry. Each code of length L claims 1 << (max_bits - L)
+    * entries and the claims are disjoint (prefix code), so their sum
+    * reaching lookup_entries means full coverage and the clear can be
+    * skipped. That is the normal case: CHD hunk and A/V trees are
+    * complete, and the clear is a second pass over as much memory as
+    * the fills themselves - 128 KiB per hunk at max_bits 16. The sum
+    * cannot overflow: it stops at lookup_entries. */
+   covered = 0;
+   for (i = 0; i < d->num_codes; i++)
+   {
+      if (d->lengths[i] == 0)
+         continue;
+      covered += (size_t)1 << (d->max_bits - d->lengths[i]);
+      if (covered >= d->lookup_entries)
+         break;
+   }
+
+   if (covered < d->lookup_entries)
+      for (i = 0; i < d->lookup_entries; i++)
+         d->lookup[i] = 0;
 
    for (i = 0; i < d->num_codes; i++)
    {
@@ -465,8 +486,86 @@ int rhuff_decode_block(rhuff_dec_t *d, rhuff_bits_t *b,
    if ((err = rhuff_read_tree_packed(d, b)) != RHUFF_OK)
       return err;
 
-   for (i = 0; i < dst_len; i++)
-      dst[i] = (uint8_t)rhuff_dec_decode_one(d, b);
+   /* The symbol loop below is rhuff_dec_decode_one with the bit cache
+    * held in locals: same refill, same clamp, same unmapped-pattern
+    * handling (latch overflow, consume one bit, emit zero), with the
+    * consumed-bit accounting summed once at the end instead of a
+    * 64-bit compare per symbol. One symbol per output byte makes the
+    * per-call bookkeeping the dominant cost at hunk sizes, and this
+    * loop is the only place that decodes symbols in bulk. */
+   {
+      const uint8_t  *data     = b->data;
+      const uint16_t *lookup   = d->lookup;
+      size_t          size     = b->size;
+      size_t          offset   = b->offset;
+      uint32_t        cache    = b->cache;
+      int             bits     = b->bits;
+      int             max_bits = (int)d->max_bits;
+      int             overflow = b->overflow;
+      uint64_t        consumed = 0;
+
+      for (i = 0; i < dst_len; i++)
+      {
+         uint16_t value;
+         int      length;
+
+         if (bits < max_bits)
+         {
+            while (bits <= RHUFF_CACHE_MIN)
+            {
+               if (offset < size)
+                  cache |= (uint32_t)data[offset]
+                        << (RHUFF_CACHE_MIN - bits);
+               offset++;
+               bits += 8;
+            }
+         }
+
+         value  = lookup[cache >> (32 - max_bits)];
+         length = (int)(value & RHUFF_LOOKUP_LEN_MASK);
+
+         if (length == 0)
+         {
+            overflow = 1;
+            length   = 1;
+            value    = 0;
+         }
+         else if (length > RHUFF_CACHE_MIN)
+            length = RHUFF_CACHE_MIN;
+
+         /* remove() refills before subtracting when the cache holds
+          * fewer bits than are being taken. A table built by
+          * rhuff_dec_init never yields a length above max_bits, so
+          * after the refill above this never triggers; it exists so
+          * the loop is bit-for-bit the decode_one sequence even on a
+          * corrupt length field. */
+         if (bits < length)
+         {
+            while (bits <= RHUFF_CACHE_MIN)
+            {
+               if (offset < size)
+                  cache |= (uint32_t)data[offset]
+                        << (RHUFF_CACHE_MIN - bits);
+               offset++;
+               bits += 8;
+            }
+         }
+
+         cache   <<= length;
+         bits     -= length;
+         consumed += (uint64_t)length;
+
+         dst[i] = (uint8_t)(value >> RHUFF_LOOKUP_LEN_BITS);
+      }
+
+      b->offset   = offset;
+      b->cache    = cache;
+      b->bits     = bits;
+      b->used    += consumed;
+      b->overflow = overflow;
+      if (b->used > (uint64_t)b->size * 8)
+         b->overflow = 1;
+   }
 
    if (rhuff_bits_overflow(b))
       return RHUFF_ERROR_DATA;

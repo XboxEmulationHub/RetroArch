@@ -176,6 +176,14 @@ RETRO_BEGIN_DECLS
 bool slang_preprocess_parse_parameters(const char *shader_path,
       struct video_shader *shader);
 
+/* As slang_preprocess_parse_parameters(), but expands '#include'
+ * directives through @include_cache (see glslang_include_cache_new).
+ * Harvesting parameters walks every pass of a preset, and the passes
+ * share helper files, so one cache across that walk avoids re-reading
+ * them per pass.  A NULL cache behaves exactly like the uncached call. */
+bool slang_preprocess_parse_parameters_cached(const char *shader_path,
+      struct video_shader *shader, void *include_cache);
+
 bool slang_process(
       struct video_shader*   shader_info,
       unsigned               pass_number,
@@ -249,6 +257,28 @@ struct glslang_output
 };
 
 bool glslang_compile_shader(const char *shader_path, glslang_output *output);
+
+/* As glslang_compile_shader(), but expands '#include' directives
+ * through @include_cache (see glslang_include_cache_new).  A preset's
+ * passes share helper files, so one cache across a filter chain's pass
+ * loop reads each file once instead of once per pass.  A NULL cache
+ * behaves exactly like the uncached call. */
+bool glslang_compile_shader_cached(const char *shader_path,
+      glslang_output *output, void *include_cache);
+
+/* Owns an include cache for a scope, so a filter chain's pass loop can
+ * share one across every pass without having to free it on each error
+ * exit.  Defined here rather than in each chain's translation unit
+ * because the griffin build compiles the Vulkan and GLCore chains into
+ * one TU, where two identical definitions are still a redefinition. */
+struct glslang_include_cache_guard
+{
+   void *handle;
+   glslang_include_cache_guard() : handle(glslang_include_cache_new()) {}
+   ~glslang_include_cache_guard() { glslang_include_cache_free(handle); }
+   glslang_include_cache_guard(const glslang_include_cache_guard&) = delete;
+   glslang_include_cache_guard& operator=(const glslang_include_cache_guard&) = delete;
+};
 
 bool slang_preprocess_parse_parameters(glslang_meta& meta,
       struct video_shader *shader);

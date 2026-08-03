@@ -26,7 +26,6 @@
 #include <compat/posix_string.h>
 #include <string/stdstring.h>
 #include <streams/file_stream.h>
-#include <array/rhmap.h>
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -107,6 +106,7 @@ enum video_driver_enum
    VIDEO_XVIDEO,
    VIDEO_SDL,
    VIDEO_SDL2,
+   VIDEO_SDL3,
    VIDEO_SDL_DINGUX,
    VIDEO_SDL_RS90,
    VIDEO_EXT,
@@ -196,6 +196,7 @@ enum input_driver_enum
    INPUT_ANDROID            = AUDIO_RESAMPLER_NULL + 1,
    INPUT_SDL,
    INPUT_SDL2,
+   INPUT_SDL3,
    INPUT_SDL_DINGUX,
    INPUT_X,
    INPUT_WAYLAND,
@@ -492,6 +493,8 @@ static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_XVIDEO;
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_SDL;
 #elif defined(HAVE_SDL2)
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_SDL2;
+#elif defined(HAVE_SDL3)
+static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_SDL3;
 #elif defined(HAVE_SDL_DINGUX)
 #if defined(RS90) || defined(MIYOO)
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_SDL_RS90;
@@ -603,7 +606,7 @@ static const enum microphone_driver_enum MICROPHONE_DEFAULT_DRIVER = MICROPHONE_
 
 #if defined(RS90) || defined(MIYOO)
 static const enum audio_resampler_driver_enum AUDIO_DEFAULT_RESAMPLER_DRIVER = AUDIO_RESAMPLER_NEAREST;
-#elif defined(PSP) || (defined(EMSCRIPTEN) && defined(HAVE_CC_RESAMPLER))
+#elif defined(PSP) || (defined(__EMSCRIPTEN__) && defined(HAVE_CC_RESAMPLER))
 static const enum audio_resampler_driver_enum AUDIO_DEFAULT_RESAMPLER_DRIVER = AUDIO_RESAMPLER_CC;
 #else
 static const enum audio_resampler_driver_enum AUDIO_DEFAULT_RESAMPLER_DRIVER = AUDIO_RESAMPLER_SINC;
@@ -635,13 +638,13 @@ static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_XENON360;
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_XINPUT;
 #elif defined(ANDROID)
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_ANDROID;
-#elif defined(EMSCRIPTEN) && defined(HAVE_SDL2)
+#elif defined(__EMSCRIPTEN__) && defined(HAVE_SDL2)
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_SDL2;
 #elif defined(WEBOS) && defined(HAVE_SDL2)
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_SDL2;
 #elif defined(WEBOS) && defined(HAVE_WAYLAND)
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_WAYLAND;
-#elif defined(EMSCRIPTEN)
+#elif defined(__EMSCRIPTEN__)
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_RWEBINPUT;
 #elif defined(_WIN32) && defined(HAVE_DINPUT)
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_DINPUT;
@@ -677,6 +680,8 @@ static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_WAYLAND;
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_COCOA;
 #elif defined(__QNX__)
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_QNX;
+#elif defined(HAVE_SDL3)
+static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_SDL3;
 #elif defined(HAVE_SDL)
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_SDL;
 #elif defined(HAVE_SDL2)
@@ -725,7 +730,7 @@ static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_WINRAW;
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_ANDROID;
 #elif defined(HAVE_MFI)
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_MFI;
-#elif defined(HAVE_SDL) || defined(HAVE_SDL2)
+#elif defined(HAVE_SDL) || defined(HAVE_SDL2) || defined(HAVE_SDL3)
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_SDL;
 #elif defined(DJGPP)
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_DOS;
@@ -733,7 +738,7 @@ static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_DOS;
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_HID;
 #elif defined(__QNX__)
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_QNX;
-#elif defined(EMSCRIPTEN)
+#elif defined(__EMSCRIPTEN__)
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_RWEBPAD;
 #else
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_NULL;
@@ -741,7 +746,7 @@ static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_NULL;
 
 #if defined(HAVE_V4L2)
 static const enum camera_driver_enum CAMERA_DEFAULT_DRIVER = CAMERA_V4L2;
-#elif defined(EMSCRIPTEN)
+#elif defined(__EMSCRIPTEN__)
 static const enum camera_driver_enum CAMERA_DEFAULT_DRIVER = CAMERA_RWEBCAM;
 #elif defined(ANDROID)
 static const enum camera_driver_enum CAMERA_DEFAULT_DRIVER = CAMERA_ANDROID;
@@ -1147,6 +1152,8 @@ const char *config_get_default_video(void)
          return "sdl";
       case VIDEO_SDL2:
          return "sdl2";
+      case VIDEO_SDL3:
+         return "sdl3";
       case VIDEO_EXT:
          return "ext";
       case VIDEO_VG:
@@ -1211,6 +1218,8 @@ const char *config_get_default_input(void)
          return "sdl";
       case INPUT_SDL2:
          return "sdl2";
+      case INPUT_SDL3:
+         return "sdl3";
       case INPUT_SDL_DINGUX:
          return "sdl_dingux";
       case INPUT_DINPUT:
@@ -5949,14 +5958,17 @@ static bool check_menu_driver_compatibility(settings_t *settings)
       case 'r':
          return (memcmp(video_driver, "rsx",    3) == 0 && video_driver[3] == '\0');
       case 's':
-         /* sdl2 supports the full menu set (XMB/Ozone/MaterialUI/RGUI)
-          * via gfx_display_ctx_sdl2 + sdl2_raster_font, gated on
-          * SDL_RenderGeometry (>= 2.0.18). On older SDL builds the
-          * driver self-disables the gfx_display backend, and only
-          * RGUI's bitmap path is functional - which already returned
-          * true via the rgui early-out above, so allowing sdl2 here
-          * is safe regardless of the runtime SDL version. */
-         return (memcmp(video_driver, "sdl2",   4) == 0 && video_driver[4] == '\0');
+         /* sdl2/sdl3 support the full menu set (XMB/Ozone/MaterialUI/
+          * RGUI) via their gfx_display + raster-font backends, built
+          * on SDL_RenderGeometry. For sdl2 that entry point needs
+          * SDL >= 2.0.18; on older SDL builds the driver self-disables
+          * the gfx_display backend and only RGUI's bitmap path is
+          * functional - which already returned true via the rgui
+          * early-out above, so allowing sdl2 here is safe regardless
+          * of the runtime SDL version. sdl3 always has
+          * SDL_RenderGeometry. */
+         return (memcmp(video_driver, "sdl2",   4) == 0 && video_driver[4] == '\0')
+             || (memcmp(video_driver, "sdl3",   4) == 0 && video_driver[4] == '\0');
       case 'c':
          return (memcmp(video_driver, "ctr",    3) == 0 && video_driver[3] == '\0');
       default:
@@ -7017,7 +7029,7 @@ static bool config_load_file(global_t *global,
    frontend_driver_set_sustained_performance_mode(settings->bools.sustained_performance_mode);
    recording_driver_update_streaming_url();
 
-   if (!(bool)RHMAP_HAS_STR(conf->entries_map, "user_language"))
+   if (!config_get_entry(conf, "user_language"))
       msg_hash_set_uint(MSG_HASH_USER_LANGUAGE, frontend_driver_get_user_language());
 
    /* If GameMode is enabled in the config but libgamemode is not
@@ -7037,8 +7049,8 @@ static bool config_load_file(global_t *global,
     * history playlist size limit. (Have to do this, otherwise
     * users with large custom history size limits may lose
     * favourites entries when updating RetroArch...) */
-   if (    (bool)RHMAP_HAS_STR(conf->entries_map, "content_history_size")
-         && !(bool)RHMAP_HAS_STR(conf->entries_map, "content_favorites_size"))
+   if (     config_get_entry(conf, "content_history_size")
+         && !config_get_entry(conf, "content_favorites_size"))
    {
       if (settings->uints.content_history_size > 999)
          settings->ints.content_favorites_size = -1;
@@ -7316,6 +7328,89 @@ bool config_load_override_file(const char *config_path)
    return true;
 }
 
+typedef struct
+{
+   retro_keybind_set *autoconf_binds;    /* heap: too large for stack */
+   input_bind_label_set *autoconf_labels;
+   input_device_info_t device_info[MAX_INPUT_DEVICES];
+} input_autoconf_backup_t;
+
+/* Autoconf binds and device info come from controller hotplug events;
+ * no config file can restore them after input_config_reset(). */
+static bool input_autoconf_state_save(input_autoconf_backup_t *bkp)
+{
+   unsigned i, j;
+   input_driver_state_t *input_st = input_state_get_ptr();
+
+   bkp->autoconf_binds  = (retro_keybind_set*)calloc(MAX_USERS,
+         sizeof(retro_keybind_set));
+   bkp->autoconf_labels = (input_bind_label_set*)calloc(MAX_USERS,
+         sizeof(input_bind_label_set));
+
+   if (!bkp->autoconf_binds || !bkp->autoconf_labels)
+   {
+      free(bkp->autoconf_binds);
+      free(bkp->autoconf_labels);
+      bkp->autoconf_binds  = NULL;
+      bkp->autoconf_labels = NULL;
+      return false;
+   }
+
+   for (i = 0; i < MAX_USERS; i++)
+   {
+      for (j = 0; j < RARCH_BIND_LIST_END; j++)
+      {
+         memcpy(&bkp->autoconf_binds[i][j], &input_autoconf_binds[i][j],
+               sizeof(struct retro_keybind));
+         /* Duplicate allocated strings (don't share pointers!) */
+         if (input_autoconf_bind_labels[i][j].joykey)
+            bkp->autoconf_labels[i][j].joykey =
+               strdup(input_autoconf_bind_labels[i][j].joykey);
+         if (input_autoconf_bind_labels[i][j].joyaxis)
+            bkp->autoconf_labels[i][j].joyaxis =
+               strdup(input_autoconf_bind_labels[i][j].joyaxis);
+      }
+   }
+
+   memcpy(bkp->device_info, input_st->input_device_info,
+         sizeof(bkp->device_info));
+   return true;
+}
+
+static void input_autoconf_state_restore(input_autoconf_backup_t *bkp)
+{
+   unsigned i, j;
+   input_driver_state_t *input_st = input_state_get_ptr();
+
+   if (!bkp->autoconf_binds || !bkp->autoconf_labels)
+      return;
+
+   for (i = 0; i < MAX_USERS; i++)
+   {
+      for (j = 0; j < RARCH_BIND_LIST_END; j++)
+      {
+         /* Free strings allocated by input_config_reset() */
+         if (input_autoconf_bind_labels[i][j].joykey)
+            free(input_autoconf_bind_labels[i][j].joykey);
+         if (input_autoconf_bind_labels[i][j].joyaxis)
+            free(input_autoconf_bind_labels[i][j].joyaxis);
+
+         memcpy(&input_autoconf_binds[i][j], &bkp->autoconf_binds[i][j],
+               sizeof(struct retro_keybind));
+         /* String ownership moves back to input_autoconf_bind_labels */
+         input_autoconf_bind_labels[i][j] = bkp->autoconf_labels[i][j];
+      }
+   }
+
+   memcpy(input_st->input_device_info, bkp->device_info,
+         sizeof(bkp->device_info));
+
+   free(bkp->autoconf_binds);
+   free(bkp->autoconf_labels);
+   bkp->autoconf_binds  = NULL;
+   bkp->autoconf_labels = NULL;
+}
+
 /**
  * config_unload_override:
  *
@@ -7341,7 +7436,13 @@ bool config_unload_override(void)
     * This ensures settings not present in the config file
     * get their default values restored after override unload. */
    if (settings->bools.config_save_minimal)
+   {
+      input_autoconf_backup_t bkp;
+      bool have_bkp = input_autoconf_state_save(&bkp);
       config_set_defaults(global_get_ptr());
+      if (have_bkp)
+         input_autoconf_state_restore(&bkp);
+   }
 
    if (!config_load_file(global_get_ptr(),
             path_get(RARCH_PATH_CONFIG), config_st))
@@ -8293,15 +8394,12 @@ bool config_save_file(const char *path)
          }
          else
          {
-            unsigned i, j;
-            input_driver_state_t *input_st = input_state_get_ptr();
-            input_device_info_t saved_device_info[MAX_INPUT_DEVICES];
-            retro_keybind_set *saved_autoconf_binds;
-            input_bind_label_set *saved_autoconf_labels;
+            input_autoconf_backup_t autoconf_bkp;
+            bool have_autoconf_bkp;
             input_bind_label_set *saved_config_labels;
             /* Heap-allocated: MAX_USERS * sizeof(retro_keybind_set) is
              * ~51KB, too large for the stack on small-stack platforms.
-             * Matches defaults_binds / saved_autoconf_binds above. */
+             * Matches defaults_binds above. */
             retro_keybind_set *saved_binds;
 #ifdef HAVE_LANGEXTRA
             unsigned saved_user_language = *msg_hash_get_uint(MSG_HASH_USER_LANGUAGE);
@@ -8321,38 +8419,7 @@ bool config_save_file(const char *path)
                memcpy(saved_config_labels, input_config_bind_labels,
                      MAX_USERS * sizeof(input_bind_label_set));
 
-            /* Save current input_autoconf_binds (deep copy with string duplication) */
-            saved_autoconf_binds  = (retro_keybind_set*)calloc(MAX_USERS, sizeof(retro_keybind_set));
-            saved_autoconf_labels = (input_bind_label_set*)calloc(MAX_USERS,
-                  sizeof(input_bind_label_set));
-            if (saved_autoconf_binds && saved_autoconf_labels)
-            {
-               for (i = 0; i < MAX_USERS; i++)
-               {
-                  for (j = 0; j < RARCH_BIND_LIST_END; j++)
-                  {
-                     /* Copy struct fields */
-                     memcpy(&saved_autoconf_binds[i][j], &input_autoconf_binds[i][j],
-                            sizeof(struct retro_keybind));
-                     /* Duplicate allocated strings (don't share pointers!) */
-                     if (input_autoconf_bind_labels[i][j].joykey)
-                        saved_autoconf_labels[i][j].joykey =
-                           strdup(input_autoconf_bind_labels[i][j].joykey);
-                     else
-                        saved_autoconf_labels[i][j].joykey = NULL;
-
-                     if (input_autoconf_bind_labels[i][j].joyaxis)
-                        saved_autoconf_labels[i][j].joyaxis =
-                           strdup(input_autoconf_bind_labels[i][j].joyaxis);
-                     else
-                        saved_autoconf_labels[i][j].joyaxis = NULL;
-                  }
-               }
-            }
-
-            /* Save current input_device_info (simple memcpy, no allocated strings) */
-            memcpy(saved_device_info, input_st->input_device_info,
-                   sizeof(saved_device_info));
+            have_autoconf_bkp = input_autoconf_state_save(&autoconf_bkp);
 
             /* Temporarily set config_st to defaults struct so config_set_defaults populates it */
             config_st = defaults;
@@ -8379,45 +8446,13 @@ bool config_save_file(const char *path)
                free(saved_config_labels);
             }
 
-            /* Restore input_device_info */
-            memcpy(input_st->input_device_info, saved_device_info,
-                   sizeof(saved_device_info));
-
 #ifdef HAVE_LANGEXTRA
             /* Restore user_language global, clobbered by config_set_defaults. */
             msg_hash_set_uint(MSG_HASH_USER_LANGUAGE, saved_user_language);
 #endif
 
-            /* Restore input_autoconf_binds (free strings allocated by input_config_reset, then restore) */
-            if (saved_autoconf_binds && saved_autoconf_labels)
-            {
-               for (i = 0; i < MAX_USERS; i++)
-               {
-                  for (j = 0; j < RARCH_BIND_LIST_END; j++)
-                  {
-                     /* Free strings allocated by input_config_reset() */
-                     if (input_autoconf_bind_labels[i][j].joykey)
-                        free(input_autoconf_bind_labels[i][j].joykey);
-                     if (input_autoconf_bind_labels[i][j].joyaxis)
-                        free(input_autoconf_bind_labels[i][j].joyaxis);
-
-                     /* Restore saved bind (with our duplicated strings) */
-                     memcpy(&input_autoconf_binds[i][j], &saved_autoconf_binds[i][j],
-                            sizeof(struct retro_keybind));
-                     input_autoconf_bind_labels[i][j] = saved_autoconf_labels[i][j];
-                  }
-               }
-
-               /* Free the temporary backup arrays (strings are now owned by
-                * input_autoconf_bind_labels) */
-               free(saved_autoconf_binds);
-               free(saved_autoconf_labels);
-            }
-            else
-            {
-               free(saved_autoconf_binds);
-               free(saved_autoconf_labels);
-            }
+            if (have_autoconf_bkp)
+               input_autoconf_state_restore(&autoconf_bkp);
          }
 
          /* Populate default setting arrays */

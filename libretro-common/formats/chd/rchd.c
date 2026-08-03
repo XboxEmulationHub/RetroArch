@@ -129,6 +129,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <encodings/crc32.h>
 #include <formats/rchd.h>
 #include <encodings/huffman.h>
 #include <encodings/crc32.h>
@@ -262,49 +263,6 @@ static uint64_t rchd_rd_be(const uint8_t *p, int n)
    return v;
 }
 
-/* CRC-16/CCITT-FALSE: polynomial 0x1021, initial 0xffff, no reflection
- * and no final xor. Validates a decoded v5 map (FORMAT.md 2.3.6).
- *
- * A byte at a time through a table, not a bit at a time through a
- * branch. The map of a large image runs to megabytes and every byte of
- * it goes through here: bitwise, that was half of everything an open
- * spends, and the table costs five hundred and twelve bytes built once.
- *
- * The construction is deterministic, so two threads racing to do it
- * write the same bytes and the flag needs no lock. */
-static uint16_t rchd_crc16_table[256];
-static int      rchd_crc16_ready;
-
-static void rchd_crc16_build(void)
-{
-   uint32_t i;
-
-   if (rchd_crc16_ready)
-      return;
-   for (i = 0; i < 256; i++)
-   {
-      uint16_t c = (uint16_t)(i << 8);
-      int      bit;
-
-      for (bit = 0; bit < 8; bit++)
-         c = (uint16_t)((c & 0x8000) ? ((c << 1) ^ 0x1021) : (c << 1));
-      rchd_crc16_table[i] = c;
-   }
-   rchd_crc16_ready = 1;
-}
-
-static uint16_t rchd_crc16(const uint8_t *data, size_t len)
-{
-   uint16_t crc = 0xffff;
-   size_t   i;
-
-   rchd_crc16_build();
-   for (i = 0; i < len; i++)
-      crc = (uint16_t)((crc << 8)
-          ^ rchd_crc16_table[(uint8_t)((crc >> 8) ^ data[i])]);
-   return crc;
-}
-
 /* -------- decoder state -------- */
 
 /* What the open sequence is waiting for. Each step names a byte range,
@@ -370,6 +328,11 @@ struct rchd
     * on first use rather than per hunk, and not at all for an image
     * that never names the codec. */
    uint16_t          *huff_lookup;
+
+   /* The zlib codec's inflate state: ~42 KiB, held across hunks and
+    * reset per hunk rather than reallocated, and not made at all for
+    * an image that never names the codec. */
+   void              *inflate;
 
    /* Three lookup tables and one channel of samples, for A/V hunks.
     * Made on first use, so an image that is not audio/video pays
@@ -977,7 +940,8 @@ static int rchd_map_v5(rchd_t *chd, const uint8_t *raw, size_t raw_len)
    if (rhuff_bits_overflow(&bits))
       goto done;
 
-   if (rchd_crc16(checkbuf, (size_t)chd->info.hunk_count * 12) != stored_crc)
+   if (encoding_crc16_ccitt(0xffff, checkbuf,
+            (size_t)chd->info.hunk_count * 12) != stored_crc)
    {
       err = RCHD_ERROR_CRC;
       goto done;
@@ -1095,6 +1059,8 @@ void rchd_free(rchd_t *chd)
    free(chd->meta);
    free(chd->codecs);
    free(chd->huff_lookup);
+   if (chd->inflate)
+      rinflate_free(chd->inflate);
    free(chd->cache);
    free(chd->cd_scratch);
    free(chd->tracks);
@@ -2069,18 +2035,27 @@ static int rchd_decompress(rchd_t *chd, uint32_t tag,
          /* Raw DEFLATE: no two-byte header and no adler32 trailer.  An
           * image built with the zlib wrapper is rejected outright, which
           * is how this was established rather than assumed. */
-         void  *z = rinflate_new(-15);
          size_t rd = 0, wr = 0;
          int    e;
 
-         if (!z)
-            return RCHD_ERROR_MEM;
-         rinflate_set_in(z, src, src_len);
-         rinflate_set_out(z, dst, dst_len);
-         while ((e = rinflate_process(z, &rd, &wr)) == RDEFLATE_PROCESS_NEXT)
+         /* Held across hunks: a fresh instance costs a ~42 KiB clear,
+          * which is pure overhead against a hunk of typically 64 KiB or
+          * less. rinflate_reset restores the same starting state. */
+         if (!chd->inflate)
+         {
+            chd->inflate = rinflate_new(-15);
+            if (!chd->inflate)
+               return RCHD_ERROR_MEM;
+         }
+         else
+            rinflate_reset(chd->inflate, -15);
+
+         rinflate_set_in(chd->inflate, src, src_len);
+         rinflate_set_out(chd->inflate, dst, dst_len);
+         while ((e = rinflate_process(chd->inflate, &rd, &wr))
+               == RDEFLATE_PROCESS_NEXT)
             if (!rd && !wr)
                break;
-         rinflate_free(z);
          return (wr == dst_len) ? RCHD_OK : RCHD_ERROR_DATA;
       }
 #endif
