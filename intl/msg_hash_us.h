@@ -7373,6 +7373,7 @@ MSG_HASH(MENU_ENUM_SUBLABEL_##T, sub)
 #define S_FLOAT_NS(f, T, n, d, rnd, sd, df, c, mn, mx, st, ok, rp, us) \
 MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
 #include "../settings/settings_def_video_adaptive_vsync.h"
+#include "../settings/settings_def_video_gl_direct_spirv.h"
 #undef S_BOOL
 #undef S_BOOL_NS
 #undef S_UINT
@@ -10727,6 +10728,16 @@ MSG_HASH(MENU_ENUM_LABEL_VALUE_##T, us)
 #undef S_UINT_AT_EX_H
 #undef S_UINT_AT_EX_NS_H
 #undef SETTINGS_DEF_STRINGS_PASS
+#ifdef ANDROID
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_ANDROID_SYSTEM_KEYBOARD,
+   "Use System Keyboard"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_ANDROID_SYSTEM_KEYBOARD,
+   "Use the Android system keyboard for menu text entry instead of the built-in on-screen keyboard. Enables clipboard paste and password managers. Requires a touchscreen or an input method that can be navigated with a gamepad."
+   )
+#endif
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_AUTO_GAME_FOCUS_OFF,
    "OFF"
@@ -25364,7 +25375,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_ARABIC,
-   "Arabic - العربية (Restart required)"
+   "Arabic - العربية"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_ASTURIAN,
@@ -25396,11 +25407,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_CHINESE_SIMPLIFIED,
-   "Chinese (Simplified) - 简体中文 (Restart required)"
+   "Chinese (Simplified) - 简体中文"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_CHINESE_TRADITIONAL,
-   "Chinese (Traditional) - 繁體中文 (Restart required)"
+   "Chinese (Traditional) - 繁體中文"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_CROATIAN,
@@ -25508,7 +25519,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_KOREAN,
-   "Korean - 한국어 (Restart required)"
+   "Korean - 한국어"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_LATIN,
@@ -25540,7 +25551,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_PERSIAN,
-   "Persian - فارسی (Restart required)"
+   "Persian - فارسی"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_POLISH,
@@ -25596,7 +25607,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_THAI,
-   "Thai - ภาษาไทย (Restart required)"
+   "Thai - ภาษาไทย"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LANG_TURKISH,

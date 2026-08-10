@@ -2565,9 +2565,7 @@ static unsigned menu_displaylist_parse_system_info(file_list_t *list)
 #ifdef HAVE_FREETYPE
          {SUPPORTS_FREETYPE, "FreeType"},
 #endif
-#ifdef HAVE_STB_FONT
          {SUPPORTS_STBFONT, "STB TrueType"},
-#endif
 #ifdef HAVE_V4L2
          {SUPPORTS_V4L2, "Video4Linux2"},
 #endif
@@ -8629,6 +8627,10 @@ unsigned menu_displaylist_build_list(
          if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                 MENU_ENUM_LABEL_INPUT_SELECT_PHYSICAL_KEYBOARD,
                 PARSE_ACTION, true) == 0)
+                count++;
+         if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                MENU_ENUM_LABEL_INPUT_ANDROID_SYSTEM_KEYBOARD,
+                PARSE_ONLY_BOOL, true) == 0)
                 count++;
 #endif
 

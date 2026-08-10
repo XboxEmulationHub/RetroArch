@@ -8934,16 +8934,24 @@ static void general_write_handler(rarch_setting_t *setting)
      case MENU_ENUM_LABEL_INPUT_POLL_TYPE_BEHAVIOR:
          core_set_poll_type(*setting->value.target.integer);
          break;
-#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__) && defined(HAVE_MENU)
       case MENU_ENUM_LABEL_USER_LANGUAGE:
+#if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__) && defined(HAVE_MENU)
          /* The native Win32 menubar bakes translated strings at
           * menu-creation time (popup headers in particular have no
           * resource ID and so are not walked by win32_localize_menu
           * afterwards). Rebuild the whole menubar so every string -
           * including popup headers - reflects the new language. */
          win32_menubar_rebuild();
-         break;
 #endif
+         /* Arabic and Persian, Chinese and Korean each want a
+          * different face. Rebuild the fonts that follow the language
+          * where they stand: each font_data_t keeps its address, so
+          * nothing holding one has to be told, and the generation bump
+          * makes the derived metrics recompute on the next frame.
+          * A context reset would do it too, at the cost of tearing
+          * down video, audio and input to change a typeface. */
+         font_driver_reload_fonts();
+         break;
       case MENU_ENUM_LABEL_VIDEO_SCALE_INTEGER:
          {
             video_driver_state_t *video_st       = video_state_get_ptr();
@@ -11704,6 +11712,13 @@ static const setting_desc_t avsync_desc[] = {
 #include "../settings/settings_def_video_adaptive_vsync.h"
 };
 
+#if defined(HAVE_OPENGL_CORE) && defined(HAVE_SLANG)
+static const setting_desc_t glspirv_desc[] = {
+/* GENERATED: rows come from settings_def_video_gl_direct_spirv.h in order. */
+#include "../settings/settings_def_video_gl_direct_spirv.h"
+};
+#endif
+
 static const setting_desc_t fdelay_desc[] = {
 /* GENERATED: rows come from settings_def_frame_delay.h in order. */
 #include "../settings/settings_def_frame_delay.h"
@@ -12983,7 +12998,7 @@ static void settings_build_drivers(
    subgroup_info.name = NULL;
    (void)settings; (void)global; (void)group_info; (void)subgroup_info;
    {
-       
+
          unsigned i, j = 0;
          struct string_options_entry string_options_entries[14] = {{0}};
 
@@ -13171,7 +13186,7 @@ static void settings_build_drivers(
          }
 
          GROUP_END();
-       
+
    }
 }
 
@@ -13186,7 +13201,7 @@ static void settings_build_core(
    subgroup_info.name = NULL;
    (void)settings; (void)global; (void)group_info; (void)subgroup_info;
    {
-       
+
          unsigned i, listing = 0;
 #ifndef HAVE_DYNAMIC
          struct bool_entry bool_entries[11];
@@ -13312,7 +13327,7 @@ static void settings_build_core(
          }
 
          GROUP_END();
-       
+
    }
 }
 
@@ -13327,7 +13342,7 @@ static void settings_build_configuration(
    subgroup_info.name = NULL;
    (void)settings; (void)global; (void)group_info; (void)subgroup_info;
    {
-       
+
          uint8_t i, listing = 0;
          struct bool_entry bool_entries[10];
          START_GROUP(list, list_info, &group_info,
@@ -13440,7 +13455,7 @@ static void settings_build_configuration(
             ADD_DESC(configuration_desc_0);
 
          GROUP_END();
-       
+
    }
 }
 
@@ -13455,7 +13470,7 @@ static void settings_build_logging(
    subgroup_info.name = NULL;
    (void)settings; (void)global; (void)group_info; (void)subgroup_info;
    {
-       
+
          bool *tmp_b = NULL;
          START_GROUP(list, list_info, &group_info, msg_hash_to_str(MENU_ENUM_LABEL_VALUE_LOGGING_SETTINGS), parent_group);
          parent_group = MENU_ENUM_LABEL_LOGGING_SETTINGS_STR;
@@ -13510,7 +13525,7 @@ ADD_DESC(logging_desc_0);
                general_write_handler,
                general_read_handler,
                SD_FLAG_ADVANCED);
-       
+
       GROUP_END();
    }
 }
@@ -13526,7 +13541,7 @@ static void settings_build_saving(
    subgroup_info.name = NULL;
    (void)settings; (void)global; (void)group_info; (void)subgroup_info;
    {
-       
+
          uint8_t i, listing = 0;
          struct bool_entry bool_entries[12];
 
@@ -13652,7 +13667,7 @@ static void settings_build_saving(
             ADD_DESC(saving2_desc_0);
 
          GROUP_END();
-       
+
 
    }
 }
@@ -14260,7 +14275,7 @@ static void settings_build_video(
    subgroup_info.name = NULL;
    (void)settings; (void)global; (void)group_info; (void)subgroup_info;
    {
-       
+
          START_GROUP(list, list_info, &group_info,
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_VIDEO_SETTINGS),
                parent_group);
@@ -14570,6 +14585,15 @@ static void settings_build_video(
          if (video_driver_test_all_flags(GFX_CTX_FLAGS_ADAPTIVE_VSYNC))
             ADD_DESC(avsync_desc);
 
+#if defined(HAVE_OPENGL_CORE) && defined(HAVE_SLANG)
+         /* GL_ARB_gl_spirv is an OpenGL (Core) driver feature; the entry
+          * would be inert under any other video driver. */
+         if (string_is_equal(settings->arrays.video_driver, "glcore"))
+         {
+            ADD_DESC(glspirv_desc);
+         }
+#endif
+
          ADD_DESC(fdelay_desc);
 
          /* Unlike all other shader-related menu entries
@@ -14625,7 +14649,7 @@ static void settings_build_video(
                   ADD_DESC(video_filter_desc);
 
          GROUP_END();
-       
+
    }
 }
 
@@ -14818,7 +14842,7 @@ static void settings_build_input(
    subgroup_info.name = NULL;
    (void)settings; (void)global; (void)group_info; (void)subgroup_info;
    {
-       
+
 
          START_GROUP(list, list_info, &group_info,
                MENU_ENUM_LABEL_INPUT_SETTINGS_BEGIN_STR,
@@ -14879,6 +14903,21 @@ static void settings_build_input(
             (*list)[list_info->index - 1].default_value.string      = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NONE);
          }
       }
+
+            CONFIG_BOOL(
+                  list, list_info,
+                  &settings->bools.input_android_system_keyboard,
+                  MENU_ENUM_LABEL_INPUT_ANDROID_SYSTEM_KEYBOARD,
+                  MENU_ENUM_LABEL_VALUE_INPUT_ANDROID_SYSTEM_KEYBOARD,
+                  DEFAULT_INPUT_ANDROID_SYSTEM_KEYBOARD,
+                  MENU_ENUM_LABEL_VALUE_OFF,
+                  MENU_ENUM_LABEL_VALUE_ON,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler,
+                  SD_FLAG_NONE);
 #endif
 
             ADD_DESC(inp_desc_10);
@@ -14955,7 +14994,7 @@ static void settings_build_input(
          }
 
          GROUP_END();
-       
+
    }
 }
 
@@ -15054,7 +15093,7 @@ static void settings_build_input_hotkey(
    subgroup_info.name = NULL;
    (void)settings; (void)global; (void)group_info; (void)subgroup_info;
    {
-       
+
          unsigned i;
          START_GROUP(list, list_info, &group_info,
                MENU_ENUM_LABEL_INPUT_HOTKEY_BINDS_BEGIN_STR,
@@ -15088,7 +15127,7 @@ static void settings_build_input_hotkey(
          }
 
          GROUP_END();
-       
+
    }
 }
 
@@ -16438,7 +16477,7 @@ static void settings_build_lakka_services(
    subgroup_info.name = NULL;
    (void)settings; (void)global; (void)group_info; (void)subgroup_info;
    {
-       
+
 #if defined(HAVE_LAKKA)
          START_GROUP(list, list_info, &group_info,
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_LAKKA_SERVICES),
@@ -16554,7 +16593,7 @@ static void settings_build_lakka_services(
 
          GROUP_END();
 #endif
-       
+
    }
 }
 
@@ -16570,7 +16609,7 @@ static void settings_build_lakka_switch_options(
    subgroup_info.name = NULL;
    (void)settings; (void)global; (void)group_info; (void)subgroup_info;
    {
-       
+
          START_GROUP(list, list_info, &group_info,
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_LAKKA_SWITCH_OPTIONS),
                parent_group);
@@ -16629,7 +16668,7 @@ static void settings_build_lakka_switch_options(
                SD_FLAG_NONE);
          SETTINGS_ACTION_SET(change, &(*list)[list_info->index - 1], bluetooth_ertm_disable_toggle_change_handler)
          GROUP_END();
-       
+
    }
 }
 #endif
@@ -17755,6 +17794,9 @@ static const settings_desc_table_t settings_desc_registry[] = {
    { vid_desc_20, (uint16_t)ARRAY_SIZE(vid_desc_20) },
    { sync_desc, (uint16_t)ARRAY_SIZE(sync_desc) },
    { avsync_desc, (uint16_t)ARRAY_SIZE(avsync_desc) },
+#if defined(HAVE_OPENGL_CORE) && defined(HAVE_SLANG)
+   { glspirv_desc, (uint16_t)ARRAY_SIZE(glspirv_desc) },
+#endif
    { fdelay_desc, (uint16_t)ARRAY_SIZE(fdelay_desc) },
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
    { sdelay_desc, (uint16_t)ARRAY_SIZE(sdelay_desc) },

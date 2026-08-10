@@ -303,7 +303,8 @@ static void gfx_thumbnail_init_fade(
       defined(HAVE_AUDIOMIXER) && \
       (defined(HAVE_ROPUS) || defined(HAVE_RVORBIS) || defined(HAVE_RAAC))
 #define GFX_THUMB_PREVIEW_AUDIO 1
-/* Cap decoded PCM (memory bound: 90 s stereo 48 kHz s16 = ~17 MB). */
+/* The mixer streams the audio track and decodes on the flush, so no
+ * PCM is buffered up front and the clip is not length-capped. */
 #define GFX_THUMB_PREVIEW_AUDIO_NAME   "__gfx_thumb_preview"
 #endif
 
@@ -891,17 +892,30 @@ static void gfx_thumbnail_anim_open(gfx_thumbnail_t *thumbnail,
     * bail out early for ordinary PNGs. */
    if (type == IMAGE_TYPE_PNG)
    {
-      uint8_t  probe[4096];
+      /* Heap-held: this runs on the menu hot path from task threads,
+       * where 4 KiB is half the smallest thread stack in the tree.
+       * On allocation failure the file is treated as a still image --
+       * the same documented fallback as every other inconclusive
+       * probe below. */
+      uint8_t *probe;
       int64_t  got  = 0;
       int      more = 0;
       RFILE   *fp   = filestream_open(path,
             RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
       if (!fp)
          return;
-      got = filestream_read(fp, probe, sizeof(probe));
+      if (!(probe = (uint8_t*)malloc(4096)))
+      {
+         filestream_close(fp);
+         return;
+      }
+      got = filestream_read(fp, probe, 4096);
       filestream_close(fp);
       if (got <= 0)
+      {
+         free(probe);
          return;
+      }
       if (!rpng_is_apng_ex(probe, (size_t)got, &more))
       {
          /* Conclusive "still PNG" - or the acTL would lie beyond this
@@ -910,8 +924,10 @@ static void gfx_thumbnail_anim_open(gfx_thumbnail_t *thumbnail,
           * path cheap; such a file simply shows its default image, the
           * behaviour before APNG support existed. */
          (void)more;
+         free(probe);
          return;
       }
+      free(probe);
    }
 #endif
 
@@ -958,7 +974,12 @@ static void gfx_thumbnail_anim_open(gfx_thumbnail_t *thumbnail,
          data_transfer_free(dt);
          return;
       }
-      if (   blen > GFX_THUMB_ANIM_ABS_MAX_FILE
+      /* The absolute file-length cap protects the fully-resident
+       * loads; a reserved window commits only its fixed head+window
+       * budget no matter how long the file is, so length is not a
+       * cost there - a two-hour 4K recording previews from the same
+       * 20 MiB as a ten-second clip. */
+      if (   (!reserved && blen > GFX_THUMB_ANIM_ABS_MAX_FILE)
           || !(reserved ? gfx_thumb_anim_window_ok(0)
                         : gfx_thumb_anim_mem_ok((uint64_t)blen, 0)))
       {
@@ -971,21 +992,64 @@ static void gfx_thumbnail_anim_open(gfx_thumbnail_t *thumbnail,
        * window until the header/index is covered. */
       {
          int need_more = 0;
+         size_t need_lo = 0, need_hi = 0;
          size_t avail  = GFX_THUMB_ANIM_WINDOW_KEEP;
+         int    jumps  = 0;
          if (avail > blen)
             avail = blen;
          for (;;)
          {
             stream = image_transfer_anim_stream_new_avail(
-                  (void*)base, blen, avail, type, &need_more);
+                  (void*)base, blen, avail, type, &need_more,
+                  &need_lo, &need_hi);
             if (stream || !need_more || avail >= blen)
                break;
+            if (need_hi > need_lo && need_hi > avail && need_hi <= blen)
+            {
+               /* The demuxer named the exact bytes that unblock it -
+                * a box header past the wall, or a trailing moov body.
+                * Committing just that island skips the mdat between
+                * the frontier and the metadata, which is what makes a
+                * multi-gigabyte tail-moov recording open from a
+                * few-MiB footprint instead of paging the whole file
+                * through the window.  The jump cap only guards
+                * against a demuxer bug looping without progress;
+                * a well-formed file needs one or two. */
+               if (++jumps > 64 ||
+                   !data_transfer_window_ensure(dt, need_lo, need_hi))
+                  break;
+               avail = need_hi;
+               continue;
+            }
+            /* No range named (WEBM, or a stall at unread front
+             * bytes): the historical sequential growth. */
             avail += GFX_THUMB_ANIM_WINDOW_KEEP;
             if (avail > blen)
                avail = blen;
             if (!data_transfer_window_extend(dt, avail))
                break;
          }
+         if (stream && jumps)
+         {
+            /* The open jumped over the media to reach a trailing
+             * moov; the sequential read frontier is still at the
+             * head.  Restart it at the media floor and prime one
+             * window so the first frames decode from resident bytes,
+             * after which the animate feeder streams as usual. */
+            size_t fl = image_transfer_anim_stream_media_floor(stream,
+                  type);
+            size_t hi = fl + GFX_THUMB_ANIM_WINDOW_KEEP
+                  + GFX_THUMB_ANIM_WINDOW_AHEAD;
+            if (hi > blen)
+               hi = blen;
+            data_transfer_window_rebase(dt, fl);
+            if (!data_transfer_window_extend(dt, hi))
+            {
+               image_transfer_anim_stream_free(stream, type);
+               stream = NULL;
+            }
+         }
+
          /* Types without a progressive open (animated WEBP) return
           * NULL with need_more clear: fall back to the whole buffer,
           * which the window has to make resident. */
@@ -1041,6 +1105,14 @@ static void gfx_thumbnail_anim_upload(gfx_thumbnail_t *thumbnail,
       thumbnail->texture = new_texture;
       thumbnail->width   = width;
       thumbnail->height  = height;
+      /* Anim-first bootstrap: the first frame of a video opened
+       * without a still decode makes the thumbnail drawable.
+       * Release-store pairs with the acquire-load in the draw path,
+       * as with the still upload. */
+      if (GFX_THUMB_STATUS_LOAD(&thumbnail->status) ==
+            GFX_THUMBNAIL_STATUS_PENDING)
+         GFX_THUMB_STATUS_STORE(&thumbnail->status,
+               GFX_THUMBNAIL_STATUS_AVAILABLE);
    }
 }
 
@@ -1103,10 +1175,19 @@ void gfx_thumbnail_animate(gfx_thumbnail_t *thumbnail)
 
    if (   !thumbnail
        || !(thumbnail->flags & GFX_THUMB_FLAG_ANIM_ACTIVE)
-       || !thumbnail->anim
-       || (GFX_THUMB_STATUS_LOAD(&thumbnail->status) !=
-             GFX_THUMBNAIL_STATUS_AVAILABLE))
+       || !thumbnail->anim)
       return;
+   {
+      /* AVAILABLE is the normal running state.  PENDING with a stream
+       * installed is the anim-first bootstrap for video files opened
+       * over a window without a preceding still decode: the first
+       * uploaded frame flips the status in anim_upload. */
+      enum gfx_thumbnail_status st = (enum gfx_thumbnail_status)
+            GFX_THUMB_STATUS_LOAD(&thumbnail->status);
+      if (   st != GFX_THUMBNAIL_STATUS_AVAILABLE
+          && st != GFX_THUMBNAIL_STATUS_PENDING)
+         return;
+   }
 
    now  = cpu_features_get_time_usec();
    type = (enum image_type_enum)thumbnail->anim_type;
@@ -1873,6 +1954,32 @@ void gfx_thumbnail_request_file(
    if (   (!file_path || !*file_path)
        || !path_is_valid(file_path))
       return;
+
+   /* Video containers open over a sliding window before anything
+    * else: the still task reads the whole file into memory, which a
+    * multi-gigabyte recording fails outright (the allocation) or
+    * turns into a minute of disk reads for one frame - while the
+    * windowed animation path holds a fixed few-MiB footprint at any
+    * length, and its first decoded frame doubles as the still.  Only
+    * when the windowed open declines (admission, no reservation
+    * support, malformed container) does the file fall through to the
+    * historical whole-file still decode, which keeps small files on
+    * exotic platforms working exactly as before. */
+   {
+      enum image_type_enum ptype = image_texture_get_type(file_path);
+      if (   (ptype == IMAGE_TYPE_WEBM)
+          || (ptype == IMAGE_TYPE_MP4))
+      {
+         gfx_thumbnail_anim_open(thumbnail, file_path);
+         if (thumbnail->anim)
+         {
+            thumbnail->list_id = p_gfx_thumb->list_id;
+            GFX_THUMB_STATUS_STORE(&thumbnail->status,
+                  GFX_THUMBNAIL_STATUS_PENDING);
+            return;
+         }
+      }
+   }
 
    /* Load thumbnail */
    if (!(thumbnail_tag = (gfx_thumbnail_tag_t*)malloc(sizeof(gfx_thumbnail_tag_t))))
@@ -3493,31 +3600,49 @@ void gfx_savestate_thumbnail_get_path(
       if (entry && *entry->path)
       {
          size_t _len;
-         char new_path[PATH_MAX_LENGTH];
-         char entry_basename[PATH_MAX_LENGTH];
-         char old_savefile_dir[PATH_MAX_LENGTH];
-         char old_savestate_dir[PATH_MAX_LENGTH];
+         /* Four path buffers in one heap block: even at the console
+          * PATH_MAX_LENGTH of 512 the set is a whole 2 KiB stack
+          * budget, and this runs from the menu task path.  On
+          * allocation failure the thumbnail path is simply not
+          * resolved -- the caller already treats an empty result as
+          * "no savestate thumbnail". */
+         struct gfx_ss_thumb_paths
+         {
+            char new_path[PATH_MAX_LENGTH];
+            char entry_basename[PATH_MAX_LENGTH];
+            char old_savefile_dir[PATH_MAX_LENGTH];
+            char old_savestate_dir[PATH_MAX_LENGTH];
+         } *pb = (struct gfx_ss_thumb_paths*)calloc(1, sizeof(*pb));
+         char *new_path          = pb ? pb->new_path : NULL;
+         char *entry_basename    = pb ? pb->entry_basename : NULL;
+         char *old_savefile_dir  = pb ? pb->old_savefile_dir : NULL;
+         char *old_savestate_dir = pb ? pb->old_savestate_dir : NULL;
 
-         strlcpy(old_savefile_dir, runloop_st->savefile_dir, sizeof(old_savefile_dir));
-         strlcpy(old_savestate_dir, runloop_st->savestate_dir, sizeof(old_savestate_dir));
+         if (!pb)
+            return;
 
-         strlcpy(new_path, entry->path, sizeof(new_path));
+         strlcpy(old_savefile_dir, runloop_st->savefile_dir, PATH_MAX_LENGTH);
+         strlcpy(old_savestate_dir, runloop_st->savestate_dir, PATH_MAX_LENGTH);
+
+         strlcpy(new_path, entry->path, PATH_MAX_LENGTH);
          path_remove_extension(new_path);
 
-         _len = strlcpy(entry_basename, path_basename(new_path), sizeof(entry_basename));
-         _len = strlcpy(entry_basename + _len, ".state", sizeof(entry_basename) - _len);
+         _len = strlcpy(entry_basename, path_basename(new_path), PATH_MAX_LENGTH);
+         _len = strlcpy(entry_basename + _len, ".state", PATH_MAX_LENGTH - _len);
 
          /* Set temporary save redirection paths */
          runloop_path_set_redirect(config_get_ptr(), old_savefile_dir, old_savestate_dir);
 
          fill_pathname_join_special(new_path,
-               runloop_st->savestate_dir, entry_basename, sizeof(new_path));
+               runloop_st->savestate_dir, entry_basename, PATH_MAX_LENGTH);
 
          /* Restore current save redirection paths */
          dir_set(RARCH_DIR_CURRENT_SAVEFILE, old_savefile_dir);
          dir_set(RARCH_DIR_CURRENT_SAVESTATE, old_savestate_dir);
 
          state_name = strdup(new_path);
+      
+         free(pb);
       }
    }
 #endif /* HAVE_MENU */

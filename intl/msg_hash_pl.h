@@ -762,6 +762,9 @@ static const struct
    char s_700d45a9[24];
    char s_2a30a561[24];
    char s_6ae6f953[19];
+#ifdef ANDROID
+   char s_b573f90c[28];
+#endif
    char s_e28bc72f[26];
    char s_0b2a8528[41];
    char s_ea5757a0[7];
@@ -1200,9 +1203,7 @@ static const struct
    char s_b201bb70[42];
    char s_b66840e9[33];
 #ifdef HAVE_MICROPHONE
-#ifdef RARCH_MOBILE
    char s_f0db2883[26];
-#endif
 #endif
 #ifdef HAVE_MICROPHONE
 #if !defined(RARCH_CONSOLE)
@@ -2694,6 +2695,9 @@ static const struct
    char s_5c8a1d63[121];
    char s_744c0f80[70];
    char s_2aa39081[44];
+#ifdef ANDROID
+   char s_50f43cfa[269];
+#endif
    char s_e85b309d[90];
    char s_cd94bb16[217];
    char s_a17a67e1[53];
@@ -5169,6 +5173,9 @@ static const struct
    "Prawy analog Y- (g\303\263ra)",
    "Prawy analog Y+ (d\303\263\305\202)",
    "Czu\305\202o\305\233\304\207 analoga",
+#ifdef ANDROID
+   "U\305\274yj klawiatury systemowej",
+#endif
    "Konfiguracja automatyczna",
    "Automatycznie w\305\202\304\205cz tryb \"Aktywna gra\"",
    "Wykryj",
@@ -5607,9 +5614,7 @@ static const struct
    "Przesuni\304\231cie odst\304\231pu tytu\305\202u w poziomie",
    "Pionowy wsp\303\263\305\202czynnik zanikania",
 #ifdef HAVE_MICROPHONE
-#ifdef RARCH_MOBILE
    "Ramki blokuj\304\205ce mikrofon",
-#endif
 #endif
 #ifdef HAVE_MICROPHONE
 #if !defined(RARCH_CONSOLE)
@@ -7296,6 +7301,12 @@ static const struct
    "\205czone, tylko u\305\274ytkownik 1 mo\305\274e kontrolowa\304\207 menu.",
    "Ignoruj ruchy dr\304\205\305\274ka analogowego poni\305\274ej warto\305\233ci strefy martwej.",
    "Dostosuj czu\305\202o\305\233\304\207 dr\304\205\305\274k\303\263w analogowych.",
+#ifdef ANDROID
+   "U\305\274ywaj klawiatury systemowej Androida do wpisywania tekstu w menu, zamiast klawiatury wbu"
+   "dowanej. Pozwala na wklejanie ze schowka i u\305\274ywanie menad\305\274er\303\263w hase\305\202"
+   ". Wymaga ekranu dotykowego lub innej metody wej\305\233ciowej, kt\303\263ra mo\305\274e by\304"
+   "\207 nawigowana za pomoc\304\205 gamepada.",
+#endif
    "Automatycznie konfiguruje kontrolery, kt\303\263re posiadaj\304\205 sw\303\263j profil, styl Plu"
    "g-and-Play.",
    "Zawsze w\305\202\304\205cz tryb \"Aktywno\305\233\304\207 gry\" podczas uruchamiania i wznawiani"
@@ -9516,6 +9527,9 @@ typedef char msg_hash_pl_blob_check[
        + 11u
        + 19u
 #endif
+#ifdef ANDROID
+       + 28u
+#endif
 #ifdef GEKKO
        + 12u
 #endif
@@ -9550,9 +9564,7 @@ typedef char msg_hash_pl_blob_check[
 #endif
 #endif
 #ifdef HAVE_MICROPHONE
-#ifdef RARCH_MOBILE
        + 26u
-#endif
 #endif
 #ifdef HAVE_MICROPHONE
 #if !defined(RARCH_CONSOLE)
@@ -9711,6 +9723,9 @@ typedef char msg_hash_pl_blob_check[
        + 18u
        + 18u
        + 19u
+#endif
+#ifdef ANDROID
+       + 269u
 #endif
 #ifdef GEKKO
        + 67u
@@ -10629,6 +10644,9 @@ static const uint32_t msg_hash_pl_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_ANALOG_RIGHT_Y_MINUS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_ANALOG_RIGHT_Y_PLUS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_ANALOG_SENSITIVITY,
+#ifdef ANDROID
+   (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_ANDROID_SYSTEM_KEYBOARD,
+#endif
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_AUTODETECT_ENABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_AUTO_GAME_FOCUS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_AUTO_GAME_FOCUS_DETECT,
@@ -11067,9 +11085,7 @@ static const uint32_t msg_hash_pl_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_XMB_TITLE_MARGIN_HORIZONTAL_OFFSET,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_XMB_VERTICAL_FADE_FACTOR,
 #ifdef HAVE_MICROPHONE
-#ifdef RARCH_MOBILE
    (uint32_t)MENU_ENUM_LABEL_VALUE_MICROPHONE_BLOCK_FRAMES,
-#endif
 #endif
 #ifdef HAVE_MICROPHONE
 #if !defined(RARCH_CONSOLE)
@@ -12558,6 +12574,9 @@ static const uint32_t msg_hash_pl_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_ALL_USERS_CONTROL_MENU,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_ANALOG_DEADZONE,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_ANALOG_SENSITIVITY,
+#ifdef ANDROID
+   (uint32_t)MENU_ENUM_SUBLABEL_INPUT_ANDROID_SYSTEM_KEYBOARD,
+#endif
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_AUTODETECT_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_AUTO_GAME_FOCUS,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_AUTO_MOUSE_GRAB,

@@ -755,6 +755,9 @@ static const struct
    char s_700d45a9[26];
    char s_2a30a561[26];
    char s_6ae6f953[24];
+#ifdef ANDROID
+   char s_b573f90c[50];
+#endif
    char s_e28bc72f[15];
    char s_0b2a8528[35];
    char s_ea5757a0[8];
@@ -1189,9 +1192,7 @@ static const struct
    char s_b201bb70[47];
    char s_b66840e9[31];
 #ifdef HAVE_MICROPHONE
-#ifdef RARCH_MOBILE
    char s_f0db2883[29];
-#endif
 #endif
 #ifdef HAVE_MICROPHONE
 #if !defined(RARCH_CONSOLE)
@@ -2355,6 +2356,7 @@ static const struct
    char s_f4b6d13e[35];
    char s_25e89959[4];
    char s_a7468d68[32];
+   char s_b1d6fea6[9];
    char s_aa0659db[18];
    char s_49757b91[18];
    char s_660eb9c4[18];
@@ -2407,6 +2409,8 @@ static const struct
    char s_daf6d7e2[59];
    char s_042502c4[68];
    char s_90ae9a9f[115];
+   char s_81b79d5b_0[500];
+   char s_81b79d5b_1[9];
    char s_c9235dab[60];
    char s_330be970_0[500];
    char s_330be970_1[43];
@@ -2674,6 +2678,9 @@ static const struct
    char s_5c8a1d63[106];
    char s_744c0f80[85];
    char s_2aa39081[54];
+#ifdef ANDROID
+   char s_50f43cfa[285];
+#endif
    char s_e85b309d[89];
    char s_cd94bb16[212];
    char s_a17a67e1[59];
@@ -3469,6 +3476,7 @@ static const struct
    char s_698d5124[109];
    char s_7e43d750[256];
    char s_87ca7bc6[150];
+   char s_cfa51e8c[302];
    char s_b62c2f7e[323];
    char s_456fcbc9[376];
    char s_82fab47a[39];
@@ -5105,6 +5113,9 @@ static const struct
    "Anal\303\262gic dret Y- (amunt)",
    "Anal\303\262gic dret Y+ (avall)",
    "Sensibilitat anal\303\262gica",
+#ifdef ANDROID
+   "Fes servir la configuraci\303\263 de teclat del sistema",
+#endif
    "Auto-configura",
    "Auto-activa el mode 'Focus de joc'",
    "Detecta",
@@ -5539,9 +5550,7 @@ static const struct
    "Despla\303\247ament horitzontal del marge del t\303\255tol",
    "Factor d\342\200\231esva\303\257ment vertical",
 #ifdef HAVE_MICROPHONE
-#ifdef RARCH_MOBILE
    "Marcs de blocs del micr\303\262fon",
-#endif
 #endif
 #ifdef HAVE_MICROPHONE
 #if !defined(RARCH_CONSOLE)
@@ -6721,6 +6730,7 @@ static const struct
    "Disposici\303\263 vertical de miniatures",
    "S\303\255",
    "Clau de transmissi\303\263 de Youtube",
+   "Mode HDR",
    "Shader predefinit",
    "Shader predefinit",
    "Shader predefinit",
@@ -6796,6 +6806,13 @@ static const struct
    "\240pid.",
    "Accelera l'\303\240udio a l'emprar l'avan\303\247ament r\303\240pid. Defugir\303\241 sorolls en "
    "l'\303\240udio per\303\262 canviant la seva tonalitat.",
+   "Fes servir un valor enter en comptes de decimal quan un nucli produeix \303\240udio a 16 bits. P"
+   "rodueix una sortida d'\303\240udio id\303\250ntica al bit en totes les plataformes. L'objectiu "
+   "\303\251s la reproducci\303\263 fidedigna, no la velocitat: si el processador t\303\251 una FPU "
+   "de vectors, el mostrejador \303\251s m\303\251s lent, perqu\303\250 es procesa amb nombres decim"
+   "als. Aquesta opci\303\263 no afecta a nuclis els quals la sortida d'\303\240udio sigui amb valor"
+   "s decimals i far\303\240 servir la ruta de valors decimals quan s'activi un filtre DSP incomp",
+   "latible.",
    "Els filtres d'\303\240udio DSP s'emmagatzemen en aquesta carpeta.",
    "El format de mostreig que sol\302\267licitar\303\240 el controlador d'\303\240udio del dispositi"
    "u de sortida. 'Decimal' sol\302\267licita un decimal de 32 bits, 'Int16' per enters de 16 bits. "
@@ -7176,6 +7193,12 @@ static const struct
    "t controlar el men\303\272.",
    "Ignora els moviments de la palanca anal\303\262gica per devall del valor de la zona morta.",
    "Ajusta la sensibilitat de les palanques anal\303\262giques.",
+#ifdef ANDROID
+   "Fes servir la configuraci\303\263 de text d'Android per les entrades de text en comptes del tecl"
+   "at en pantalla. Permet activar copiar/enganxar des del bloc de notes i els gestors de contraseny"
+   "es. Cal tenir una pantalla t\303\240ctil o un m\303\250tode d'entrada que es pugui navegar amb u"
+   "n controlador.",
+#endif
    "Configura autom\303\240ticament els controladors que tenen un perfil, a l'estil Plug-and-Play.",
    "Activa sempre el mode 'Focus de joc' en iniciar i reprendre el contingut. Si s'estableix a 'Dete"
    "cta', l'opci\303\263 s'activar\303\240 si el nucli actual implementa la funcionalitat de crida d"
@@ -8429,6 +8452,10 @@ static const struct
    "ra.",
    "Utilitza el rang complet de color del monitor per crear-ne un de m\303\251s brillant i saturat. "
    "Per colors m\303\251s fidels al joc original, selecciona PREC\303\215S.",
+   "La brillantor m\303\240xima que pot oferir el teu monitor, en nits. Estableix el marge per poten"
+   "ciar la brillantor per aquells nuclis que poden renderitzar en HDR. Comprova les caracter\303"
+   "\255stiques del teu monitor i estableix 1000 en cas de dubte. Un valor m\303\251s alt pot sobres"
+   "aturar els detalls m\303\251s brillants.",
    "Selecciona el nivell de brillantor de HDR en nits. Es fa servir en combinaci\303\263 de la confi"
    "guraci\303\263 de brillantor del teu monitor. Pots comen\303\247ar per seleccionar un valor de 8"
    "0 i posar la brillantor del teu monitor al m\303\240xim. O tamb\303\251 pots posar el valor m"
@@ -9232,7 +9259,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_ca_blob_check[
-      (sizeof(msg_hash_ca_blob) == (199189u
+      (sizeof(msg_hash_ca_blob) == (200009u
 #ifdef ANDROID
        + 281u
 #endif
@@ -9282,6 +9309,9 @@ typedef char msg_hash_ca_blob_check[
        + 18u
        + 21u
 #endif
+#ifdef ANDROID
+       + 50u
+#endif
 #ifdef GEKKO
        + 19u
 #endif
@@ -9316,9 +9346,7 @@ typedef char msg_hash_ca_blob_check[
 #endif
 #endif
 #ifdef HAVE_MICROPHONE
-#ifdef RARCH_MOBILE
        + 29u
-#endif
 #endif
 #ifdef HAVE_MICROPHONE
 #if !defined(RARCH_CONSOLE)
@@ -9471,6 +9499,9 @@ typedef char msg_hash_ca_blob_check[
        + 23u
        + 23u
        + 21u
+#endif
+#ifdef ANDROID
+       + 285u
 #endif
 #ifdef GEKKO
        + 74u
@@ -10384,6 +10415,9 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_ANALOG_RIGHT_Y_MINUS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_ANALOG_RIGHT_Y_PLUS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_ANALOG_SENSITIVITY,
+#ifdef ANDROID
+   (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_ANDROID_SYSTEM_KEYBOARD,
+#endif
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_AUTODETECT_ENABLE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_AUTO_GAME_FOCUS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_INPUT_AUTO_GAME_FOCUS_DETECT,
@@ -10818,9 +10852,7 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_XMB_TITLE_MARGIN_HORIZONTAL_OFFSET,
    (uint32_t)MENU_ENUM_LABEL_VALUE_MENU_XMB_VERTICAL_FADE_FACTOR,
 #ifdef HAVE_MICROPHONE
-#ifdef RARCH_MOBILE
    (uint32_t)MENU_ENUM_LABEL_VALUE_MICROPHONE_BLOCK_FRAMES,
-#endif
 #endif
 #ifdef HAVE_MICROPHONE
 #if !defined(RARCH_CONSOLE)
@@ -11983,6 +12015,7 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_XMB_VERTICAL_THUMBNAILS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_YES,
    (uint32_t)MENU_ENUM_LABEL_VALUE_YOUTUBE_STREAM_KEY,
+   (uint32_t)MENU_ENUM_LABEL_VIDEO_HDR_ENABLE,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_APPEND_TWO,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_PREPEND_TWO,
    (uint32_t)MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_TWO,
@@ -12035,6 +12068,7 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_ENABLE_MENU,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FASTFORWARD_MUTE,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FASTFORWARD_SPEEDUP,
+   (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FASTPATH_S16,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FILTER_DIR,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_FORMAT_NEGOTIATION,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_LATENCY,
@@ -12301,6 +12335,9 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_ALL_USERS_CONTROL_MENU,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_ANALOG_DEADZONE,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_ANALOG_SENSITIVITY,
+#ifdef ANDROID
+   (uint32_t)MENU_ENUM_SUBLABEL_INPUT_ANDROID_SYSTEM_KEYBOARD,
+#endif
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_AUTODETECT_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_AUTO_GAME_FOCUS,
    (uint32_t)MENU_ENUM_SUBLABEL_INPUT_AUTO_MOUSE_GRAB,
@@ -13096,6 +13133,7 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HARD_SYNC_FRAMES,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_EXPAND_GAMUT,
+   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_MAX_NITS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_PAPER_WHITE_NITS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SCANLINES,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_HDR_SETTINGS,

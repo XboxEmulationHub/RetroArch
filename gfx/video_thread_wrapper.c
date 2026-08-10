@@ -35,6 +35,34 @@
 #include "../runloop.h"
 #include "../verbosity.h"
 
+#include <retro_assert.h>
+
+/* cond_cmd multiplexes two predicates over wake-one signals, which is
+ * only correct while at most one thread waits on it. See the note on
+ * cond_cmd in video_thread_wrapper.h. Every wait on cond_cmd must be
+ * bracketed by these; thr->lock is held across the wait, so the counter
+ * needs no atomics. */
+#ifdef DEBUG
+#define VIDEO_THREAD_CMD_WAIT_ENTER(thr) \
+   do { \
+      uintptr_t self_ = sthread_get_current_thread_id(); \
+      retro_assert(   (thr)->cond_cmd_waiters == 0 \
+                   || (thr)->cond_cmd_waiter  == self_); \
+      (thr)->cond_cmd_waiter = self_; \
+      (thr)->cond_cmd_waiters++; \
+   } while (0)
+#else
+/* Release builds pay nothing; the fields exist unconditionally only so
+ * that the struct layout does not vary with the build type. */
+#define VIDEO_THREAD_CMD_WAIT_ENTER(thr) do { } while (0)
+#endif
+#ifdef DEBUG
+#define VIDEO_THREAD_CMD_WAIT_LEAVE(thr) \
+   do { (thr)->cond_cmd_waiters--; } while (0)
+#else
+#define VIDEO_THREAD_CMD_WAIT_LEAVE(thr) do { } while (0)
+#endif
+
 static void *video_thread_init_never_call(const video_info_t *video,
       input_driver_t **input, void **input_data)
 {
@@ -127,9 +155,11 @@ static void video_thread_wait_reply(thread_video_t *thr, thread_packet_t *pkt)
 {
    slock_lock(thr->lock);
 
+   VIDEO_THREAD_CMD_WAIT_ENTER(thr);
    while (pkt->type != thr->reply_cmd)
       if (!video_thread_pump_wait(thr->cond_cmd, thr->lock))
          scond_wait(thr->cond_cmd, thr->lock);
+   VIDEO_THREAD_CMD_WAIT_LEAVE(thr);
 
    *pkt               = thr->cmd_data;
    thr->cmd_data.type = CMD_VIDEO_NONE;
@@ -201,6 +231,15 @@ static bool video_thread_handle_packet(
                   thr->input, thr->input_data);
             if (thr->driver_data && thr->driver->viewport_info)
                thr->driver->viewport_info(thr->driver_data, &thr->vp);
+            /* Drivers that have handed the OSD font lifecycle up get
+             * it created here rather than in video_driver.c, because
+             * this runs on the video thread that owns the graphics
+             * context. Unmigrated drivers still do it themselves,
+             * also from here, inside their own init(). */
+            if (     thr->driver_data
+                  && thr->driver->font_backend)
+               font_driver_init_osd(thr->driver_data, &thr->info,
+                     true, thr->driver->font_backend);
          }
          else
             thr->driver_data = NULL;
@@ -209,6 +248,11 @@ static bool video_thread_handle_packet(
          break;
 
       case CMD_FREE:
+         /* Before the driver goes: the font owns GPU objects created
+          * against it, and this is the thread they belong to. */
+         if (     thr->driver
+               && thr->driver->font_backend)
+            font_driver_free_osd_for(thr->driver_data);
          if (thr->driver_data && thr->driver && thr->driver->free)
             thr->driver->free(thr->driver_data);
          thr->driver_data = NULL;
@@ -385,7 +429,7 @@ static bool video_thread_handle_packet(
                pkt.data.font_init.video_data,
                pkt.data.font_init.font_path,
                pkt.data.font_init.font_size,
-               pkt.data.font_init.api,
+               pkt.data.font_init.backend,
                pkt.data.font_init.is_threaded
             );
          video_thread_reply(thr, &pkt);
@@ -690,6 +734,7 @@ static bool video_thread_frame(void *data, const void *frame_,
       retro_time_t target            = thr->last_time + target_frame_time;
 
       /* Ideally, use absolute time, but that is only a good idea on POSIX. */
+      VIDEO_THREAD_CMD_WAIT_ENTER(thr);
       while (thr->frame.updated)
       {
          retro_time_t current = cpu_features_get_time_usec();
@@ -701,6 +746,7 @@ static bool video_thread_frame(void *data, const void *frame_,
          if (!scond_wait_timeout(thr->cond_cmd, thr->lock, delta))
             break;
       }
+      VIDEO_THREAD_CMD_WAIT_LEAVE(thr);
    }
 
    /* Drop frame if updated flag is still set, as thread is
@@ -749,11 +795,13 @@ static bool video_thread_frame(void *data, const void *frame_,
           * frame-pacing wait above needs no such treatment: it breaks after
           * at most one frame period and the main runloop then drains common
           * modes. */
+         VIDEO_THREAD_CMD_WAIT_ENTER(thr);
          do
          {
             if (!video_thread_pump_wait(thr->cond_cmd, thr->lock))
                scond_wait(thr->cond_cmd, thr->lock);
          } while (thr->frame.updated);
+         VIDEO_THREAD_CMD_WAIT_LEAVE(thr);
       }
 #endif
       thr->hit_count++;
@@ -1579,7 +1627,7 @@ bool video_init_thread(const video_driver_t **out_driver, void **out_data,
 
 bool video_thread_font_init(const void **font_driver, void **font_handle,
       void *data, const char *font_path, float video_font_size,
-      enum font_driver_render_api api, custom_font_command_method_t func,
+      const font_renderer_t *backend, custom_font_command_method_t func,
       bool is_threaded)
 {
    thread_packet_t pkt;
@@ -1607,7 +1655,7 @@ bool video_thread_font_init(const void **font_driver, void **font_handle,
    pkt.data.font_init.font_path   = font_path;
    pkt.data.font_init.font_size   = video_font_size;
    pkt.data.font_init.is_threaded = is_threaded;
-   pkt.data.font_init.api         = api;
+   pkt.data.font_init.backend         = backend;
 
    video_thread_send_and_wait_user_to_thread(thr, &pkt);
 
@@ -1686,7 +1734,9 @@ void video_thread_wait_idle(void)
       return;
 
    slock_lock(thr->lock);
+   VIDEO_THREAD_CMD_WAIT_ENTER(thr);
    while (thr->frame.updated)
       scond_wait(thr->cond_cmd, thr->lock);
+   VIDEO_THREAD_CMD_WAIT_LEAVE(thr);
    slock_unlock(thr->lock);
 }

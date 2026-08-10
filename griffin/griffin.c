@@ -412,6 +412,12 @@ VIDEO SHADERS
 #include "../gfx/drivers_shader/glslang_util.c"
 #endif
 
+/* Must mirror the guard on shader_gl3.cpp in griffin_cpp.cpp exactly:
+ * that is the only consumer of spirv_opengl_lower(). */
+#if defined(HAVE_OPENGL_CORE) && defined(HAVE_SLANG)
+#include "../gfx/drivers_shader/spirv_opengl.c"
+#endif
+
 #ifdef HAVE_CG
 #ifdef HAVE_OPENGL
 #include "../gfx/drivers_shader/shader_gl_cg.c"
@@ -484,6 +490,7 @@ VIDEO IMAGE
 
 #ifdef HAVE_RMP4
 #include "../libretro-common/formats/h264/rh264.c"
+#include "../libretro-common/formats/h265/rh265.c"
 #include "../libretro-common/formats/mp4/rmp4.c"
 #include "../libretro-common/formats/mp4/rmp4_video.c"
 #include "../libretro-common/formats/mp4/rmp4_audio.c"
@@ -491,6 +498,15 @@ VIDEO IMAGE
 
 #ifdef HAVE_RVP9
 #include "../libretro-common/formats/vp9/rvp9.c"
+#endif
+
+#ifdef HAVE_RMPEG1
+#include "../libretro-common/formats/mpeg1/rmpeg1_ps.c"
+#include "../libretro-common/formats/mpeg1/rmpeg1_video.c"
+#endif
+#if defined(HAVE_RVP9) || defined(HAVE_RMP4)
+/* Shared 10-bit / HDR I420->RGB blits: used by the webm/mp4 rvp9 paths
+ * and by rmp4_video's H.265 Main10 arm, so RMP4 alone needs them too. */
 #include "../libretro-common/formats/image/image_hdr_blit.c"
 #endif
 #ifdef HAVE_RDDS
@@ -649,18 +665,14 @@ VIDEO DRIVER
 FONTS
 ============================================================ */
 
-#include "../gfx/drivers_font_renderer/bitmapfont.c"
+#include "../gfx/bitmapfont.c"
 
 #ifdef HAVE_LANGEXTRA
-#include "../gfx/drivers_font_renderer/bitmapfont_10x10.c"
-#include "../gfx/drivers_font_renderer/bitmapfont_6x10.c"
 #endif
 
 #include "../gfx/font_driver.c"
 
-#if defined(HAVE_STB_FONT)
 #include "../gfx/drivers_font_renderer/stb.c"
-#endif
 
 #if defined(HAVE_FREETYPE)
 #include "../gfx/drivers_font_renderer/freetype.c"
@@ -1475,6 +1487,7 @@ MENU
 #endif
 
 #ifdef HAVE_RGUI
+#include "../menu/drivers/rgui_bitmapfont.c"
 #include "../menu/drivers/rgui.c"
 #endif
 

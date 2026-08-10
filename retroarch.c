@@ -385,6 +385,19 @@ void retro_input_poll_null(void) { }
 #ifdef HAVE_SMBCLIENT
 static struct smb_settings smb_global_cfg;
 
+/* Publishes the SMB client settings to the VFS SMB backend.
+ *
+ * Called once early in rarch_main() so the backend has a registered
+ * configuration before anything can touch an smb:// path, and again at
+ * the end of every successful config_load_file(). The second call is
+ * what makes the numeric fields correct: the string fields below alias
+ * settings->arrays and therefore follow every config load on their
+ * own, but timeout, num_contexts and auth_mode are copied by value and
+ * would otherwise keep whatever the settings struct held at the early
+ * call, which is zero - config loading happens later, inside
+ * retroarch_main_init(). The SMB backend reads the configuration
+ * lazily on first smb:// access, which in every startup path is after
+ * the configuration has been loaded and re-published. */
 void retroarch_smb_init(void)
 {
    settings_t *settings = config_get_ptr();
@@ -6514,6 +6527,10 @@ int rarch_main(int argc, char *argv[], void *data)
 
    runloop_msg_queue_init();
 
+#ifdef HAVE_SMBCLIENT
+   retroarch_smb_init();
+#endif
+
    if (frontend_state_get_ptr()->current_frontend_ctx)
    {
       content_ctx_info_t info;
@@ -6534,10 +6551,6 @@ int rarch_main(int argc, char *argv[], void *data)
    }
 
    settings = config_get_ptr();
-
-#ifdef HAVE_SMBCLIENT
-   retroarch_smb_init();
-#endif
 
    ui_companion_driver_init_first(
 #ifdef HAVE_QT
@@ -6964,9 +6977,7 @@ static void retroarch_print_features(void)
 #ifdef HAVE_FREETYPE
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_FREETYPE,        "FreeType",        "TTF font rendering driver");
 #endif
-#ifdef HAVE_STB_FONT
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_STBFONT,         "STB TrueType",    "TTF font rendering driver");
-#endif
 #ifdef HAVE_V4L2
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_V4L2,            "Video4Linux2",    "Camera driver");
 #endif

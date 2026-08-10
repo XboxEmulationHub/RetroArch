@@ -209,6 +209,30 @@
 #define DT_POOL_SLOT    (1024 * 1024)
 #define DT_POOL_SLOTS   4
 
+/* Some Darwin deployment targets have no thread-local storage: clang
+ * rejects __thread outright below macOS 10.7, iOS 9 on 32-bit devices
+ * (iOS 8 on 64-bit), iOS 10 in the 32-bit simulator, and watchOS 2
+ * (clang/lib/Basic/Targets/OSTargets.h).  This is a property of the
+ * -m*-version-min value, not of the architecture: the libretro ios9
+ * platform trips it because it builds armv7 with
+ * -miphoneos-version-min=8.0, while the same armv7 with a 9.0 minimum
+ * compiles __thread fine.  clang's __has_feature(tls) reports exactly
+ * this predicate, so ask it; without TLS the pool would be
+ * unsynchronised shared state, which this module promises not to
+ * have, so it is compiled out instead -- every load then falls
+ * through to a fresh reservation, the same behaviour as a pool miss.
+ * (GCC also answers __has_feature(tls), unconditionally true from
+ * GCC 14, which is correct there: GCC lowers __thread through emutls
+ * on targets without native TLS.) */
+#if defined(__has_feature)
+#if !__has_feature(tls)
+#define DT_NO_POOL
+#endif
+#endif
+#endif
+
+#if !defined(DT_NO_POOL)
+
 #if !defined(HAVE_THREADS)
 #define DT_TLS
 #elif defined(_MSC_VER)
@@ -570,6 +594,46 @@ bool data_transfer_window_extend(data_transfer_t *dt, size_t hi)
    }
    dt->whi = hi;
    return true;
+}
+
+bool data_transfer_window_ensure(data_transfer_t *dt, size_t lo,
+      size_t hi)
+{
+   if (!dt || !dt->window || dt->failed)
+      return false;
+   if (hi > dt->len)
+      hi = dt->len;
+   if (lo >= hi)
+      return true;
+   if (!dt->map_len)
+      return true;               /* fallback: whole file resident */
+   if (!data_transfer_wcommit(dt, lo, hi))
+   {
+      data_transfer_wfail(dt);
+      return false;
+   }
+   if (!data_transfer_read_at(dt, lo, dt->map + lo, hi - lo))
+   {
+      data_transfer_wfail(dt);
+      return false;
+   }
+   return true;
+}
+
+void data_transfer_window_rebase(data_transfer_t *dt, size_t pos)
+{
+   size_t p;
+   if (!dt || !dt->window || !dt->map_len || dt->failed)
+      return;
+   if (pos > dt->len)
+      pos = dt->len;
+   p = (pos / dt->page) * dt->page;
+   if (p <= dt->whi)
+      return;                    /* frontier already covers it */
+   dt->wlo    = p;
+   dt->whi    = p;
+   dt->wfreed = p;
+   return;
 }
 
 void data_transfer_window_advance(data_transfer_t *dt, size_t lo)

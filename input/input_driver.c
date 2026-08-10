@@ -2344,7 +2344,11 @@ static int16_t input_state_internal(
    float input_analog_deadzone             = settings->floats.input_analog_deadzone;
    float input_analog_sensitivity          = settings->floats.input_analog_sensitivity;
    unsigned *input_remap_port_map          = settings->uints.input_remap_port_map[port];
-   uint8_t max_users                       = settings->uints.input_max_users;
+   /* Clamped: the arrays walked below are [MAX_USERS] and the setting
+    * comes from the config file. */
+   uint8_t max_users                       = (settings->uints.input_max_users
+         > MAX_USERS) ? MAX_USERS
+         : (uint8_t)settings->uints.input_max_users;
    const input_device_driver_t *joypad     = input_st->primary_joypad;
 #ifdef HAVE_MFI
    const input_device_driver_t *sec_joypad = input_st->secondary_joypad;
@@ -2381,6 +2385,8 @@ static int16_t input_state_internal(
       uint8_t input_analog_dpad_mode = settings->uints.input_analog_dpad_mode[mapped_port];
 
       joypad_info.joy_idx            = settings->uints.input_joypad_index[mapped_port];
+      if (joypad_info.joy_idx >= MAX_USERS)
+         joypad_info.joy_idx         = 0;
       joypad_info.auto_binds         = input_autoconf_binds[joypad_info.joy_idx];
 
       /* Skip disabled input devices */
@@ -5262,19 +5268,8 @@ bool input_core_set_sensor_state(unsigned port,
          break;
    }
 
-   /* For accel/gyro, the poll loop reconciles core/shader/frontend
-    * state and manages driver enable/disable. For other sensor types,
-    * pass through to the driver directly. */
-   switch (action)
-   {
-      case RETRO_SENSOR_ACCELEROMETER_ENABLE:
-      case RETRO_SENSOR_ACCELEROMETER_DISABLE:
-      case RETRO_SENSOR_GYROSCOPE_ENABLE:
-      case RETRO_SENSOR_GYROSCOPE_DISABLE:
-         return true;
-      default:
-         return input_set_sensor_state(port, action, rate);
-   }
+   /* pass through to the driver directly. */
+   return input_set_sensor_state(port, action, rate);
 }
 
 float input_core_get_sensor_state(unsigned port, unsigned id)
@@ -7142,7 +7137,11 @@ void input_driver_poll(void)
 #endif
    bool input_remap_binds_enable  = settings->bools.input_remap_binds_enable;
    float input_axis_threshold     = settings->floats.input_axis_threshold;
-   uint8_t max_users              = (uint8_t)settings->uints.input_max_users;
+   /* Clamped: the arrays walked below are [MAX_USERS] and the setting
+    * comes from the config file. */
+   uint8_t max_users              = (settings->uints.input_max_users
+         > MAX_USERS) ? MAX_USERS
+         : (uint8_t)settings->uints.input_max_users;
 
    if (joypad && joypad->poll)
       joypad->poll();
@@ -7312,6 +7311,8 @@ void input_driver_poll(void)
          /* --- joypad_info init (shared by turbo/hold and remap) --- */
          joypad_info[i].axis_threshold        = input_axis_threshold;
          joypad_info[i].joy_idx               = settings->uints.input_joypad_index[i];
+         if (joypad_info[i].joy_idx >= MAX_USERS)
+            joypad_info[i].joy_idx            = 0;
          joypad_info[i].auto_binds            = input_autoconf_binds[joypad_info[i].joy_idx];
 
          /* --- Turbo button state --- */
@@ -8028,7 +8029,11 @@ void input_driver_collect_system_input(input_driver_state_t *input_st,
       *sec_joypad                      = NULL;
 #endif
    unsigned block_delay                = settings->uints.input_hotkey_block_delay;
-   uint8_t max_users                   = settings->uints.input_max_users;
+   /* Both of the arrays indexed below are [MAX_USERS]; the setting is
+    * read from the config file and is not guaranteed to respect that. */
+   uint8_t max_users                   = (settings->uints.input_max_users
+         > MAX_USERS) ? MAX_USERS
+         : (uint8_t)settings->uints.input_max_users;
    uint8_t port                        = 0;
    uint8_t hotkey_port                 = 0;
 #ifdef HAVE_MENU
@@ -8048,6 +8053,13 @@ void input_driver_collect_system_input(input_driver_state_t *input_st,
       const struct retro_keybind *binds_auto = NULL;
 
       joypad_info.joy_idx                    = settings->uints.input_joypad_index[port];
+      /* input_autoconf_binds is [MAX_USERS] and joy_idx comes from the
+       * config file, so it can point past the end - the same bound the
+       * rumble and autoconfig paths already apply. Fall back to the
+       * first slot rather than skipping the port, so a bad index
+       * degrades to the wrong binds instead of no input at all. */
+      if (joypad_info.joy_idx >= MAX_USERS)
+         joypad_info.joy_idx                 = 0;
       joypad_info.auto_binds                 = input_autoconf_binds[joypad_info.joy_idx];
       binds_auto                             = &input_autoconf_binds[joypad_info.joy_idx][RARCH_ENABLE_HOTKEY];
 
@@ -8074,7 +8086,8 @@ void input_driver_collect_system_input(input_driver_state_t *input_st,
                      &joypad_info,
                      s,
                      a,
-                     (*input_st->libretro_input_binds[port]));
+                     (input_st->libretro_input_binds[port]
+                        ? *input_st->libretro_input_binds[port] : NULL));
 
                if (ret)
                {

@@ -4204,7 +4204,6 @@ bool menu_entries_append(
       rarch_setting_t *setting)
 {
    menu_ctx_list_t list_info;
-   size_t i;
    size_t idx, lbl_len;
    const char *menu_path       = NULL;
    menu_file_list_cbs_t *cbs   = NULL;
@@ -4308,7 +4307,6 @@ void menu_entries_prepend(file_list_t *list,
 {
    size_t lbl_len;
    menu_ctx_list_t list_info;
-   size_t i;
    size_t idx                  = 0;
    const char *menu_path       = NULL;
    menu_file_list_cbs_t *cbs   = NULL;
@@ -4528,6 +4526,11 @@ void menu_input_dialog_end(void)
    /* Dismiss iOS/tvOS native keyboard if it's currently open */
    if (ios_keyboard_active())
       ios_keyboard_end();
+#endif
+#ifdef ANDROID
+   /* Dismiss the Android system keyboard if it's currently open */
+   if (android_keyboard_active())
+      android_keyboard_end();
 #endif
 }
 
@@ -5081,6 +5084,27 @@ MENU_NOINLINE static bool menu_input_key_bind_iterate(
    return false;
 }
 
+
+/* True when a platform-native text-entry panel currently owns the
+ * keyboard line.  The built-in on-screen keyboard must not process
+ * input in that case: both paths write into input_st->keyboard_line,
+ * and input_event_osk_append() calls input_keyboard_line_append(),
+ * which can realloc the buffer out from under state the native path
+ * is holding.  Steam's OSK already had this guard open-coded at the
+ * two call sites; the iOS native keyboard needs the same. */
+static bool menu_input_native_kb_active(void)
+{
+#ifdef HAVE_MIST
+   if (steam_has_osk_open())
+      return true;
+#endif
+#ifdef HAVE_COCOATOUCH
+   if (ios_keyboard_active())
+      return true;
+#endif
+   return false;
+}
+
 bool menu_input_dialog_get_display_kb(void)
 {
    struct menu_state *menu_st     = &menu_driver_state;
@@ -5534,11 +5558,11 @@ unsigned menu_event(
 
    if (display_kb)
    {
-#ifdef HAVE_MIST
-      /* Do not process input events if the Steam OSK is open */
-      if (!steam_has_osk_open())
+      /* Menu navigation stays suppressed for the whole OSK session
+       * (the trigger clear below), but the built-in keyboard only
+       * consumes input when no native panel owns the line. */
+      if (!menu_input_native_kb_active())
       {
-#endif
       bool show_osk_symbols = input_event_osk_show_symbol_pages(menu_st->driver_data);
 
       input_event_osk_iterate(input_st->osk_grid, input_st->osk_idx);
@@ -5634,9 +5658,7 @@ unsigned menu_event(
             || BIT256_GET_PTR(p_trigger_input, RETRO_DEVICE_ID_JOYPAD_X))
          input_keyboard_event(true, '\n', '\n', 0, RETRO_DEVICE_KEYBOARD);
 
-#ifdef HAVE_MIST
       }
-#endif
 
       BIT256_CLEAR_ALL_PTR(p_trigger_input);
    }
@@ -6226,15 +6248,14 @@ MENU_NOINLINE static int menu_input_post_iterate(
          /* On screen keyboard overrides normal menu input... */
          if (osk_active)
          {
-#ifdef HAVE_MIST
-         /* Disable OSK pointer input if the Steam OSK is used */
-         if (!steam_has_osk_open())
-         {
-#endif
             /* If pointer has been 'dragged', then it counts as
              * a miss. Only register 'release' event if pointer
-             * has remained stationary */
-            if (!(menu_input->pointer.flags & MENU_INP_PTR_FLG_DRAGGED))
+             * has remained stationary.  A native panel owning the
+             * line swallows the gesture outright - the enclosing
+             * branch still runs so it does not fall through to
+             * normal menu input. */
+            if (     !menu_input_native_kb_active()
+                  && !(menu_input->pointer.flags & MENU_INP_PTR_FLG_DRAGGED))
             {
                menu_driver_ctl(RARCH_MENU_CTL_OSK_PTR_AT_POS, &point);
                if (point.retcode > -1)
@@ -6252,9 +6273,6 @@ MENU_NOINLINE static int menu_input_post_iterate(
                         strlen(input_st->osk_grid[input_st->osk_ptr]));
                }
             }
-#ifdef HAVE_MIST
-            }
-#endif
          }
          /* Message boxes override normal menu input...
           * > If a message box is shown, any kind of pointer
@@ -8240,6 +8258,17 @@ bool menu_input_dialog_start_search(void)
          menu_input_search_cb,
          menu);
 #endif
+#ifdef ANDROID
+   /* Use the Android system keyboard instead of the custom on-screen one */
+   if (config_get_ptr()->bools.input_android_system_keyboard)
+      android_keyboard_start(
+            (char **)menu_st->input_dialog_keyboard_buffer,
+            &input_st->keyboard_line.size,
+            &input_st->keyboard_line.ptr,
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SEARCH),
+            menu_input_search_cb,
+            menu);
+#endif
 
    /* While reading keyboard line input, we have to block all hotkeys. */
    input_st->flags                        |= INP_FLAG_KB_MAPPING_BLOCKED;
@@ -8265,6 +8294,11 @@ bool menu_input_dialog_start(menu_input_ctx_line_t *line)
    /* Prevent reopening keyboard if it's already active
     * This can happen when return key events trigger menu OK actions */
    if (menu_st->flags & MENU_ST_FLAG_INP_DLG_KB_DISPLAY)
+      return false;
+#endif
+#ifdef ANDROID
+   if (     config_get_ptr()->bools.input_android_system_keyboard
+         && (menu_st->flags & MENU_ST_FLAG_INP_DLG_KB_DISPLAY))
       return false;
 #endif
 
@@ -8312,6 +8346,17 @@ bool menu_input_dialog_start(menu_input_ctx_line_t *line)
          line->label,
          line->cb,
          menu);
+#endif
+#ifdef ANDROID
+   /* Use the Android system keyboard instead of the custom on-screen one */
+   if (config_get_ptr()->bools.input_android_system_keyboard)
+      android_keyboard_start(
+            (char **)menu_st->input_dialog_keyboard_buffer,
+            &input_st->keyboard_line.size,
+            &input_st->keyboard_line.ptr,
+            line->label,
+            line->cb,
+            menu);
 #endif
 
    /* While reading keyboard line input, we have to block all hotkeys. */

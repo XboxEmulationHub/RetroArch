@@ -167,7 +167,10 @@ typedef struct
 
 static void mem_stats_proc_meminfo(uint64_t *total, uint64_t *avail)
 {
-   char    buf[2048];
+   /* Heap-held: /proc parsing is Linux-only today, but this is a
+    * libretro-common entry point and 2 KiB of stack is the whole
+    * budget on the smallest targets the tree serves. */
+   char   *buf;
    char   *line;
    ssize_t got;
    int     need = 6;
@@ -178,10 +181,18 @@ static void mem_stats_proc_meminfo(uint64_t *total, uint64_t *avail)
 
    if (fd < 0)
       return;
-   got = read(fd, buf, sizeof(buf) - 1);
+   if (!(buf = (char*)malloc(2048)))
+   {
+      close(fd);
+      return;
+   }
+   got = read(fd, buf, 2048 - 1);
    close(fd);
    if (got <= 0)
+   {
+      free(buf);
       return;
+   }
    buf[got] = '\0';
 
    line = buf;
@@ -226,11 +237,11 @@ static void mem_stats_proc_meminfo(uint64_t *total, uint64_t *avail)
    if (total)
       *total = (uint64_t)mem_total * 1024;
    if (!avail)
-      return;
+      { free(buf); return; }
    if (have_avail)
    {
       *avail = (uint64_t)mem_available * 1024;
-      return;
+      { free(buf); return; }
    }
    /* Subtracting shmem from the sum on unsigned longs wraps to an
     * enormous figure if it ever exceeds it, and an enormous figure here
@@ -240,7 +251,9 @@ static void mem_stats_proc_meminfo(uint64_t *total, uint64_t *avail)
       unsigned long sum = mem_free + buffers + cached;
       *avail = (uint64_t)((sum > shmem) ? (sum - shmem) : 0) * 1024;
    }
+   free(buf);
 }
+
 #endif
 
 uint64_t mem_stats_total(void)
@@ -480,12 +493,17 @@ uint64_t mem_stats_free(void)
       vm_statistics_data_t   vm_stat;
       mach_msg_type_number_t count     = HOST_VM_INFO_COUNT;
       mach_port_t            host      = mach_host_self();
+      uint64_t               avail     = 0;
       if (     host_page_size(host, &page_size) == KERN_SUCCESS
             && host_statistics(host, HOST_VM_INFO, (host_info_t)&vm_stat,
                   &count) == KERN_SUCCESS)
-         return ((uint64_t)vm_stat.free_count
+         avail = ((uint64_t)vm_stat.free_count
                + (uint64_t)vm_stat.inactive_count) * (uint64_t)page_size;
-      return 0;
+      /* mach_host_self() hands back a send right the caller owns. Both
+       * exits used to return without releasing it, leaking a user
+       * reference on the host port every time the memory readout ran. */
+      mach_port_deallocate(mach_task_self(), host);
+      return avail;
    }
 #else /* the iOS family */
    {

@@ -542,6 +542,7 @@ typedef struct settings
       bool video_windowed_fullscreen;
       bool video_vsync;
       bool video_adaptive_vsync;
+      bool video_gl_direct_spirv;
       bool video_scanline_sync;
       bool video_hard_sync;
       bool video_waitable_swapchains;
@@ -623,6 +624,7 @@ typedef struct settings
       bool input_remap_sort_by_controller_enable;
       bool input_autodetect_enable;
       bool input_sensors_enable;
+      bool input_android_system_keyboard;
       bool input_overlay_enable;
       bool input_overlay_enable_autopreferred;
       bool input_overlay_behind_menu;

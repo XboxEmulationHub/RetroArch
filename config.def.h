@@ -403,6 +403,13 @@
 /* GL specific */
 #define DEFAULT_ADAPTIVE_VSYNC false
 
+/* Hands SPIR-V shaders straight to the driver through GL_ARB_gl_spirv
+ * rather than cross compiling them to GLSL. Off by default: the win is
+ * on a cold driver shader cache, and at least one implementation caches
+ * the cross compiled path far more effectively than the SPIR-V one, so
+ * this is opt-in until there is per-driver data to key off. */
+#define DEFAULT_VIDEO_GL_DIRECT_SPIRV false
+
 /* Attempts to hard-synchronize CPU and GPU.
  * Can reduce latency at cost of performance. */
 #define DEFAULT_HARD_SYNC false
@@ -1716,6 +1723,12 @@
 /* Enables accelerometer/gyroscope/illuminance
  * sensor input, if supported */
 #define DEFAULT_INPUT_SENSORS_ENABLE true
+
+/* Use the Android system (IME) keyboard for menu text entry instead of
+ * the built-in on-screen keyboard. Off by default so gamepad-only
+ * and no-touch devices keep the navigable on-screen keyboard at
+ * all times. */
+#define DEFAULT_INPUT_ANDROID_SYSTEM_KEYBOARD false
 
 /* Automatically enable game focus when running or
  * resuming content */
