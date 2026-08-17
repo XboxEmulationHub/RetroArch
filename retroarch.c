@@ -385,19 +385,6 @@ void retro_input_poll_null(void) { }
 #ifdef HAVE_SMBCLIENT
 static struct smb_settings smb_global_cfg;
 
-/* Publishes the SMB client settings to the VFS SMB backend.
- *
- * Called once early in rarch_main() so the backend has a registered
- * configuration before anything can touch an smb:// path, and again at
- * the end of every successful config_load_file(). The second call is
- * what makes the numeric fields correct: the string fields below alias
- * settings->arrays and therefore follow every config load on their
- * own, but timeout, num_contexts and auth_mode are copied by value and
- * would otherwise keep whatever the settings struct held at the early
- * call, which is zero - config loading happens later, inside
- * retroarch_main_init(). The SMB backend reads the configuration
- * lazily on first smb:// access, which in every startup path is after
- * the configuration has been loaded and re-published. */
 void retroarch_smb_init(void)
 {
    settings_t *settings = config_get_ptr();
@@ -3226,6 +3213,90 @@ bool is_accessibility_enabled(bool accessibility_enable, bool accessibility_enab
  *
  * Returns: true (1) on success, otherwise false (0).
  **/
+/* Everything closing content does once nothing is left running in
+ * the core.
+ *
+ * Split out of CMD_EVENT_CORE_DEINIT unchanged, and still called
+ * from exactly where it used to run.  It is separated because it has
+ * to become resumable: the wait above it is the freeze this work is
+ * about, and removing that wait means this half runs later, from the
+ * frame loop, once the tasks have finished.  Extracting it on its
+ * own keeps that change a question of WHEN this is called rather
+ * than what it does.
+ *
+ * Every local is re-derived from its accessor rather than passed in,
+ * so it carries no dependency on the caller's frame. */
+static void command_event_finish_content_deinit(void)
+{
+   runloop_state_t *runloop_st          = runloop_state_get_ptr();
+   settings_t *settings                 = config_get_ptr();
+   video_driver_state_t
+      *video_st                         = video_state_get_ptr();
+   rarch_system_info_t *sys_info        = &runloop_st->system;
+   struct retro_hw_render_callback *hwr = NULL;
+
+         /* Save last selected disk index, if required */
+         if (sys_info)
+            disk_control_save_image_index(&sys_info->disk_control);
+
+         runloop_runtime_log_deinit(runloop_st,
+               settings->bools.content_runtime_log,
+               settings->bools.content_runtime_log_aggregate,
+               settings->paths.directory_runtime_log,
+               settings->paths.directory_playlist);
+
+         content_reset_savestate_backups();
+         hwr = VIDEO_DRIVER_GET_HW_CONTEXT_INTERNAL(video_st);
+#ifdef HAVE_CHEEVOS
+         rcheevos_unload();
+#endif
+#ifdef HAVE_NETWORKING
+         /* The core may have registered a netpacket interface
+          * (RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE). We hold a
+          * heap copy of that struct, but it carries function
+          * pointers into the core. Clear it before the core's dylib
+          * is closed by runloop_event_deinit_core(), otherwise those
+          * pointers dangle into unloaded code. Passing NULL frees and
+          * nulls the cached interface via the existing handler. */
+         netplay_driver_ctl(RARCH_NETPLAY_CTL_SET_CORE_PACKET_INTERFACE,
+               NULL);
+#endif
+         runloop_event_deinit_core();
+
+         /* Clear turbo and hold button state on core unload */
+         {
+            input_driver_state_t *input_st = input_state_get_ptr();
+            if (input_st)
+            {
+               memset(&input_st->turbo_btns, 0, sizeof(turbo_buttons_t));
+               memset(&input_st->hold_btns, 0, sizeof(hold_buttons_t));
+            }
+         }
+
+#ifdef HAVE_RUNAHEAD
+         /* If 'runahead_available' is false, then
+          * runahead is enabled by the user but an
+          * error occurred while the core was running
+          * (typically a save state issue). In this
+          * case we have to 'manually' reset the runahead
+          * runtime variables, otherwise runahead will
+          * remain disabled until the user restarts
+          * RetroArch */
+         if (runloop_st)
+         {
+            if (!(runloop_st->flags & RUNLOOP_FLAG_RUNAHEAD_AVAILABLE))
+               runahead_clear_variables(runloop_st);
+
+            /* Deallocate preemptive frames */
+            preempt_deinit(runloop_st);
+         }
+#endif
+
+         if (hwr)
+            memset(hwr, 0, sizeof(*hwr));
+
+}
+
 bool command_event(enum event_command cmd, void *data)
 {
    struct rarch_state *p_rarch     = &rarch_st;
@@ -4613,10 +4684,7 @@ bool command_event(enum event_command cmd, void *data)
                   && (runloop_st->flags & RUNLOOP_FLAG_CORE_RUNNING)
                   && !(runloop_st->flags & RUNLOOP_FLAG_SHUTDOWN_INITIATED)
                   && settings->bools.savestate_auto_save)
-            {
                command_event_save_auto_state();
-               content_wait_for_save_state_task();
-            }
 
             /* Wait for any in-flight save / load state tasks before
              * tearing down the core. Both task_save_handler and
@@ -4627,73 +4695,55 @@ bool command_event(enum event_command cmd, void *data)
              * runloop_event_deinit_core runs uninit_libretro_symbols,
              * the worker dispatches into a closed dylib.
              *
-             * The autosave_auto_save wait above only covers the
-             * auto-state save we just kicked off; it does not cover
-             * a manually-triggered save state task (menu / hotkey /
-             * netplay) that was already in flight when the user
-             * closed content with savestate_auto_save disabled. */
+             * This covers the auto-state save conditionally kicked
+             * off just above as well: it runs unconditionally,
+             * against the same condition, with nothing in between
+             * that can push a task, so the auto-save path needs no
+             * wait of its own. It also covers what that one could
+             * not - a manually triggered save (menu / hotkey /
+             * netplay) already in flight when the user closed
+             * content with savestate_auto_save disabled. */
+            /* Say what the pause is for before blocking on it.
+             *
+             * This does not shorten the wait - the invariant above
+             * means it cannot be skipped - but an unexplained frozen
+             * frame and a frame that says "saving state" are very
+             * different experiences, and on slow storage this is
+             * seconds.  The message is pushed and one frame forced
+             * out first, because nothing draws once the wait starts.
+             *
+             * Only when there is actually something to wait for:
+             * content_save_state_in_progress() is the same condition
+             * the wait uses, so a close with no save in flight - the
+             * common case - is untouched and shows nothing. */
+            /* Closing content starts here.
+             *
+             * Set around the whole teardown, including the waits
+             * below: they are part of closing, and once the wait
+             * stops blocking they are the part that will still be
+             * running when the frame loop resumes. Nothing observes
+             * this yet - the main thread does not leave this block -
+             * which is the point of introducing it on its own. */
+            runloop_st->content_closing = true;
+
+            if (content_save_state_in_progress(NULL))
+            {
+               const char *_msg = msg_hash_to_str(MSG_SAVING_STATE);
+               runloop_msg_queue_push(_msg, strlen(_msg), 1, 180, true,
+                     NULL, MESSAGE_QUEUE_ICON_DEFAULT,
+                     MESSAGE_QUEUE_CATEGORY_INFO);
+               video_driver_cached_frame();
+            }
+
             content_wait_for_save_state_task();
             content_wait_for_load_state_task();
 
-            /* Save last selected disk index, if required */
-            if (sys_info)
-               disk_control_save_image_index(&sys_info->disk_control);
+            command_event_finish_content_deinit();
 
-            runloop_runtime_log_deinit(runloop_st,
-                  settings->bools.content_runtime_log,
-                  settings->bools.content_runtime_log_aggregate,
-                  settings->paths.directory_runtime_log,
-                  settings->paths.directory_playlist);
-
-            content_reset_savestate_backups();
-            hwr = VIDEO_DRIVER_GET_HW_CONTEXT_INTERNAL(video_st);
-#ifdef HAVE_CHEEVOS
-            rcheevos_unload();
-#endif
-#ifdef HAVE_NETWORKING
-            /* The core may have registered a netpacket interface
-             * (RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE). We hold a
-             * heap copy of that struct, but it carries function
-             * pointers into the core. Clear it before the core's dylib
-             * is closed by runloop_event_deinit_core(), otherwise those
-             * pointers dangle into unloaded code. Passing NULL frees and
-             * nulls the cached interface via the existing handler. */
-            netplay_driver_ctl(RARCH_NETPLAY_CTL_SET_CORE_PACKET_INTERFACE,
-                  NULL);
-#endif
-            runloop_event_deinit_core();
-
-            /* Clear turbo and hold button state on core unload */
-            {
-               input_driver_state_t *input_st = input_state_get_ptr();
-               if (input_st)
-               {
-                  memset(&input_st->turbo_btns, 0, sizeof(turbo_buttons_t));
-                  memset(&input_st->hold_btns, 0, sizeof(hold_buttons_t));
-               }
-            }
-
-#ifdef HAVE_RUNAHEAD
-            /* If 'runahead_available' is false, then
-             * runahead is enabled by the user but an
-             * error occurred while the core was running
-             * (typically a save state issue). In this
-             * case we have to 'manually' reset the runahead
-             * runtime variables, otherwise runahead will
-             * remain disabled until the user restarts
-             * RetroArch */
-            if (runloop_st)
-            {
-               if (!(runloop_st->flags & RUNLOOP_FLAG_RUNAHEAD_AVAILABLE))
-                  runahead_clear_variables(runloop_st);
-
-               /* Deallocate preemptive frames */
-               preempt_deinit(runloop_st);
-            }
-#endif
-
-            if (hwr)
-               memset(hwr, 0, sizeof(*hwr));
+            /* Closing content is finished.  One clear covers the
+             * whole block: it has a single exit, with no early
+             * return or goto between the set above and here. */
+            runloop_st->content_closing = false;
 
             break;
          }
@@ -5409,6 +5459,19 @@ bool command_event(enum event_command cmd, void *data)
          break;
       case CMD_EVENT_NETPLAY_ENABLE_HOST:
          {
+            /* Ask the lobby server for the tunnel address now.
+             *
+             * This is the point where the user has committed to
+             * hosting; host setup does not need the address until
+             * later, and on the content-reload path below not until
+             * content has finished loading.  Starting the round trip
+             * here lets it overlap that, so the wait for it in host
+             * setup usually finds the answer already present.
+             *
+             * Best effort - if this is skipped or fails, host setup
+             * asks exactly as it did before. */
+            netplay_mitm_query_prefetch();
+
             if (netplay_driver_ctl(RARCH_NETPLAY_CTL_USE_CORE_PACKET_INTERFACE, NULL))
             {
                netplay_driver_ctl(RARCH_NETPLAY_CTL_ENABLE_SERVER, NULL);
@@ -6856,7 +6919,7 @@ static void retroarch_print_features(void)
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_SDL2,            "SDL2",            "SDL2 input/audio/video drivers");
 #endif
 #ifdef HAVE_SDL3
-   _len += _PSUPP_BUF(buf, _len, SUPPORTS_SDL3,            "SDL3",            "SDL3 input/video drivers");
+   _len += _PSUPP_BUF(buf, _len, SUPPORTS_SDL3,            "SDL3",            "SDL3 input/audio/video drivers");
 #endif
 #ifdef HAVE_X11
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_X11,             "X11",             "X11 input/video drivers");
@@ -6952,6 +7015,9 @@ static void retroarch_print_features(void)
 #endif
 #ifdef HAVE_XAUDIO
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_XAUDIO,          "XAudio2",         "Audio driver");
+#endif
+#ifdef HAVE_CHD
+   _len += _PSUPP_BUF(buf, _len, SUPPORTS_CHD,             "CHD",             "CHD support");
 #endif
 #ifdef HAVE_7ZIP
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_7ZIP,            "7zip",            "7zip support");
@@ -8417,7 +8483,7 @@ bool retroarch_main_init(int argc, char *argv[])
          char str_output[384];
          const char *cpu_model  = frontend_driver_get_cpu_model_name();
          size_t _len = strlcpy(str_output,
-               "=== Build =======================================\n",
+               "=== Build =================================================\n",
                sizeof(str_output));
 
          if (cpu_model && *cpu_model)
@@ -8460,9 +8526,23 @@ bool retroarch_main_init(int argc, char *argv[])
 #if defined(ANDROID)
       {
          char str_output[128];
+         char manufacturer_model[PROP_VALUE_MAX * 2];
          int32_t major = 0;
          int32_t minor = 0;
          int32_t rel   = 0;
+
+         const char *abi =
+#if defined(__aarch64__)
+            "arm64-v8a";
+#elif defined(__arm__)
+            "armeabi-v7a";
+#elif defined(__x86_64__)
+            "x86_64";
+#elif defined(__i386__)
+            "x86";
+#else
+            "unknown";
+#endif
 
          const char *build_type =
             !g_android ? "Unknown" :
@@ -8470,15 +8550,18 @@ bool retroarch_main_init(int argc, char *argv[])
             "Sideload";
 
          frontend_android_get_version(&major, &minor, &rel);
+         frontend_android_get_manufacturer_model(
+            manufacturer_model, sizeof(manufacturer_model));
 
          snprintf(str_output, sizeof(str_output),
-            FILE_PATH_LOG_INFO " Running on: Android v%d.%d.%d (API %d) (%s)\n",
+            FILE_PATH_LOG_INFO " Running on: Android v%d.%d.%d (%s, %s)\n"
+            FILE_PATH_LOG_INFO " Device: %s\n",
             major,
             minor,
             rel,
-            android_get_device_api_level(),
-            build_type);
-
+            build_type,
+            abi,
+            manufacturer_model);
          RARCH_LOG_OUTPUT("%s", str_output);
       }
 #elif defined(WEBOS)
@@ -8511,7 +8594,7 @@ bool retroarch_main_init(int argc, char *argv[])
       {
          char str_output[64];
          snprintf(str_output, sizeof(str_output),
-            "=================================================\n");
+            "===========================================================\n");
          RARCH_LOG_OUTPUT("%s", str_output);
       }
    }
@@ -8796,6 +8879,44 @@ error:
    return false;
 }
 
+#ifdef DEBUG
+/* Reports a task handler that occupied the main thread for longer
+ * than its budget.  Rate-limited per handler: a task that stalls
+ * once usually stalls every invocation, and a warning per frame
+ * would bury the first (most useful) report. */
+static void runloop_task_slow_handler(retro_task_t *task,
+      retro_time_t usec)
+{
+   /* Held as the handler's own type: a function pointer is not
+    * convertible to void* in ISO C, and comparing the two is not
+    * valid either. */
+   static retro_task_handler_t last_handler;
+   static unsigned suppressed;
+
+   if (!task)
+      return;
+
+   if (task->handler == last_handler)
+   {
+      suppressed++;
+      return;
+   }
+
+   if (suppressed)
+      RARCH_WARN("[Task] (%u further over-budget invocations suppressed)\n",
+            suppressed);
+
+   last_handler = task->handler;
+   suppressed   = 0;
+
+   RARCH_WARN("[Task] Handler occupied the main thread for %d ms"
+         " (budget %d ms)%s%s.\n",
+         (int)(usec / 1000), 16,
+         task->title ? " - " : "",
+         task->title ? task->title : "");
+}
+#endif
+
 void retroarch_init_task_queue(void)
 {
 #ifdef HAVE_THREADS
@@ -8815,6 +8936,28 @@ void retroarch_init_task_queue(void)
    net_http_init();
 #endif
    task_queue_init(threaded_enable, runloop_task_msg_queue_push);
+
+#ifdef DEBUG
+   /* With Threaded Tasks off, task handlers run on the thread that
+    * also drives the frame loop, so a handler that does not return
+    * promptly is a visible stall - and the queue is the only place
+    * that can attribute one to a specific task rather than to
+    * "something in the frame".  Debug builds only: this exists to
+    * catch a regression during development, not to police release
+    * builds, and with no callback registered the queue reads no
+    * clock at all.
+    *
+    * The budget is a whole frame at 60Hz.  Handlers designed to be
+    * sliced (the budgeted directory walks, playlist parse and scan)
+    * aim far below it and consult the shared per-frame I/O window;
+    * anything crossing a full frame in one call is either
+    * unsliced work or a slice that has stopped honouring its
+    * budget. */
+   if (!threaded_enable)
+      task_queue_set_slow_handler_cb(runloop_task_slow_handler, 16000);
+   else
+      task_queue_set_slow_handler_cb(NULL, 0);
+#endif
 }
 
 bool retroarch_ctl(enum rarch_ctl_state state, void *data)

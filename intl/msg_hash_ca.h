@@ -1429,7 +1429,6 @@ static const struct
    char s_012938fb[36];
    char s_a747cdc9[71];
    char s_2f169651[18];
-   char s_73674a86[15];
    char s_705eee28[55];
    char s_62af62ac[49];
    char s_12b25a4b[60];
@@ -1938,7 +1937,7 @@ static const struct
    char s_c7bc8298[30];
    char s_e63b035a[32];
    char s_d21d875b[21];
-   char s_ae86fed0[31];
+   char s_ae86fed0[15];
    char s_b12ae22e[20];
    char s_b2d073c7[20];
    char s_1cbc2657[23];
@@ -2168,6 +2167,7 @@ static const struct
    char s_59f183c8[32];
    char s_59f183c9[32];
    char s_6b395e21[17];
+   char s_00ab7f5e[26];
    char s_71747541[17];
    char s_b45e4c28[36];
    char s_e92f8e07[52];
@@ -3347,14 +3347,14 @@ static const struct
    char s_69c0e487[42];
    char s_706ff4dc[198];
    char s_a0d1a85c[53];
-   char s_b5966528[33];
+   char s_b5966528[200];
    char s_907ef7cc[37];
    char s_b0a46506[54];
    char s_04624c88[38];
-   char s_91976dbe[38];
+   char s_91976dbe[48];
    char s_f6492edc[50];
-   char s_9bb85635[34];
-   char s_22a05685[34];
+   char s_9bb85635[201];
+   char s_22a05685[74];
 #endif
    char s_f3bfa8b9[90];
    char s_5fe2cee5[73];
@@ -3469,6 +3469,7 @@ static const struct
    char s_0d96ed73[50];
    char s_9f0fd076[156];
    char s_9f0fd077[156];
+   char s_c315b54c[319];
    char s_7a2050af[45];
    char s_d2859556[66];
    char s_ef13be35[91];
@@ -5789,7 +5790,6 @@ static const struct
    "Factor d\342\200\231escala de les miniatures",
    "Parteix els noms de la llista de reproducci\303\263 (Es requereix reiniciar)",
    "Usa el mode PAL60",
-   "Directori pare",
    "Posa en pausa el contingut quan el men\303\272 estigui actiu",
    "Posa en pausa el contingut quan no estigui actiu",
    "Posa en pausa el contingut si es desconnecta el comandament",
@@ -6308,7 +6308,7 @@ static const struct
    "Configuraci\303\263 de xarxa de SMB",
    "Nom del recurs compartit de SMB",
    "Xarxa compartida SMB",
-   "Subdirectori de SMB (opcional)",
+   "Subcarpeta SMB",
    "Temps l\303\255mit de SMB",
    "Nom d'usuari de SMB",
    "Grup de treball de SMB",
@@ -6540,6 +6540,7 @@ static const struct
    "Amplada de la pantalla completa",
    "Al\303\247ada de la pantalla completa",
    "Gamma del v\303\255deo",
+   "Suport per SPIR-V (Ajuda)",
    "\303\215ndex de la GPU",
    "Fes servir l'enregistrament per GPU",
    "Captura de pantalla: Fes servir la targeta gr\303\240fica",
@@ -8255,14 +8256,18 @@ static const struct
    "bre de Wifi per una connexi\303\263 m\303\251s fiable. Nota: Si fas canvis en aquesta configurac"
    "i\303\263, cal reiniciar RetroArch.",
    "Selecciona el nombre m\303\240xim de connexions possibles.",
-   "Contrasenya per l'autenticaci\303\263.",
+   "Contrasenya per l'autentificaci\303\263. \303\211s opcional si est\303\240 activat l'acc\303\251"
+   "s com a convidat en el servidor. Windows 10 o superior: l'acc\303\251s de convidat est\303\240 d"
+   "esactivat per defecte, cal una contrasenya.",
    "Adre\303\247a IP del servidor o amfitri\303\263.",
    "Modifica la configuraci\303\263 de la xarxa compartida SMB.",
    "Nom de la xarxa compartida a accedir.",
-   "Adre\303\247a del subdirectori a compartir.",
+   "Adre\303\247a del subdirectori a compartir. Opcional.",
    "Selecciona el temps l\303\255mit per defecte en segons.",
-   "Nom d'usuari per l'autenticaci\303\263.",
-   "Grup de treball o nom del domini.",
+   "Nom d'usuari per l'autentificaci\303\263. \303\211s opcional si est\303\240 activat l'acc\303"
+   "\251s com a convidat en el servidor. Windows 10 o superior: l'acc\303\251s de convidat est\303"
+   "\240 desactivat per defecte, cal un nom d'usuari.",
+   "Nom del domini o del grup de treball. Opcional en algunes configuracions.",
 #endif
    "Endre\303\247a els fitxers de desat mitjan\303\247ant carpetes amb els noms on es troba el conti"
    "ngut.",
@@ -8439,6 +8444,10 @@ static const struct
    "tilitzar\303\240 la resoluci\303\263 de l'escriptori si no s'estableix.",
    "Estableix una mida personalitzada de l'al\303\247ada per mode de pantalla completa sense finestr"
    "a. S'utilitzar\303\240 la resoluci\303\263 de l'escriptori si no s'estableix.",
+   "Maneja els shaders al controlador gr\303\240fic com SPIR-V en comptes de compilar-los primer com"
+   " a GLSL, aix\303\262 redueix el temps de c\303\240rrega. Aix\303\262 \303\251s nom\303\251s una "
+   "ajuda: cal tenir l'extensi\303\263 'GL_ARB_gl_spirv' i qualsevol shader que no es faci servir, e"
+   "s compilar\303\240. Tindr\303\240 efecte el proper cop que el shader sigui carregat.",
    "Selecciona quina targeta gr\303\240fica utilitzar.",
    "Enregistra la sortida de la GPU amb shaders, si est\303\240 disponible.",
    "Les captures de pantalla prendran la GPU amb el material d'ombreig si es troba disponible.",
@@ -9259,7 +9268,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_ca_blob_check[
-      (sizeof(msg_hash_ca_blob) == (200009u
+      (sizeof(msg_hash_ca_blob) == (200339u
 #ifdef ANDROID
        + 281u
 #endif
@@ -9394,7 +9403,7 @@ typedef char msg_hash_ca_blob_check[
        + 30u
        + 32u
        + 21u
-       + 31u
+       + 15u
        + 20u
        + 20u
        + 23u
@@ -9584,14 +9593,14 @@ typedef char msg_hash_ca_blob_check[
        + 42u
        + 198u
        + 53u
-       + 33u
+       + 200u
        + 37u
        + 54u
        + 38u
-       + 38u
+       + 48u
        + 50u
-       + 34u
-       + 34u
+       + 201u
+       + 74u
 #endif
 #ifdef HAVE_LAKKA
        + 55u
@@ -11089,7 +11098,6 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_OZONE_THUMBNAIL_SCALE_FACTOR,
    (uint32_t)MENU_ENUM_LABEL_VALUE_OZONE_TRUNCATE_PLAYLIST_NAME,
    (uint32_t)MENU_ENUM_LABEL_VALUE_PAL60_ENABLE,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_PARENT_DIRECTORY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_PAUSE_LIBRETRO,
    (uint32_t)MENU_ENUM_LABEL_VALUE_PAUSE_NONACTIVE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_PAUSE_ON_DISCONNECT,
@@ -11827,6 +11835,7 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN_X,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GAMMA,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GL_DIRECT_SPIRV,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GPU_INDEX,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GPU_RECORD,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GPU_SCREENSHOT,
@@ -13126,6 +13135,7 @@ static const uint32_t msg_hash_ca_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_FULLSCREEN_MODE_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_FULLSCREEN_X,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_FULLSCREEN_Y,
+   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_GL_DIRECT_SPIRV,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_GPU_INDEX,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_GPU_RECORD,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_GPU_SCREENSHOT,

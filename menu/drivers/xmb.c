@@ -436,6 +436,10 @@ typedef struct xmb_handle
    int old_depth;
    int icon_size;
    int cursor_size;
+   int osk_textbox_x;
+   int osk_textbox_y;
+   int osk_textbox_w;
+   int osk_textbox_h;
    int wideglyph_width;
    /* The string wideglyph_width was measured from, and the
     * font_driver generation it was measured at. A font rebuilt
@@ -1355,24 +1359,28 @@ XMB_NOINLINE static void xmb_render_messagebox_internal(
       if (input && line->buffer
             && ((menu_driver_get_current_time() / 500000) & 1))
       {
+         char cursor_src[MENU_LABEL_MAX_LENGTH];
          char cursor_message[MENU_LABEL_MAX_LENGTH];
          size_t len = (size_t)(input - message + 1);
          size_t ptr = line->ptr;
 
          if (ptr > line->size)
             ptr = line->size;
-         if (len < sizeof(cursor_message))
+         if (len < sizeof(cursor_src))
          {
-            if (ptr >= sizeof(cursor_message) - len)
-               ptr = sizeof(cursor_message) - len - 1;
+            if (ptr >= sizeof(cursor_src) - len)
+               ptr = sizeof(cursor_src) - len - 1;
 
-            memcpy(cursor_message, message, len);
-            memcpy(cursor_message + len, line->buffer, ptr);
-            cursor_message[len + ptr] = '\0';
+            /* word_wrap()/word_wrap_wideglyph() require
+             * non-overlapping source and destination
+             * buffers, so stage the source separately */
+            memcpy(cursor_src, message, len);
+            memcpy(cursor_src + len, line->buffer, ptr);
+            cursor_src[len + ptr] = '\0';
 
             (xmb->word_wrap)(
                   cursor_message, sizeof(cursor_message),
-                  cursor_message, strlen(cursor_message),
+                  cursor_src, len + ptr,
                   usable_width / (xmb->font_size * 0.85f),
                   xmb->wideglyph_width, 0);
 
@@ -1399,6 +1407,44 @@ XMB_NOINLINE static void xmb_render_messagebox_internal(
    /* Extra room for confirm buttons */
    if (confirm_dialog)
       slice_h             += (line_height * 2);
+
+   if (input_dialog_display_kb)
+   {
+      xmb->osk_textbox_x = slice_x;
+      xmb->osk_textbox_y = slice_y;
+      xmb->osk_textbox_w = slice_w;
+      xmb->osk_textbox_h = slice_h;
+   }
+
+   if (input_dialog_display_kb && input_state_get_ptr()->osk_textbox_focus && line_count > 1)
+   {
+      int cursor_offset = (xmb->margins_dialog + (xmb->margins_slice * 2)) / 3;
+
+      if (dispctx && dispctx->blend_begin)
+         dispctx->blend_begin(userdata);
+
+      gfx_display_draw_texture_slice(
+            p_disp,
+            userdata,
+            video_width,
+            video_height,
+            slice_x - cursor_offset,
+            slice_y - cursor_offset,
+            256,
+            256,
+            slice_w + (cursor_offset * 2),
+            slice_h + (cursor_offset * 2),
+            video_width,
+            video_height,
+            NULL,
+            xmb->margins_slice,
+            xmb->last_scale_factor,
+            xmb->textures.list[XMB_TEXTURE_KEY_HOVER],
+            mymat);
+
+      if (dispctx && dispctx->blend_end)
+         dispctx->blend_end(userdata);
+   }
 
    if (!xmb->assets_missing)
    {
@@ -1500,7 +1546,7 @@ XMB_NOINLINE static void xmb_render_messagebox_internal(
             xmb->textures.list[XMB_TEXTURE_KEY_HOVER],
             xmb->font,
             input_st->osk_grid,
-            input_st->osk_ptr,
+            input_st->osk_textbox_focus ? 44 : input_st->osk_ptr,
             0xffffffff);
    }
 
@@ -1673,6 +1719,26 @@ XMB_NOINLINE static void xmb_render_messagebox_internal(
       if (dispctx->blend_end)
          dispctx->blend_end(userdata);
    }
+}
+
+static bool xmb_osk_pointer_over_textbox(
+      void *data,
+      int x,
+      int y,
+      unsigned width,
+      unsigned height)
+{
+   xmb_handle_t *xmb = (xmb_handle_t*)data;
+
+   if (     xmb
+         && menu_input_dialog_get_display_kb()
+         && x > xmb->osk_textbox_x
+         && x < xmb->osk_textbox_x + xmb->osk_textbox_w
+         && y > xmb->osk_textbox_y
+         && y < xmb->osk_textbox_y + xmb->osk_textbox_h)
+      return true;
+
+   return false;
 }
 
 #ifdef HAVE_LIBRETRODB
@@ -3058,7 +3124,15 @@ static void xmb_set_title(xmb_handle_t *xmb)
             {
                const playlist_config_t *pl_config = playlist_get_config(playlist_get_cached());
 
-               if (string_ends_with(pl_config->path, FILE_PATH_CONTENT_IMAGE_HISTORY))
+               /* playlist_get_cached() is NULL while a deferred
+                * cached init is part way through its parse.  Keep
+                * the default texture for this frame and arm the
+                * retry, like the async sidebar/db icon loads above -
+                * xmb_render() calls back in and the icon resolves
+                * once the parse lands. */
+               if (!pl_config)
+                  xmb->current_menu_icon_retry = prev_retry ? prev_retry - 1 : 60;
+               else if (string_ends_with(pl_config->path, FILE_PATH_CONTENT_IMAGE_HISTORY))
                   texture = xmb->textures.list[XMB_TEXTURE_IMAGE];
                else if (string_ends_with(pl_config->path, FILE_PATH_CONTENT_MUSIC_HISTORY))
                   texture = xmb->textures.list[XMB_TEXTURE_MUSIC];
@@ -4693,6 +4767,8 @@ static uintptr_t xmb_icon_get_id(xmb_handle_t *xmb,
       case FILE_TYPE_SHADER:
       case FILE_TYPE_SHADER_PRESET:
          return xmb->textures.list[XMB_TEXTURE_SHADER_OPTIONS];
+      case FILE_TYPE_USE_DIRECTORY:
+         return xmb->textures.list[XMB_TEXTURE_CHECKMARK];
       case FILE_TYPE_CARCHIVE:
          return xmb->textures.list[XMB_TEXTURE_ZIP];
       case FILE_TYPE_IMAGE:
@@ -6197,9 +6273,26 @@ XMB_NOINLINE static int xmb_draw_item(
       /* "Main Menu" playlists */
       else if (xmb->depth == 2 && entry_type == FILE_TYPE_PLAYLIST_COLLECTION)
       {
-         xmb_node_t *sidebar_node = (xmb_node_t*)
+         xmb_node_t *sidebar_node = NULL;
+         unsigned offset          = list->list[i].entry_idx;
+
+         /* Search for sorted icon order */
+         if (settings->bools.ozone_sort_after_truncate_playlist_name)
+         {
+            for (offset = 0; offset < xmb->horizontal_list.size; offset++)
+            {
+               char playlist_file_noext[NAME_MAX_LENGTH];
+               fill_pathname(playlist_file_noext,
+                     xmb->horizontal_list.list[offset].path, "",
+                     sizeof(playlist_file_noext));
+               if (string_is_equal(playlist_file_noext, entry.rich_label))
+                  break;
+            }
+         }
+
+         sidebar_node = (xmb_node_t*)
                (xmb->horizontal_list.size)
-                  ? (xmb_node_t*)file_list_get_userdata_at_offset(&xmb->horizontal_list, list->list[i].entry_idx)
+                  ? (xmb_node_t*)file_list_get_userdata_at_offset(&xmb->horizontal_list, offset)
                   : NULL;
 
          if (sidebar_node && sidebar_node->icon)
@@ -11188,6 +11281,7 @@ menu_ctx_driver_t menu_ctx_xmb = {
    xmb_refresh_thumbnail_image,
    xmb_set_thumbnail_content,
    gfx_display_osk_ptr_at_pos,
+   xmb_osk_pointer_over_textbox,
    xmb_update_savestate_thumbnail_path,
    xmb_update_savestate_thumbnail_image,
    xmb_pointer_down,

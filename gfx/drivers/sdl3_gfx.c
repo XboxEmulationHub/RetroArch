@@ -26,10 +26,6 @@
 #include "../../config.h"
 #endif
 
-#ifdef HAVE_X11
-#include "../common/x11_common.h"
-#endif
-
 #ifdef _WIN32
 #include "../common/win32_common.h"
 #endif
@@ -173,8 +169,10 @@ static void sdl3_refresh_input_size(sdl3_video_t *vid, bool menu, bool rgb32,
             (menu || !vid->video.smooth)
             ? SDL_SCALEMODE_NEAREST : SDL_SCALEMODE_LINEAR);
 
-      if (menu)
-         SDL_SetTextureBlendMode(target->tex, SDL_BLENDMODE_BLEND);
+      /* Blend when displaying the menu, but disable it otherwise
+       * because the alpha byte may be 0 like when rendering
+       * XRGB8888 content. */
+      SDL_SetTextureBlendMode(target->tex, menu ? SDL_BLENDMODE_BLEND : SDL_BLENDMODE_NONE);
 
       target->w     = width;
       target->h     = height;
@@ -225,12 +223,9 @@ static void *sdl3_gfx_init(const video_info_t *video,
       input_driver_t **input, void **input_data)
 {
    int i;
-   SDL_WindowFlags flags;
    sdl3_video_t *vid = NULL;
 
-#ifdef HAVE_X11
-   XInitThreads();
-#endif
+   sdl3_set_app_metadata();
 
    /* Initialize the video system. */
    if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
@@ -250,16 +245,12 @@ static void *sdl3_gfx_init(const video_info_t *video,
    for (i = 0; i < SDL_GetNumRenderDrivers(); ++i)
       RARCH_LOG("[SDL3] \t%s\n", SDL_GetRenderDriver(i));
 
-   if (video->fullscreen)
-      flags = SDL_WINDOW_FULLSCREEN;
-   else
-   {
+   if (!video->fullscreen)
       RARCH_LOG("[SDL3] Creating window @ %ux%u.\n", video->width, video->height);
-      flags = SDL_WINDOW_RESIZABLE;
-   }
 
-   vid->window = SDL_CreateWindow("", video->width, video->height, flags);
-   if (!vid->window)
+   /* No backend flag: SDL_CreateRenderer picks the render driver. */
+   if (!sdl3_window_set_video_mode(&vid->window,
+            video->width, video->height, video->fullscreen, 0))
    {
       RARCH_ERR("[SDL3] Failed to init SDL window: %s.\n", SDL_GetError());
       goto error;
@@ -268,25 +259,12 @@ static void *sdl3_gfx_init(const video_info_t *video,
    vid->video  = *video;
    vid->flags |= SDL3_FLAG_SHOULD_RESIZE;
 
-   /* SDL3 only emits SDL_EVENT_TEXT_INPUT for windows that opted in;
-    * the SDL3 input driver forwards those events for menu text entry
-    * and core keyboard callbacks. Desktop platforms don't pop an
-    * on-screen keyboard for this. */
-   SDL_StartTextInput(vid->window);
-
-   if (video->fullscreen)
-      SDL_HideCursor();
-
    if (!sdl3_init_renderer(vid))
       goto error;
 
-   sdl3_set_handles(vid->window);
-
    sdl3_refresh_viewport(vid);
 
-   /* The frontend selects the input driver separately. */
-   *input      = NULL;
-   *input_data = NULL;
+   sdl3_input_driver(config_get_ptr()->arrays.input_joypad_driver, input, input_data);
 
    return vid;
 
@@ -297,28 +275,15 @@ error:
 
 static void sdl3_check_window(sdl3_video_t *vid)
 {
-   SDL_Event event;
+   bool quit   = false;
+   bool resize = false;
 
-   SDL_PumpEvents();
+   sdl3_pump_window_events(&quit, &resize);
 
-   /* Only consume quit + window events here; the SDL3 input driver
-    * drains keyboard/mouse events from the same queue. */
-   while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_QUIT, SDL_EVENT_QUIT) > 0)
+   if (quit)
       vid->flags |= SDL3_FLAG_QUITTING;
-
-   while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_WINDOW_FIRST, SDL_EVENT_WINDOW_LAST) > 0)
-   {
-      if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
-         vid->flags |= SDL3_FLAG_SHOULD_RESIZE;
-   }
-
-   /* Handle the window scale event here. */
-   while (SDL_PeepEvents(&event, 1, SDL_GETEVENT,
-            SDL_EVENT_DISPLAY_FIRST, SDL_EVENT_DISPLAY_LAST) > 0)
-   {
-      if (event.type == SDL_EVENT_DISPLAY_CONTENT_SCALE_CHANGED)
-         vid->flags |= SDL3_FLAG_SHOULD_RESIZE;
-   }
+   if (resize)
+      vid->flags |= SDL3_FLAG_SHOULD_RESIZE;
 }
 
 /* Menu, statistics and widget passes compute their coordinates
@@ -507,7 +472,6 @@ static bool sdl3_gfx_frame(void *data, const void *frame, unsigned width,
       unsigned height, uint64_t frame_count,
       unsigned pitch, const char *msg, video_frame_info_t *video_info)
 {
-   char title[128];
    sdl3_video_t *vid = (sdl3_video_t*)data;
 
    if (vid->flags & SDL3_FLAG_SHOULD_RESIZE)
@@ -529,10 +493,7 @@ static bool sdl3_gfx_frame(void *data, const void *frame, unsigned width,
 
    SDL_RenderPresent(vid->renderer);
 
-   title[0] = '\0';
-   video_driver_get_window_title(title, sizeof(title));
-   if (title[0])
-      SDL_SetWindowTitle(vid->window, title);
+   sdl3_window_update_title(vid->window);
 
    return true;
 }
@@ -571,18 +532,6 @@ static bool sdl3_gfx_alive(void *data)
    sdl3_video_t *vid = (sdl3_video_t*)data;
    sdl3_check_window(vid);
    return !(vid->flags & SDL3_FLAG_QUITTING);
-}
-
-static bool sdl3_gfx_focus(void *data)
-{
-   sdl3_video_t   *vid = (sdl3_video_t*)data;
-   SDL_WindowFlags flags = (SDL_WINDOW_INPUT_FOCUS | SDL_WINDOW_MOUSE_FOCUS);
-   return (SDL_GetWindowFlags(vid->window) & flags) == flags;
-}
-
-static bool sdl3_gfx_suspend_screensaver(void *data, bool enable)
-{
-   return enable ? SDL_DisableScreenSaver() : SDL_EnableScreenSaver();
 }
 
 static bool sdl3_gfx_has_windowed(void *data)
@@ -647,16 +596,27 @@ static bool sdl3_gfx_read_viewport(void *data, uint8_t *buffer, bool is_idle)
    return sdl3_capture_viewport(vid, buffer);
 }
 
-static float sdl3_get_refresh_rate(void *data)
+/* Applies a new window size / fullscreen in place, without tearing
+ * down the entire driver. */
+static void sdl3_poke_set_video_mode(void *data, unsigned width,
+      unsigned height, bool fullscreen)
 {
-   sdl3_video_t          *vid = (sdl3_video_t*)data;
-   const SDL_DisplayMode *mode;
+   sdl3_video_t *vid = (sdl3_video_t*)data;
 
    if (!vid || !vid->window)
-      return 0.0f;
+      return;
 
-   mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(vid->window));
-   return mode ? mode->refresh_rate : 0.0f;
+   if (!sdl3_window_set_video_mode(&vid->window, width, height, fullscreen, 0))
+   {
+      RARCH_WARN("[SDL3] Failed to set video mode: %s.\n", SDL_GetError());
+      return;
+   }
+
+   /* On the next frame, recompute the viewport pixel size. */
+   vid->flags |= SDL3_FLAG_SHOULD_RESIZE;
+   vid->video.width = width;
+   vid->video.height = height;
+   vid->video.fullscreen = fullscreen;
 }
 
 static void sdl3_poke_set_filtering(void *data, unsigned index, bool smooth, bool ctx_scaling)
@@ -670,6 +630,98 @@ static void sdl3_poke_set_filtering(void *data, unsigned index, bool smooth, boo
    if (vid->frame.tex)
       SDL_SetTextureScaleMode(vid->frame.tex,
             smooth ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+}
+
+/* Retrieves the exclusive full screen display mode of the window, or
+ * NULL when the window is windowed or in borderless full screen. */
+static const SDL_DisplayMode *sdl3_current_video_mode(sdl3_video_t *vid)
+{
+   if (!vid || !vid->window)
+      return NULL;
+   /* SDL_WINDOW_FULLSCREEN covers borderless full screen as well, where
+    * the mode is left at the desktop's and must not be switched. */
+   if (!(SDL_GetWindowFlags(vid->window) & SDL_WINDOW_FULLSCREEN))
+      return NULL;
+   return SDL_GetWindowFullscreenMode(vid->window);
+}
+
+static void sdl3_get_video_output_size(void *data,
+      unsigned *width, unsigned *height, char *desc, size_t desc_len)
+{
+   sdl3_video_t *vid = (sdl3_video_t*)data;
+   const SDL_DisplayMode *mode;
+
+   if (!vid || !vid->window)
+      return;
+
+   if (!(mode = sdl3_current_video_mode(vid)))
+   {
+      int w = 0, h = 0;
+      SDL_GetWindowSizeInPixels(vid->window, &w, &h);
+      *width  = (unsigned)w;
+      *height = (unsigned)h;
+      return;
+   }
+
+   *width  = (unsigned)mode->w;
+   *height = (unsigned)mode->h;
+   SDL_snprintf(desc, desc_len, "%.2f Hz", mode->refresh_rate);
+}
+
+/* Switch the display's fullscreen mode to the next one in the list. */
+static void sdl3_cycle_video_mode(sdl3_video_t *vid, int dir)
+{
+   int i;
+   int count = 0;
+   int index = 0;
+   const SDL_DisplayMode *current = NULL;
+   const SDL_DisplayMode *target = NULL;
+   SDL_DisplayMode **modes = NULL;
+   SDL_DisplayID display;
+
+   if (!(current = sdl3_current_video_mode(vid)))
+      return;
+   if (!(display = SDL_GetDisplayForWindow(vid->window)))
+      return;
+
+   modes = SDL_GetFullscreenDisplayModes(display, &count);
+   if (!modes || count < 1)
+   {
+      SDL_free(modes);
+      return;
+   }
+
+   for (i = 0; i < count; i++)
+   {
+      if (modes[i]->w == current->w
+          && modes[i]->h == current->h
+          && modes[i]->refresh_rate == current->refresh_rate)
+      {
+         index = i;
+         break;
+      }
+   }
+
+   target = modes[(index + dir + count) % count];
+
+   /* Switch the mode, and clear the mode list afterwards. */
+   if (SDL_SetWindowFullscreenMode(vid->window, target))
+      vid->flags |= SDL3_FLAG_SHOULD_RESIZE;
+   else
+      RARCH_WARN("[SDL3] Failed to set video mode %dx%d @ %.2f Hz: %s.\n",
+            target->w, target->h, target->refresh_rate, SDL_GetError());
+
+   SDL_free(modes);
+}
+
+static void sdl3_get_video_output_prev(void *data)
+{
+   sdl3_cycle_video_mode((sdl3_video_t*)data, -1);
+}
+
+static void sdl3_get_video_output_next(void *data)
+{
+   sdl3_cycle_video_mode((sdl3_video_t*)data, 1);
 }
 
 static void sdl3_poke_set_aspect_ratio(void *data, unsigned aspect_ratio_idx)
@@ -704,14 +756,6 @@ static void sdl3_poke_texture_enable(void *data, bool enable, bool full_screen)
    if (!vid)
       return;
    vid->menu.active = enable;
-}
-
-static void sdl3_show_mouse(void *data, bool state)
-{
-   if (state)
-      SDL_ShowCursor();
-   else
-      SDL_HideCursor();
 }
 
 static void sdl3_grab_mouse_toggle(void *data)
@@ -897,10 +941,12 @@ static void gfx_display_sdl3_scissor_begin(void *data,
    if (!vid)
       return;
 
-   /* gfx_display passes scissor rects in GL convention (origin
-    * bottom-left). SDL_SetRenderClipRect is top-left, so flip. */
+   /* gfx_display passes scissor rects with a top-left origin. The
+    * vulkan driver uses y directly and only GL flips (its scissor
+    * origin is bottom-left). SDL_SetRenderClipRect is top-left too,
+    * so we can pass the values directly to the rectangle. */
    rect.x = x;
-   rect.y = (int)video_height - y - (int)height;
+   rect.y = y;
    rect.w = (int)width;
    rect.h = (int)height;
 
@@ -1637,12 +1683,12 @@ static video_poke_interface_t sdl3_video_poke_interface = {
    sdl3_get_flags,
    sdl3_load_texture,
    sdl3_unload_texture,
-   NULL,                            /* set_video_mode */
-   sdl3_get_refresh_rate,
+   sdl3_poke_set_video_mode,
+   sdl3_ctx_get_refresh_rate,
    sdl3_poke_set_filtering,
-   NULL,                            /* get_video_output_size */
-   NULL,                            /* get_video_output_prev */
-   NULL,                            /* get_video_output_next */
+   sdl3_get_video_output_size,
+   sdl3_get_video_output_prev,
+   sdl3_get_video_output_next,
    NULL,                            /* get_current_framebuffer */
    NULL,                            /* get_proc_address */
    sdl3_poke_set_aspect_ratio,
@@ -1672,8 +1718,8 @@ video_driver_t video_sdl3 = {
    sdl3_gfx_frame,
    sdl3_gfx_set_nonblock_state,
    sdl3_gfx_alive,
-   sdl3_gfx_focus,
-   sdl3_gfx_suspend_screensaver,
+   sdl3_ctx_has_focus,
+   sdl3_suppress_screensaver,
    sdl3_gfx_has_windowed,
    NULL, /* set_shader - all call sites treat this as optional */
    sdl3_gfx_free,

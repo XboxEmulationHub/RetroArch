@@ -1452,7 +1452,7 @@ int generic_action_ok_displaylist_push(
             content_ctx_info_t content_info = {0};
             filebrowser_clear_type();
             task_push_load_subsystem_with_core(
-                  NULL, &content_info,
+                  NULL, NULL, &content_info,
                   CORE_TYPE_PLAIN, NULL, NULL);
          }
          break;
@@ -3090,7 +3090,7 @@ static int action_ok_playlist_entry_collection(const char *path,
          content_add_subsystem(entry->subsystem_roms->elems[i].data);
 
       task_push_load_subsystem_with_core(
-            NULL, &content_info,
+            NULL, content_label, &content_info,
             CORE_TYPE_PLAIN, NULL, NULL);
 
       /* TODO: update playlist entry? move to first position I guess? */
@@ -5440,7 +5440,8 @@ static int generic_action_ok_network(const char *path,
          fill_pathname_join_special(url_path,
                FILE_PATH_LAKKA_URL,
                LAKKA_PROJECT, sizeof(url_path));
-         fill_pathname_join_special(url_path, url_path,
+         /* overlapping buffers */
+         fill_pathname_join(url_path, url_path,
                FILE_PATH_INDEX_URL,
                sizeof(url_path));
          url_label    = msg_hash_to_str(enum_idx);

@@ -55,7 +55,6 @@ struct overlay_loader
    size_t resolve_pos;
    unsigned size;
    unsigned pos;
-   unsigned pos_increment;
 
    enum overlay_status state;
    enum overlay_image_transfer_status loading_status;
@@ -274,12 +273,28 @@ static void task_overlay_conf_free_file(char *buf, void *ud)
 }
 #endif
 
+/* Per-frame I/O window, consulted between work items.
+ *
+ * The loader used to chunk by a fixed count derived from the
+ * workload itself - half the descriptors, a quarter of the overlays
+ * - which is not pacing at all: a bigger overlay simply means a
+ * bigger chunk, so the work always landed in the same two or four
+ * handler invocations no matter how long each one took.  With
+ * Threaded Tasks off those invocations run on the thread driving
+ * the frame loop, and every item in them is a PNG decode off disk.
+ *
+ * Consulting the shared window instead is what the budgeted
+ * directory walks, playlist parse and scanner do: small overlays
+ * still finish in one invocation, large ones spread over as many as
+ * they need, and neither case is decided by the size of the job. */
+static bool task_overlay_within_budget(void *ud)
+{
+   return task_nbio_slice_within_budget(ud, 0, 0);
+}
+
 static void task_overlay_image_done(struct overlay *overlay)
 {
    overlay->pos           = 0;
-   /* Divide iteration steps by half of total descs if size is even,
-    * otherwise default to 8 (arbitrary value for now to speed things up). */
-   overlay->pos_increment = (overlay->size / 2) ? ((unsigned)(overlay->size / 2)) : 8;
 }
 
 static bool task_overlay_load_image_texture(
@@ -853,7 +868,7 @@ static void task_overlay_resolve_iterate(retro_task_t *task)
    loader->resolve_pos += 1;
 }
 
-static void task_overlay_deferred_loading(retro_task_t *task)
+static void task_overlay_deferred_loading(retro_task_t *task, void *budget)
 {
    size_t i                  = 0;
    overlay_loader_t *loader  = (overlay_loader_t*)task->state;
@@ -878,25 +893,27 @@ static void task_overlay_deferred_loading(retro_task_t *task)
          loader->overlays[loader->pos].pos = 0;
          break;
       case OVERLAY_IMAGE_TRANSFER_DESC_IMAGE_ITERATE:
-         for (i = 0; i < overlay->pos_increment; i++)
+         for (;;)
          {
-            if (overlay->pos < overlay->size)
+            if (overlay->pos >= overlay->size)
             {
-               task_overlay_load_desc_image(loader,
-                     &overlay->descs[overlay->pos], overlay,
-                     loader->pos, (unsigned)overlay->pos);
-            }
-            else
-            {
-               overlay->pos       = 0;
+               overlay->pos           = 0;
                loader->loading_status = OVERLAY_IMAGE_TRANSFER_DESC_ITERATE;
                break;
             }
 
+            task_overlay_load_desc_image(loader,
+                  &overlay->descs[overlay->pos], overlay,
+                  loader->pos, (unsigned)overlay->pos);
+
+            /* One item is always made, so the loader cannot stall on
+             * a window that is already exhausted. */
+            if (!task_overlay_within_budget(budget))
+               break;
          }
          break;
       case OVERLAY_IMAGE_TRANSFER_DESC_ITERATE:
-         for (i = 0; i < overlay->pos_increment; i++)
+         for (;;)
          {
             if (overlay->pos < overlay->size)
             {
@@ -920,6 +937,11 @@ static void task_overlay_deferred_loading(retro_task_t *task)
                loader->loading_status = OVERLAY_IMAGE_TRANSFER_DESC_DONE;
                break;
             }
+
+            /* One item is always made, so the loader cannot stall on
+             * a window that is already exhausted. */
+            if (!task_overlay_within_budget(budget))
+               break;
          }
          break;
       case OVERLAY_IMAGE_TRANSFER_DESC_DONE:
@@ -936,13 +958,12 @@ static void task_overlay_deferred_loading(retro_task_t *task)
    }
 }
 
-static void task_overlay_deferred_load(retro_task_t *task)
+static void task_overlay_deferred_load(retro_task_t *task, void *budget)
 {
-   unsigned i;
    overlay_loader_t *loader  = (overlay_loader_t*)task->state;
    config_file_t       *conf = loader->conf;
 
-   for (i = 0; i < loader->pos_increment; i++, loader->pos++)
+   for (;; loader->pos++)
    {
       size_t _len;
       char conf_key[32];
@@ -1228,6 +1249,14 @@ static void task_overlay_deferred_load(retro_task_t *task)
          overlay->flags |=  OVERLAY_AUTO_Y_SEPARATION;
       else
          overlay->flags &= ~OVERLAY_AUTO_Y_SEPARATION;
+
+      /* One overlay is always parsed, so the loader cannot stall on
+       * a window that is already exhausted. */
+      if (!task_overlay_within_budget(budget))
+      {
+         loader->pos++;
+         return;
+      }
    }
 
    return;
@@ -1243,22 +1272,40 @@ static void task_overlay_free(retro_task_t *task)
 {
    unsigned i;
    overlay_loader_t *loader  = (overlay_loader_t*)task->state;
-   uint8_t flg               = task_get_flags(task);
 
-   if ((flg & RETRO_TASK_FLG_CANCELLED) > 0)
+   /* Release what the loader still owns.
+    *
+    * A successful load hands the overlays, the path and the image
+    * list to the consumer and clears them (see the hand-off at the
+    * end of task_overlay_handler), so a pointer that is still set
+    * here is one nobody else took - because the load was cancelled,
+    * or because it finished but the hand-off never happened.
+    *
+    * Keying this on the pointers rather than on
+    * RETRO_TASK_FLG_CANCELLED is what keeps it from releasing what
+    * the consumer already released, and it also covers the case the
+    * flag missed: a load that completes but cannot allocate its
+    * payload used to leak the lot. */
+   if (loader->image_list)
    {
-      if (loader->overlay_path)
-         free(loader->overlay_path);
-
+      /* The list is a dedup index - its elements point at
+       * texture_images owned by the overlays, and string_list_free()
+       * does not follow .attr.p, so the textures go first. */
       for (i = 0; i < loader->image_list->size; i++)
          image_texture_free((struct texture_image*)loader->image_list->elems[i].attr.p);
-      string_list_free(loader->image_list);
 
+      string_list_free(loader->image_list);
+   }
+
+   if (loader->overlays)
+   {
       for (i = 0; i < loader->size; i++)
          input_overlay_free_overlay(&loader->overlays[i]);
 
       free(loader->overlays);
    }
+
+   free(loader->overlay_path);
 
    if (loader->conf)
       config_file_free(loader->conf);
@@ -1271,15 +1318,20 @@ static void task_overlay_free(retro_task_t *task)
 static void task_overlay_handler(retro_task_t *task)
 {
    uint8_t flg;
+   nbio_budget_t budget;
    overlay_loader_t *loader  = (overlay_loader_t*)task->state;
+
+   /* Claim this invocation's share of the shared per-frame I/O
+    * window; the loading phases consult it between items. */
+   task_nbio_slice_open(&budget);
 
    switch (loader->state)
    {
       case OVERLAY_STATUS_DEFERRED_LOADING:
-         task_overlay_deferred_loading(task);
+         task_overlay_deferred_loading(task, &budget);
          break;
       case OVERLAY_STATUS_DEFERRED_LOAD:
-         task_overlay_deferred_load(task);
+         task_overlay_deferred_load(task, &budget);
          break;
       case OVERLAY_STATUS_DEFERRED_LOADING_RESOLVE:
          task_overlay_resolve_iterate(task);
@@ -1293,6 +1345,8 @@ static void task_overlay_handler(retro_task_t *task)
          task_set_flags(task, RETRO_TASK_FLG_FINISHED, true);
          break;
    }
+
+   task_nbio_slice_close(&budget);
 
    flg = task_get_flags(task);
 
@@ -1319,6 +1373,20 @@ static void task_overlay_handler(retro_task_t *task)
       data->overlay_types               = loader->overlay_types;
       data->overlay_path                = loader->overlay_path;
       data->image_list                  = loader->image_list;
+
+      /* Ownership moves with the pointers, so drop the loader's
+       * references to them.  task_overlay_free() below releases
+       * whatever the loader still holds, and the task queue retires
+       * a task by running its callback and then its cleanup - so by
+       * the time the cleanup looks, the consumer
+       * (input_overlay_loaded in input/input_driver.c) has already
+       * taken the overlays and the path and released the image
+       * list.  Leaving the references set is a second release of
+       * each of them. */
+      loader->overlays                  = NULL;
+      loader->active                    = NULL;
+      loader->overlay_path              = NULL;
+      loader->image_list                = NULL;
 
       task_set_data(task, data);
    }
@@ -1387,7 +1455,7 @@ bool task_push_overlay_load_default(
       {
          RARCH_ERR("[Overlay] Failed to read config from archive.\n");
          free(loader);
-         free(image_list);
+         string_list_free(image_list);
          return false;
       }
       RARCH_DBG("[Overlay] Read %lld bytes from archive.\n",
@@ -1398,7 +1466,7 @@ bool task_push_overlay_load_default(
          {
             free(buf);
             free(loader);
-            free(image_list);
+            string_list_free(image_list);
             return false;
          }
          str[buf_len] = '\0';
@@ -1413,7 +1481,7 @@ bool task_push_overlay_load_default(
             {
                free(str);
                free(loader);
-               free(image_list);
+               string_list_free(image_list);
                return false;
             }
             memcpy(loader->conf_archive, overlay_path, archive_len);
@@ -1440,7 +1508,7 @@ bool task_push_overlay_load_default(
    {
       free(loader->conf_archive);
       free(loader);
-      free(image_list);
+      string_list_free(image_list);
       return false;
    }
 
@@ -1450,7 +1518,7 @@ bool task_push_overlay_load_default(
       config_file_free(conf);
       free(loader->conf_archive);
       free(loader);
-      free(image_list);
+      string_list_free(image_list);
       return false;
    }
 
@@ -1462,14 +1530,13 @@ bool task_push_overlay_load_default(
       config_file_free(conf);
       free(loader->conf_archive);
       free(loader);
-      free(image_list);
+      string_list_free(image_list);
       return false;
    }
 
    loader->conf             = conf;
    loader->image_list       = image_list;
    loader->state            = OVERLAY_STATUS_DEFERRED_LOAD;
-   loader->pos_increment    = (loader->size / 4) ? (loader->size / 4) : 4;
 
    if (is_osk)
       loader->flags        |= OVERLAY_LOADER_IS_OSK;
@@ -1486,7 +1553,7 @@ bool task_push_overlay_load_default(
       free(loader->overlays);
       free(loader->conf_archive);
       free(loader);
-      free(image_list);
+      string_list_free(image_list);
       return false;
    }
 

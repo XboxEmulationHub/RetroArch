@@ -45,6 +45,7 @@
 #include "../audio/audio_driver.h"
 
 #include "menu_driver.h"
+#include "menu_dirwalk.h"
 #include "menu_cbs.h"
 #include "../driver.h"
 #include "../list_special.h"
@@ -335,6 +336,7 @@ static menu_ctx_driver_t menu_ctx_null = {
   NULL,  /* refresh_thumbnail_image */
   NULL,  /* set_thumbnail_content */
   NULL,  /* osk_ptr_at_pos */
+  NULL,  /* osk_pointer_over_textbox */
   NULL,  /* update_savestate_thumbnail_path */
   NULL,  /* update_savestate_thumbnail_image */
   NULL,  /* pointer_down */
@@ -2469,6 +2471,11 @@ static bool menu_driver_displaylist_push_internal(
    else if (string_is_equal(label, MENU_ENUM_LABEL_HORIZONTAL_MENU_STR))
       return menu_displaylist_ctl(DISPLAYLIST_HORIZONTAL, info, settings);
    return false;
+}
+
+static bool menu_playlist_within_budget(void *ud)
+{
+   return task_nbio_slice_within_budget(ud, 0, 0);
 }
 
 static bool menu_driver_displaylist_push(
@@ -6257,20 +6264,33 @@ MENU_NOINLINE static int menu_input_post_iterate(
             if (     !menu_input_native_kb_active()
                   && !(menu_input->pointer.flags & MENU_INP_PTR_FLG_DRAGGED))
             {
-               menu_driver_ctl(RARCH_MENU_CTL_OSK_PTR_AT_POS, &point);
-               if (point.retcode > -1)
+               if (     menu_st->driver_ctx
+                     && menu_st->driver_ctx->osk_pointer_over_textbox
+                     && menu_st->driver_ctx->osk_pointer_over_textbox(
+                        menu_st->userdata, x, y, video_st->width, video_st->height))
+                  input_st->osk_textbox_focus = true;
+               else
                {
-                  bool show_osk_symbols = input_event_osk_show_symbol_pages(menu_st->driver_data);
-                  input_st->osk_ptr     = point.retcode;
-                  input_event_osk_append(
-                        &input_st->keyboard_line,
-                        &input_st->osk_idx,
-                        &input_st->osk_last_codepoint,
-                        &input_st->osk_last_codepoint_len,
-                        point.retcode,
-                        show_osk_symbols,
-                        input_st->osk_grid[input_st->osk_ptr],
-                        strlen(input_st->osk_grid[input_st->osk_ptr]));
+                  menu_driver_ctl(RARCH_MENU_CTL_OSK_PTR_AT_POS, &point);
+                  if (point.retcode > -1)
+                  {
+                     bool textbox_focus    = input_st->osk_textbox_focus;
+                     input_st->osk_ptr     = point.retcode;
+                     input_st->osk_textbox_focus = false;
+                     if (!textbox_focus)
+                     {
+                        bool show_osk_symbols = input_event_osk_show_symbol_pages(menu_st->driver_data);
+                        input_event_osk_append(
+                              &input_st->keyboard_line,
+                              &input_st->osk_idx,
+                              &input_st->osk_last_codepoint,
+                              &input_st->osk_last_codepoint_len,
+                              point.retcode,
+                              show_osk_symbols,
+                              input_st->osk_grid[input_st->osk_ptr],
+                              strlen(input_st->osk_grid[input_st->osk_ptr]));
+                     }
+                  }
                }
             }
          }
@@ -6875,7 +6895,14 @@ bool menu_driver_ctl(enum rarch_menu_ctl_state state, void *data)
          if (menu_st->flags & MENU_ST_FLAG_DATA_OWN)
             return true;
 
+         /* Abandon a pending deferred playlist parse before the
+          * cache it would install goes away. */
+         playlist_init_cached_defer_abort();
          playlist_free_cached();
+
+         /* End any in-flight background directory walk and drop an
+          * unconsumed listing; late completions become no-ops. */
+         menu_dirwalk_cancel();
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
          menu_shader_manager_free();
 #endif
@@ -6884,15 +6911,20 @@ bool menu_driver_ctl(enum rarch_menu_ctl_state state, void *data)
 #endif
 #if defined(HAVE_MENU)
 #if defined(HAVE_LIBRETRODB)
-         /* Before freeing the explore menu, we
-          * must wait for any explore menu initialisation
-          * tasks to complete */
-         menu_explore_wait_for_init_task();
+         /* Abandon any in-flight explore menu initialisation and
+          * database info scan rather than blocking teardown until
+          * they finish - a full-file database scan is seconds of
+          * frozen UI on slow storage, and this path runs while the
+          * user is looking at the menu.  Both tasks build into
+          * their own handles and install only from their main-thread
+          * callbacks, so the state freed just below is not something
+          * a worker can still be writing to; the cancels bump a
+          * generation that makes any completion already in flight
+          * install nothing. */
+         menu_explore_cancel_init_task();
          menu_explore_free();
 
-         /* Likewise for any in-flight database info
-          * scan, then drop its result cache */
-         menu_dbinfo_wait_for_task();
+         menu_dbinfo_cancel_task();
          menu_dbinfo_cache_free();
 #endif
          menu_contentless_cores_free();
@@ -8189,6 +8221,57 @@ int generic_menu_entry_action(
 }
 
 /* Iterate the menu driver for one frame. */
+/* Advance work a displaylist left unfinished, and rebuild the list
+ * when it completes.
+ *
+ * ENTRIES_NEED_REFRESH is otherwise consumed only in
+ * generic_menu_entry_action(), i.e. when the user presses something.
+ * Anything that yields mid-build therefore sat unfinished until the
+ * next keypress: a playlist read that did not fit its first slice
+ * showed an empty list, and populated only after backing out and
+ * re-entering.  This is the pump that was missing - it runs every
+ * frame, with no input required.
+ *
+ * Only a genuinely pending parse does any work here, so a menu with
+ * nothing outstanding costs one predictable branch. */
+static void menu_driver_pump_pending(struct menu_state *menu_st,
+      settings_t *settings)
+{
+   nbio_budget_t b;
+   menu_list_t *menu_list;
+   file_list_t *selection_buf;
+   file_list_t *menu_stack;
+   int r;
+
+   if (!playlist_init_cached_pending())
+      return;
+
+   /* One slice of the shared per-frame I/O window, the same budget
+    * the directory walks and the scanner draw from. */
+   task_nbio_slice_open(&b);
+   r = playlist_init_cached_continue(menu_playlist_within_budget, &b);
+   task_nbio_slice_close(&b);
+
+   if (r == 0)
+      return;   /* still reading; come back next frame */
+
+   if (r > 0)
+      playlist_init_cached_finish();
+
+   /* Ready (or failed): rebuild the list now rather than waiting for
+    * the user to press something. */
+   if (!(menu_list = menu_st->entries.list))
+      return;
+   selection_buf = MENU_LIST_GET_SELECTION(menu_list, 0);
+   menu_stack    = MENU_LIST_GET(menu_list, 0);
+
+   if (selection_buf && menu_stack)
+      menu_driver_displaylist_push(menu_st, settings,
+            selection_buf, menu_stack);
+
+   menu_st->flags &= ~MENU_ST_FLAG_ENTRIES_NEED_REFRESH;
+}
+
 bool menu_driver_iterate(
       struct menu_state *menu_st,
       gfx_display_t *p_disp,
@@ -8197,6 +8280,8 @@ bool menu_driver_iterate(
       enum menu_action action,
       retro_time_t current_time)
 {
+   menu_driver_pump_pending(menu_st, settings);
+
    return ( menu_st->driver_data
          && generic_menu_iterate(
             menu_st,

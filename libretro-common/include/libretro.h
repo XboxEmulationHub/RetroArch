@@ -1715,6 +1715,24 @@ enum retro_mod
 #define RETRO_ENVIRONMENT_GET_VFS_INTERFACE (45 | RETRO_ENVIRONMENT_EXPERIMENTAL)
 
 /**
+ * Returns a list of frontend-authorized filesystem locations.
+ *
+ * Paths returned by this call must be directly usable with the VFS interface,
+ * for example saf://... on Android.
+ *
+ * @param[out] data <tt>struct retro_vfs_authorized_locations *</tt>.
+ * The frontend owns the returned pointers. The core must copy strings
+ * if it needs to retain them.
+ * If \c data is \c NULL, the frontend should only return whether this
+ * environment callback is available.
+ *
+ * @return \c true if this environment call is available,
+ * \c false otherwise.
+ * @see RETRO_ENVIRONMENT_GET_VFS_INTERFACE
+ */
+#define RETRO_ENVIRONMENT_GET_VFS_AUTHORIZED_LOCATIONS (93 | RETRO_ENVIRONMENT_EXPERIMENTAL)
+
+/**
  * Returns an interface that the core can use
  * to set the state of any accessible device LEDs.
  *
@@ -2976,6 +2994,20 @@ struct retro_vfs_dir_handle;
  */
 #define RETRO_VFS_FILE_ACCESS_HINT_FREQUENT_ACCESS   (1 << 0)
 
+/**
+ * Indicates that the file will be read once, from start to finish,
+ * and then closed.
+ *
+ * No mapping or caching is wanted: the caller already keeps the bytes
+ * it asked for, so anything the frontend holds on to beyond the call
+ * is dead weight.  A frontend that buffers its reads may wish to skip
+ * doing so for such a stream, since a whole-file read gains nothing
+ * from being split across a buffer and copied twice.
+ *
+ * Only meaningful together with \c RETRO_VFS_FILE_ACCESS_READ.
+ */
+#define RETRO_VFS_FILE_ACCESS_HINT_SEQUENTIAL_BULK   (1 << 1)
+
 /** @} */
 
 /** @defgroup RETRO_VFS_SEEK_POSITION File Seek Positions
@@ -3411,6 +3443,33 @@ struct retro_vfs_interface_info
     * and must not be modified or freed by the core.
     * @since VFS API v1 */
    struct retro_vfs_interface *iface;
+};
+
+/**
+ * Represents a single frontend-authorized filesystem location.
+ *
+ * The \c path field must be directly usable through the frontend VFS
+ * interface, for example saf://... on Android.
+ *
+ * The frontend owns all returned pointers. Cores must copy strings if they
+ * need to retain them after the environment callback returns.
+ */
+struct retro_vfs_authorized_location
+{
+   const char *path;
+   const char *label;
+   unsigned flags;
+};
+
+/**
+ * Represents the list of frontend-authorized filesystem locations.
+ *
+ * This is returned by RETRO_ENVIRONMENT_GET_VFS_AUTHORIZED_LOCATIONS.
+ */
+struct retro_vfs_authorized_locations
+{
+   const struct retro_vfs_authorized_location *locations;
+   size_t count;
 };
 
 /** @} */

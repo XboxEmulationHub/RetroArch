@@ -265,6 +265,7 @@ OBJ += \
        tasks/task_save.o \
        tasks/task_movie.o \
        tasks/task_file_transfer.o \
+       tasks/task_nbio_slice.o \
        tasks/task_content_prefetch.o \
        tasks/task_image.o \
        tasks/task_playlist_manager.o \
@@ -289,7 +290,8 @@ OBJ += \
        $(LIBRETRO_COMM_DIR)/streams/interface_stream.o \
        $(LIBRETRO_COMM_DIR)/streams/memory_stream.o \
        $(LIBRETRO_COMM_DIR)/streams/network_stream.o \
-       $(LIBRETRO_COMM_DIR)/vfs/vfs_implementation.o
+       $(LIBRETRO_COMM_DIR)/vfs/vfs_implementation.o \
+       $(LIBRETRO_COMM_DIR)/vfs/vfs_hybrid.o
 
 ifeq ($(ANDROID), 1)
    OBJ += $(LIBRETRO_COMM_DIR)/vfs/vfs_implementation_saf.o
@@ -1128,6 +1130,7 @@ ifeq ($(HAVE_MENU_COMMON), 1)
           menu/cbs/menu_cbs_sublabel.o \
           menu/cbs/menu_cbs_title.o \
           menu/menu_displaylist.o \
+          menu/menu_dirwalk.o \
           menu/menu_contentless_cores.o
 endif
 
@@ -1670,7 +1673,16 @@ ifeq ($(HAVE_SDL3), 1)
    OBJ += input/drivers_joypad/sdl3_joypad.o \
           input/drivers/sdl3_input.o \
           gfx/drivers/sdl3_gfx.o \
-          gfx/common/sdl3_common.o
+          gfx/common/sdl3_common.o \
+          audio/drivers/sdl3_audio.o
+
+   ifneq ($(filter 1,$(HAVE_OPENGL) $(HAVE_OPENGL1) $(HAVE_OPENGL_CORE) $(HAVE_OPENGLES)),)
+      OBJ += gfx/drivers_context/sdl3_gl_ctx.o
+   endif
+
+   ifeq ($(HAVE_VULKAN), 1)
+      OBJ += gfx/drivers_context/sdl3_vk_ctx.o
+   endif
 else ifeq ($(HAVE_SDL2), 1)
    HAVE_SDL_COMMON = 1
    OBJ += gfx/drivers/sdl2_gfx.o \
@@ -2230,7 +2242,10 @@ else
       OBJ += $(LIBRETRO_COMM_DIR)/formats/7z/r7z_lzma.o
    endif
 
-   ifeq ($(HAVE_ZSTD), 1)
+   # The CHD Zstandard codec decodes through whichever backend is
+   # configured, rzstd first. Same shape as the FLAC test above: either
+   # one gives libchdr a decoder, so build the wrapper for both.
+   ifneq ($(filter 1,$(HAVE_ZSTD) $(HAVE_RZSTD)),)
       OBJ += $(LIBRETRO_COMM_DIR)/formats/libchdr/libchdr_zstd.o
    endif
 endif
@@ -2262,7 +2277,8 @@ ifeq ($(HAVE_RPNG), 1)
    DEFINES += -DHAVE_RPNG
    OBJ += $(LIBRETRO_COMM_DIR)/formats/png/rpng.o \
           $(LIBRETRO_COMM_DIR)/formats/png/rpng_apng.o \
-          $(LIBRETRO_COMM_DIR)/formats/png/rpng_encode.o
+          $(LIBRETRO_COMM_DIR)/formats/png/rpng_encode.o \
+          $(LIBRETRO_COMM_DIR)/file/rpng_file.o
 endif
 
 ifeq ($(HAVE_RJPEG), 1)
@@ -2334,12 +2350,13 @@ ifeq ($(HAVE_WEBMPLAYER), 1)
 endif
 
 OBJ += $(LIBRETRO_COMM_DIR)/formats/bmp/rbmp_encode.o \
+       $(LIBRETRO_COMM_DIR)/file/rbmp_file.o \
        $(LIBRETRO_COMM_DIR)/formats/json/rjson.o \
        $(LIBRETRO_COMM_DIR)/formats/image_transfer.o \
        $(LIBRETRO_COMM_DIR)/formats/audio_transfer.o \
        $(LIBRETRO_COMM_DIR)/formats/data_transfer.o \
        $(LIBRETRO_COMM_DIR)/memmap/memmap.o \
-       $(LIBRETRO_COMM_DIR)/formats/m3u/m3u_file.o
+       $(LIBRETRO_COMM_DIR)/formats/m3u/rm3u.o
 
 # Video4Linux 2
 
@@ -2877,7 +2894,15 @@ ifneq (,$(filter 1,$(HAVE_SMBCLIENT) $(HAVE_BUILTINSMBCLIENT)))
    else ifeq ($(HAVE_BUILTINSMBCLIENT),1)
       # builtin libsmb2
       ifneq ($(findstring Win32,$(OS)),)
-         CFLAGS += -D_WINDOWS -DWIN32_LEAN_AND_MEAN
+         # WIN32_LEAN_AND_MEAN is defined with an empty replacement list on
+         # purpose. It has to be on the command line because the bundled
+         # libsmb2 needs it, but it lands on every TU in the build, and ~40
+         # RetroArch headers do a bare "#define WIN32_LEAN_AND_MEAN" of their
+         # own before including <windows.h>. A plain -DWIN32_LEAN_AND_MEAN
+         # expands to 1, which does not match those, so each one of them
+         # warns about a macro redefinition. Nothing tests the value, only
+         # #ifndef, so an empty definition is equivalent and silent.
+         CFLAGS += -D_WINDOWS -DWIN32_LEAN_AND_MEAN=
          CFLAGS += -DNEED_RANDOM -DNEED_SRANDOM -DNEED_GETLOGIN_R
       endif
       INCLUDE_DIRS += -I$(DEPS_DIR)/libsmb2/include

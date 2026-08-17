@@ -649,6 +649,23 @@ libretro_vfs_implementation_file *retro_vfs_file_open_impl(
 #endif
       stream->hints &= ~RETRO_VFS_FILE_ACCESS_HINT_FREQUENT_ACCESS;
 
+#ifdef VFS_HAVE_DESCRIPTOR_IO
+   /* A read-once-and-close stream wants the descriptor path for the
+    * opposite reason a mapped one does: not to keep the bytes around,
+    * but to avoid a buffer it will never reuse.  Deliberately after
+    * the block above and never touching the mapping hint, so a
+    * stream asking for both still maps and behaves exactly as before.
+    *
+    * Restricted to VFS_SCHEME_NONE: the descriptor branch below knows
+    * about plain files and (on Android) SAF, and has no case for
+    * cdrom:// or smb://, which have their own read/seek entry points
+    * that only the buffered branch dispatches to. */
+   if (     (stream->hints & RETRO_VFS_FILE_ACCESS_HINT_SEQUENTIAL_BULK)
+         && mode == RETRO_VFS_FILE_ACCESS_READ
+         && stream->scheme == VFS_SCHEME_NONE)
+      stream->hints |= RFILE_HINT_UNBUFFERED;
+#endif
+
    switch (mode)
    {
       case RETRO_VFS_FILE_ACCESS_READ:
@@ -829,11 +846,28 @@ libretro_vfs_implementation_file *retro_vfs_file_open_impl(
       if (stream->scheme != VFS_SCHEME_CDROM)
       {
          const int bufsize = 64 * 1024;
-         if ((stream->buf = (char*)malloc(bufsize)))
-         {
-            if (stream->fp)
-               setvbuf(stream->fp, stream->buf, _IOFBF, bufsize);
-         }
+         /* NULL rather than a buffer of our own, so the C library
+          * allocates and owns it.
+          *
+          * Who owns the buffer is not a detail on every library.
+          * Apple's fread() has a fast path that reads a large request
+          * straight into the caller's buffer instead of copying it
+          * through the stream, and gates it on __SMBF - "this buffer
+          * is mine" - which setvbuf() clears when handed a buffer
+          * from outside (Libc stdio/FreeBSD/setvbuf.c sets __SMBF
+          * only on the branch that allocates, and fread.c tests it;
+          * see also radars 5980080 and 6180417).  So the 64 KiB
+          * buffer added here for write throughput was disqualifying
+          * the read fast path on every Apple target, and measured at
+          * roughly half the whole-file read speed on macOS.
+          *
+          * The size argument still applies, so writes keep the buffer
+          * they were given.  A library that will not allocate for a
+          * NULL buffer leaves the stream on its own default, which is
+          * slower for small writes but correct - the same outcome the
+          * malloc failing used to produce. */
+         if (stream->fp)
+            setvbuf(stream->fp, NULL, _IOFBF, bufsize);
       }
 #endif
    }
@@ -1280,7 +1314,34 @@ int retro_vfs_file_remove_impl(const char *path)
 
 #if defined(_WIN32) && !defined(_XBOX)
       /* Win32 (no Xbox) */
-#if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0500
+#if defined(LEGACY_WIN32_RUNTIME)
+      if (win32_needs_local_encoding())
+      {
+         char *path_local = NULL;
+         if ((path_local = utf8_to_local_string_alloc(path)))
+         {
+            /* We need to check if path is a directory */
+            if ((retro_vfs_stat_impl(path, NULL) & RETRO_VFS_STAT_IS_DIRECTORY) != 0)
+               ret = _rmdir(path_local);
+            else
+               ret = remove(path_local);
+            free(path_local);
+         }
+      }
+      else
+      {
+         wchar_t *path_wide = NULL;
+         if ((path_wide = utf8_to_utf16_string_alloc(path)))
+         {
+            /* We need to check if path is a directory */
+            if ((retro_vfs_stat_impl(path, NULL) & RETRO_VFS_STAT_IS_DIRECTORY) != 0)
+               ret = _wrmdir(path_wide);
+            else
+               ret = _wremove(path_wide);
+            free(path_wide);
+         }
+      }
+#elif defined(LEGACY_WIN32)
       char *path_local = NULL;
       if ((path_local = utf8_to_local_string_alloc(path)))
       {
@@ -1339,46 +1400,96 @@ int retro_vfs_file_rename_impl(const char *old_path, const char *new_path)
 #if defined(_WIN32) && !defined(_XBOX)
    /* Win32 (no Xbox) */
    int ret                 = -1;
-#if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0500
-   char *old_path_local    = NULL;
-#else
-   wchar_t *old_path_wide  = NULL;
-#endif
 
    if (!old_path || !*old_path || !new_path || !*new_path)
       return -1;
 
-#if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0500
-   old_path_local = utf8_to_local_string_alloc(old_path);
-
-   if (old_path_local)
+   /* Neither rename() nor _wrename() can replace an existing
+    * destination on Windows, which breaks writing to a temporary and
+    * renaming it over the original.  MoveFileExW with
+    * MOVEFILE_REPLACE_EXISTING gives the POSIX overwrite behaviour.
+    * It is unsupported on 9x, so the local-encoding path replaces by
+    * removing the destination, and only after a plain rename fails. */
+#if defined(LEGACY_WIN32_RUNTIME)
+   if (win32_needs_local_encoding())
    {
-      char *new_path_local = utf8_to_local_string_alloc(new_path);
+      char *old_path_local = utf8_to_local_string_alloc(old_path);
 
-      if (new_path_local)
+      if (old_path_local)
       {
-         if (rename(old_path_local, new_path_local) == 0)
-            ret = 0;
-         free(new_path_local);
-      }
+         char *new_path_local = utf8_to_local_string_alloc(new_path);
 
-      free(old_path_local);
+         if (new_path_local)
+         {
+            if (rename(old_path_local, new_path_local) == 0)
+               ret = 0;
+            else if (remove(new_path_local) == 0 &&
+                  rename(old_path_local, new_path_local) == 0)
+               ret = 0;
+            free(new_path_local);
+         }
+
+         free(old_path_local);
+      }
+   }
+   else
+   {
+      wchar_t *old_path_wide = utf8_to_utf16_string_alloc(old_path);
+
+      if (old_path_wide)
+      {
+         wchar_t *new_path_wide = utf8_to_utf16_string_alloc(new_path);
+
+         if (new_path_wide)
+         {
+            if (MoveFileExW(old_path_wide, new_path_wide,
+                  MOVEFILE_REPLACE_EXISTING))
+               ret = 0;
+            free(new_path_wide);
+         }
+
+         free(old_path_wide);
+      }
+   }
+#elif defined(LEGACY_WIN32)
+   {
+      char *old_path_local = utf8_to_local_string_alloc(old_path);
+
+      if (old_path_local)
+      {
+         char *new_path_local = utf8_to_local_string_alloc(new_path);
+
+         if (new_path_local)
+         {
+            if (rename(old_path_local, new_path_local) == 0)
+               ret = 0;
+            else if (remove(new_path_local) == 0 &&
+                  rename(old_path_local, new_path_local) == 0)
+               ret = 0;
+            free(new_path_local);
+         }
+
+         free(old_path_local);
+      }
    }
 #else
-   old_path_wide = utf8_to_utf16_string_alloc(old_path);
-
-   if (old_path_wide)
    {
-      wchar_t *new_path_wide = utf8_to_utf16_string_alloc(new_path);
+      wchar_t *old_path_wide = utf8_to_utf16_string_alloc(old_path);
 
-      if (new_path_wide)
+      if (old_path_wide)
       {
-         if (_wrename(old_path_wide, new_path_wide) == 0)
-            ret = 0;
-         free(new_path_wide);
-      }
+         wchar_t *new_path_wide = utf8_to_utf16_string_alloc(new_path);
 
-      free(old_path_wide);
+         if (new_path_wide)
+         {
+            if (MoveFileExW(old_path_wide, new_path_wide,
+                  MOVEFILE_REPLACE_EXISTING))
+               ret = 0;
+            free(new_path_wide);
+         }
+
+         free(old_path_wide);
+      }
    }
 #endif
    return ret;
@@ -1750,6 +1861,25 @@ int retro_vfs_mkdir_impl(const char *dir)
    }
 }
 
+#if defined(_WIN32)
+/* Worst-case UTF-8 for a find-data name, terminator included.
+ *
+ * W: cFileName is WCHAR[MAX_PATH].  A BMP unit is at most 3 UTF-8 bytes;
+ * a surrogate pair is 2 units for 4 bytes, so 3 per unit bounds both.
+ *
+ * A: cFileName is CHAR[MAX_PATH] in the local codepage.  One SBCS byte
+ * is one BMP character, so it is bounded by the same 3; DBCS spends two
+ * bytes per character and is cheaper still.
+ *
+ * The old code decoded back over cFileName itself, which is 520 bytes on
+ * the W path and 260 on the A path - short of this bound whenever the
+ * name is not ASCII, so a 174-character CJK name (255 is legal on NTFS)
+ * was silently strlcpy()-truncated.  It also destroyed the source
+ * encoding in place, making the function return garbage if ever called
+ * twice on one entry. */
+#define VFS_WIN32_NAME_UTF8_MAX (MAX_PATH * 3 + 1)
+#endif
+
 #ifdef VFS_FRONTEND
 struct retro_vfs_dir_handle
 #else
@@ -1776,6 +1906,7 @@ struct libretro_vfs_implementation_dir
    HANDLE directory;
    bool next;
    char path[PATH_MAX_LENGTH];
+   char name_utf8[VFS_WIN32_NAME_UTF8_MAX];
 #elif defined(VITA)
    SceUID directory;
    SceIoDirent entry;
@@ -1793,6 +1924,7 @@ struct libretro_vfs_implementation_dir
 #ifdef HAVE_SMBCLIENT
    smb_dir_handle* smb_handle;
    char smb_path[PATH_MAX_LENGTH];
+   bool smb_is_dir;
 #endif
 };
 
@@ -1850,8 +1982,9 @@ libretro_vfs_implementation_dir *retro_vfs_opendir_impl(
          free(rdir);
          return NULL;
       }
-      rdir->smb_handle = dh;
+      rdir->smb_handle  = dh;
       rdir->smb_path[0] = '\0';
+      rdir->smb_is_dir  = false;
       return rdir;
    }
 #endif
@@ -1972,6 +2105,7 @@ bool retro_vfs_readdir_impl(libretro_vfs_implementation_dir *rdir)
       if (!de)
          return false;
       strlcpy(rdir->smb_path, de->name, sizeof(rdir->smb_path));
+      rdir->smb_is_dir = (de->type == RETRO_SMB_DIRENT_DIR);
       return true;
    }
    /* If we opened an SMB path but failed, do not fall through to native readdir */
@@ -2010,6 +2144,57 @@ bool retro_vfs_readdir_impl(libretro_vfs_implementation_dir *rdir)
 #endif
 }
 
+#if defined(_WIN32)
+#if defined(LEGACY_WIN32) || defined(LEGACY_WIN32_RUNTIME)
+/* Which codepages actually need converting is a question for
+ * encodings/, so ask it there rather than restate it here; on targets
+ * where the answer is "none" this allocates nothing. */
+static const char *vfs_win32_name_local(
+      libretro_vfs_implementation_dir *rdir, const char *src)
+{
+   if (!local_to_utf8_string(src, rdir->name_utf8, sizeof(rdir->name_utf8)))
+      return NULL;
+   return rdir->name_utf8;
+}
+#endif
+
+#if !defined(LEGACY_WIN32) || defined(LEGACY_WIN32_RUNTIME)
+/* utf16_conv_utf8() writes without an output bound and does not
+ * terminate; VFS_WIN32_NAME_UTF8_MAX is what makes the first safe and
+ * the store below covers the second.  Taking it directly is what drops
+ * the per-entry allocation - utf16_to_utf8_string_alloc() and
+ * utf16_to_char_string() both malloc internally. */
+static const char *vfs_win32_name_utf16(
+      libretro_vfs_implementation_dir *rdir, const wchar_t *src)
+{
+   char *name;
+   size_t out_len = 0;
+   size_t in_len  = 0;
+
+   while (src[in_len])
+      in_len++;
+
+   if (utf16_conv_utf8((uint8_t*)rdir->name_utf8, &out_len,
+            (const uint16_t*)src, in_len))
+   {
+      rdir->name_utf8[out_len] = '\0';
+      return rdir->name_utf8;
+   }
+
+   /* Unpaired surrogate: utf16_conv_utf8() stops at one, and NTFS
+    * permits them in names.  WideCharToMultiByte() substitutes U+FFFD
+    * and carries on, so fall back to it rather than hand back a name
+    * truncated at the bad unit.  Rare enough that the allocation this
+    * costs does not matter. */
+   if (!(name = utf16_to_utf8_string_alloc(src)))
+      return NULL;
+   strlcpy(rdir->name_utf8, name, sizeof(rdir->name_utf8));
+   free(name);
+   return rdir->name_utf8;
+}
+#endif
+#endif
+
 const char *retro_vfs_dirent_get_name_impl(libretro_vfs_implementation_dir *rdir)
 {
 #ifdef HAVE_SMBCLIENT
@@ -2024,48 +2209,13 @@ const char *retro_vfs_dirent_get_name_impl(libretro_vfs_implementation_dir *rdir
    {
 #if defined(_WIN32)
 #if defined(LEGACY_WIN32_RUNTIME)
-      char *name;
-      void  *buf;
-      size_t buf_len;
-
       if (win32_needs_local_encoding())
-      {
-         name          = local_to_utf8_string_alloc(rdir->entry.a.cFileName);
-         buf           = rdir->entry.a.cFileName;
-         buf_len       = sizeof(rdir->entry.a.cFileName);
-      }
-      else
-      {
-         name          = utf16_to_utf8_string_alloc(rdir->entry.w.cFileName);
-         buf           = rdir->entry.w.cFileName;
-         buf_len       = sizeof(rdir->entry.w.cFileName);
-      }
-
-      if (!name)
-         return NULL;
-      /* As in the compile-time paths: the decoded UTF-8 is written back
-       * over the find-data's own name buffer, which outlives this call
-       * and is always at least as large as the name it held. */
-      memset(buf, 0, buf_len);
-      strlcpy((char*)buf, name, buf_len);
-      free(name);
-      return (char*)buf;
+         return vfs_win32_name_local(rdir, rdir->entry.a.cFileName);
+      return vfs_win32_name_utf16(rdir, rdir->entry.w.cFileName);
 #elif defined(LEGACY_WIN32)
-      char *name       = local_to_utf8_string_alloc(rdir->entry.cFileName);
-      if (!name)
-         return NULL;
-      memset(rdir->entry.cFileName, 0, sizeof(rdir->entry.cFileName));
-      strlcpy((char*)rdir->entry.cFileName, name, sizeof(rdir->entry.cFileName));
-      free(name);
-      return (char*)rdir->entry.cFileName;
+      return vfs_win32_name_local(rdir, rdir->entry.cFileName);
 #else
-      char *name       = utf16_to_utf8_string_alloc(rdir->entry.cFileName);
-      if (!name)
-         return NULL;
-      memset(rdir->entry.cFileName, 0, sizeof(rdir->entry.cFileName));
-      strlcpy((char*)rdir->entry.cFileName, name, sizeof(rdir->entry.cFileName));
-      free(name);
-      return (char*)rdir->entry.cFileName;
+      return vfs_win32_name_utf16(rdir, rdir->entry.cFileName);
 #endif
 #elif defined(VITA) || defined(__PSL1GHT__) || defined(__PS3__)
       return rdir->entry.d_name;
@@ -2076,27 +2226,6 @@ const char *retro_vfs_dirent_get_name_impl(libretro_vfs_implementation_dir *rdir
 #endif
    }
 }
-
-#ifdef HAVE_SMBCLIENT
-/* Outlined for the same reason as the stat helper below: the buffer is
- * only needed when the entry belongs to an smb:// listing. */
-static VFS_NOINLINE bool retro_vfs_dirent_is_dir_smb(
-      libretro_vfs_implementation_dir *rdir)
-{
-   char full[PATH_MAX_LENGTH];
-   const char *name = retro_vfs_dirent_get_name_impl(rdir);
-   int64_t sz       = 0;
-   int st           = 0;
-
-   if (!name)
-      return false;
-
-   fill_pathname_join_special(full, rdir->orig_path, name, sizeof(full));
-   st = retro_vfs_stat_smb(full, &sz);
-
-   return (st & RETRO_VFS_STAT_IS_DIRECTORY) != 0;
-}
-#endif
 
 #if !defined(_WIN32) && !defined(VITA) && !defined(__PSL1GHT__) && !defined(__PS3__)
 /* Split out of retro_vfs_dirent_is_dir_impl() so that the d_type test
@@ -2124,7 +2253,7 @@ bool retro_vfs_dirent_is_dir_impl(libretro_vfs_implementation_dir *rdir)
 {
 #ifdef HAVE_SMBCLIENT
    if (rdir->smb_handle && rdir->smb_handle->dir)
-      return retro_vfs_dirent_is_dir_smb(rdir);
+      return rdir->smb_is_dir;
 #endif
 #if defined(ANDROID) && defined(HAVE_SAF)
    if (rdir->saf_directory != NULL)

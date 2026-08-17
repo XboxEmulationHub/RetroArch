@@ -113,10 +113,6 @@ CONSOLE EXTENSIONS
 ============================================================ */
 #ifdef RARCH_CONSOLE
 
-#ifdef HW_DOL
-#include "../memory/ngc/ssaram.c"
-#endif
-
 #ifdef INTERNAL_LIBOGC
 #include "../wii/libogc/libfat/cache.c"
 #include "../wii/libogc/libfat/directory.c"
@@ -468,6 +464,7 @@ VIDEO IMAGE
 #include "../libretro-common/formats/png/rpng.c"
 #include "../libretro-common/formats/png/rpng_apng.c"
 #include "../libretro-common/formats/png/rpng_encode.c"
+#include "../libretro-common/file/rpng_file.c"
 #endif
 #ifdef HAVE_RJPEG
 #include "../libretro-common/formats/jpeg/rjpeg.c"
@@ -514,6 +511,7 @@ VIDEO IMAGE
 #endif
 
 #include "../libretro-common/formats/bmp/rbmp_encode.c"
+#include "../libretro-common/file/rbmp_file.c"
 
 #ifdef HAVE_RWAV
 #include "../libretro-common/formats/wav/rwav.c"
@@ -983,6 +981,13 @@ AUDIO
 #include "../input/drivers/sdl3_input.c"
 #include "../gfx/drivers/sdl3_gfx.c"
 #include "../gfx/common/sdl3_common.c"
+#include "../audio/drivers/sdl3_audio.c"
+#if defined(HAVE_OPENGL) || defined(HAVE_OPENGL1) || defined(HAVE_OPENGL_CORE) || defined(HAVE_OPENGLES)
+#include "../gfx/drivers_context/sdl3_gl_ctx.c"
+#endif
+#if defined(HAVE_VULKAN)
+#include "../gfx/drivers_context/sdl3_vk_ctx.c"
+#endif
 #elif defined(HAVE_SDL2)
 #include "../audio/drivers/sdl_audio.c"
 #include "../input/drivers/sdl_input.c"
@@ -1187,6 +1192,7 @@ FILE
 #ifndef __WINRT__
 #include "../libretro-common/vfs/vfs_implementation.c"
 #endif
+#include "../libretro-common/vfs/vfs_hybrid.c"
 
 #ifdef HAVE_CDROM
 #include "../libretro-common/cdrom/cdrom.c"
@@ -1410,6 +1416,7 @@ DATA RUNLOOP
 #include "../tasks/task_content_prefetch.c"
 #include "../tasks/task_image.c"
 #include "../tasks/task_file_transfer.c"
+#include "../tasks/task_nbio_slice.c"
 #include "../tasks/task_playlist_manager.c"
 #include "../tasks/task_core_backup.c"
 #ifdef HAVE_TRANSLATE
@@ -1478,6 +1485,7 @@ MENU
 #include "../menu/cbs/menu_cbs_label.c"
 #include "../menu/cbs/menu_cbs_sublabel.c"
 #include "../menu/menu_displaylist.c"
+#include "../menu/menu_dirwalk.c"
 #include "../menu/menu_contentless_cores.c"
 #ifdef HAVE_LIBRETRODB
 #include "../menu/menu_explore.c"
@@ -1540,7 +1548,7 @@ DEPENDENCIES
 #define GRIFFIN_HAVE_R7Z_LZMA 1
 #include "../libretro-common/formats/7z/r7z_lzma.c"
 
-#ifdef HAVE_ZSTD
+#if defined(HAVE_ZSTD) || defined(HAVE_RZSTD)
 #include "../libretro-common/formats/libchdr/libchdr_zstd.c"
 #endif
 #endif  /* !HAVE_RCHD */
@@ -1734,7 +1742,7 @@ DISK CONTROL INTERFACE
 /*============================================================
 MISC FILE FORMATS
 ============================================================ */
-#include "../libretro-common/formats/m3u/m3u_file.c"
+#include "../libretro-common/formats/m3u/rm3u.c"
 
 /*============================================================
 TIME

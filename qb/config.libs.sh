@@ -543,7 +543,9 @@ check_platform Win32 WINMM 'WinMM is' true
 check_platform Win32 ASIO 'ASIO is' true
 
 if [ "$HAVE_BLISSBOX" != 'no' ]; then
-   if [ "$HAVE_LIBUSB" != 'no' ] || [ "$OS" = 'Win32' ]; then
+   # Linux resolves the pad type through hidraw and only falls back to
+   # libusb, so it does not need libusb to be present.
+   if [ "$HAVE_LIBUSB" != 'no' ] || [ "$OS" = 'Win32' ] || [ "$OS" = 'Linux' ]; then
       add_opt BLISSBOX yes
    else
       add_opt BLISSBOX no
@@ -911,6 +913,23 @@ fi
 # First try system libsmb2
 check_pkgconf SMBCLIENT libsmb2 0.0
 check_enabled NETWORKING SMBCLIENT libsmb2 'SMB client support is' false
+
+# --enable-libsmb is the umbrella switch for SMB support: it guarantees SMB
+# gets built in without the caller having to know which libsmb2 provider is
+# available.  A system libsmb2 is preferred when pkg-config found one, and
+# the copy bundled in deps/libsmb2 is used otherwise.  --enable-smbclient and
+# --enable-builtinsmbclient remain available for packagers who need to pin a
+# specific provider.
+if [ "$HAVE_LIBSMB" = 'yes' ]; then
+   check_enabled NETWORKING LIBSMB libsmb2 'Networking is' false
+fi
+
+if [ "$HAVE_LIBSMB" = 'yes' ] && [ "$HAVE_SMBCLIENT" != 'yes' ]; then
+   if [ "$USER_BUILTINSMBCLIENT" = 'no' ]; then
+      die 1 'Error: --enable-libsmb requires a libsmb2, but no system libsmb2 was found and the bundled one is disabled.'
+   fi
+   HAVE_BUILTINSMBCLIENT=yes
+fi
 
 if [ "$HAVE_SMBCLIENT" = "yes" ]; then
     echo "SMB support enabled (system libsmb2)"

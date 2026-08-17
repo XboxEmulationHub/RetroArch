@@ -211,6 +211,29 @@ static bool png_write_iend_string(intfstream_t* intf_s)
          sizeof(data) - sizeof(uint32_t));
 }
 
+/* enum rpng_pixfmt lives in rpng.h so that the path-based convenience
+ * adapters in file/rpng_file.c (and any external stream caller) can select
+ * the format without this TU exposing anything path-related. */
+
+static unsigned rpng_pixfmt_bpp(enum rpng_pixfmt fmt)
+{
+   switch (fmt)
+   {
+      case RPNG_PIXFMT_ARGB32:
+      case RPNG_PIXFMT_RGBA32:
+         return 4;
+      case RPNG_PIXFMT_RGB48:
+         return 6;
+      case RPNG_PIXFMT_XRGB8888:
+      case RPNG_PIXFMT_RGB565:
+         /* 32/16-bit sources, but the PNG side is 8-bit RGB. */
+      case RPNG_PIXFMT_BGR24:
+      default:
+         break;
+   }
+   return 3;
+}
+
 static void copy_argb_line(uint8_t *dst, const uint32_t *src, unsigned width)
 {
    unsigned i;
@@ -224,6 +247,19 @@ static void copy_argb_line(uint8_t *dst, const uint32_t *src, unsigned width)
    }
 }
 
+/* RGBA32 is already the on-wire channel order for colour type 6 - R,G,B,A,
+ * one byte each, in memory order - so the row needs no swizzle at all,
+ * only the move into the filter scratch buffer.
+ *
+ * That move cannot be elided by pointing rgba_line at the caller's row:
+ * the winning filter's tag byte is written at chosen_filtered[-1], and
+ * when the "none" filter wins chosen_filtered *is* rgba_line, which would
+ * scribble one byte into the caller's surface. */
+static void copy_rgba_line(uint8_t *dst, const uint8_t *src, unsigned width)
+{
+   memcpy(dst, src, (size_t)width * 4);
+}
+
 static void copy_bgr24_line(uint8_t *dst, const uint8_t *src, unsigned width)
 {
    unsigned i;
@@ -232,6 +268,39 @@ static void copy_bgr24_line(uint8_t *dst, const uint8_t *src, unsigned width)
       dst[2] = src[0];
       dst[1] = src[1];
       dst[0] = src[2];
+   }
+}
+
+/* X8R8G8B8 -> PNG RGB.  The X byte is ignored. */
+static void copy_xrgb8888_line(uint8_t *dst, const uint32_t *src,
+      unsigned width)
+{
+   unsigned i;
+   for (i = 0; i < width; i++)
+   {
+      uint32_t px = src[i];
+      *dst++      = (uint8_t)(px >> 16); /* R */
+      *dst++      = (uint8_t)(px >>  8); /* G */
+      *dst++      = (uint8_t)(px >>  0); /* B */
+   }
+}
+
+/* R5G6B5 -> PNG RGB, expanding channels exactly as the scaler's
+ * conv_rgb565_bgr24 does so this path is pixel-identical to the
+ * historical convert-then-encode path. */
+static void copy_rgb565_line(uint8_t *dst, const uint16_t *src,
+      unsigned width)
+{
+   unsigned i;
+   for (i = 0; i < width; i++)
+   {
+      uint16_t px = src[i];
+      uint8_t r   = (px >> 11) & 0x1f;
+      uint8_t g   = (px >>  5) & 0x3f;
+      uint8_t b   = (px >>  0) & 0x1f;
+      *dst++      = (uint8_t)((r << 3) | (r >> 2));
+      *dst++      = (uint8_t)((g << 2) | (g >> 4));
+      *dst++      = (uint8_t)((b << 3) | (b >> 2));
    }
 }
 
@@ -592,11 +661,12 @@ static bool flush_idat_chunk(intfstream_t *intf_s,
    return png_write_idat_string(intf_s, chunk_buf, payload_len + 8);
 }
 
-bool rpng_save_image_stream(const uint8_t *data, intfstream_t* intf_s,
-      unsigned width, unsigned height, signed pitch, unsigned bpp,
-      const struct rpng_hdr_metadata *hdr)
+bool rpng_save_image_stream_fmt(const uint8_t *data,
+      intfstream_t* intf_s, unsigned width, unsigned height, signed pitch,
+      enum rpng_pixfmt fmt, const struct rpng_hdr_metadata *hdr)
 {
    unsigned h;
+   unsigned bpp = rpng_pixfmt_bpp(fmt);
    struct png_ihdr ihdr = {0};
    bool ret = true;
    const struct trans_stream_backend *stream_backend = NULL;
@@ -749,12 +819,28 @@ bool rpng_save_image_stream(const uint8_t *data, intfstream_t* intf_s,
       unsigned min_sad;
       uint8_t *chosen_filtered;
 
-      if (bpp == sizeof(uint32_t))
-         copy_argb_line(rgba_line, (const uint32_t*)data, width);
-      else if (bpp == 6)
-         copy_rgb48_line(rgba_line, (const uint16_t*)data, width);
-      else
-         copy_bgr24_line(rgba_line, data, width);
+      switch (fmt)
+      {
+         case RPNG_PIXFMT_ARGB32:
+            copy_argb_line(rgba_line, (const uint32_t*)data, width);
+            break;
+         case RPNG_PIXFMT_RGBA32:
+            copy_rgba_line(rgba_line, data, width);
+            break;
+         case RPNG_PIXFMT_RGB48:
+            copy_rgb48_line(rgba_line, (const uint16_t*)data, width);
+            break;
+         case RPNG_PIXFMT_XRGB8888:
+            copy_xrgb8888_line(rgba_line, (const uint32_t*)(const void*)data, width);
+            break;
+         case RPNG_PIXFMT_RGB565:
+            copy_rgb565_line(rgba_line, (const uint16_t*)(const void*)data, width);
+            break;
+         case RPNG_PIXFMT_BGR24:
+         default:
+            copy_bgr24_line(rgba_line, data, width);
+            break;
+      }
 
       /* Filter selection unchanged from the previous implementation:
        * try every filter, pick the one with lowest sum-of-abs-deviation. */
@@ -896,56 +982,39 @@ end:
    return ret;
 }
 
-bool rpng_save_image_argb(const char *path, const uint32_t *data,
-      unsigned width, unsigned height, unsigned pitch)
-{
-   bool ret                      = false;
-   intfstream_t* intf_s          = NULL;
-
-   intf_s = intfstream_open_file(path,
-         RETRO_VFS_FILE_ACCESS_WRITE,
-         RETRO_VFS_FILE_ACCESS_HINT_NONE);
-
-   ret = rpng_save_image_stream((const uint8_t*) data, intf_s,
-                                width, height,
-                                (signed) pitch, sizeof(uint32_t), NULL);
-   intfstream_close(intf_s);
-   free(intf_s);
-   return ret;
-}
-
-bool rpng_save_image_bgr24(const char *path, const uint8_t *data,
-      unsigned width, unsigned height, unsigned pitch)
-{
-   bool ret                      = false;
-   intfstream_t* intf_s          = NULL;
-
-   intf_s = intfstream_open_file(path,
-         RETRO_VFS_FILE_ACCESS_WRITE,
-         RETRO_VFS_FILE_ACCESS_HINT_NONE);
-   ret = rpng_save_image_stream(data, intf_s, width, height,
-                                (signed) pitch, 3, NULL);
-   intfstream_close(intf_s);
-   free(intf_s);
-   return ret;
-}
-
-bool rpng_save_image_rgb48_hdr(const char *path, const uint16_t *data,
-      unsigned width, unsigned height, unsigned pitch,
+/* Bytes-per-pixel entry point kept for callers outside this file, which
+ * predate the format enum.  bpp is unambiguous for every format it could
+ * already express; RGBA32 is reachable only through the fmt worker or
+ * rpng_save_image_rgba(). */
+bool rpng_save_image_stream(const uint8_t *data, intfstream_t* intf_s,
+      unsigned width, unsigned height, signed pitch, unsigned bpp,
       const struct rpng_hdr_metadata *hdr)
 {
-   bool ret                      = false;
-   intfstream_t* intf_s          = NULL;
+   enum rpng_pixfmt fmt;
 
-   intf_s = intfstream_open_file(path,
-         RETRO_VFS_FILE_ACCESS_WRITE,
-         RETRO_VFS_FILE_ACCESS_HINT_NONE);
-   ret = rpng_save_image_stream((const uint8_t*)data, intf_s, width, height,
-                                (signed) pitch, 6, hdr);
-   intfstream_close(intf_s);
-   free(intf_s);
-   return ret;
+   switch (bpp)
+   {
+      case 4:
+         fmt = RPNG_PIXFMT_ARGB32;
+         break;
+      case 6:
+         fmt = RPNG_PIXFMT_RGB48;
+         break;
+      case 3:
+         fmt = RPNG_PIXFMT_BGR24;
+         break;
+      default:
+         return false;
+   }
+
+   return rpng_save_image_stream_fmt(data, intf_s, width, height,
+         pitch, fmt, hdr);
 }
+
+/* The path-based convenience wrappers (rpng_save_image_argb / bgr24 /
+ * rgba / rgb48_hdr) live in file/rpng_file.c: this TU is a pure encoder and
+ * never opens a path.  Memory-backed intfstreams (used by the *_string
+ * entry points below) are the only streams it creates itself. */
 
 
 uint8_t* rpng_save_image_bgr24_hdr_string(const uint8_t *data,
@@ -966,8 +1035,8 @@ uint8_t* rpng_save_image_bgr24_hdr_string(const uint8_t *data,
          RETRO_VFS_FILE_ACCESS_HINT_NONE,
          _len);
 
-   ret    = rpng_save_image_stream((const uint8_t*)data,
-            intf_s, width, height, pitch, 3, hdr);
+   ret    = rpng_save_image_stream_fmt((const uint8_t*)data,
+            intf_s, width, height, pitch, RPNG_PIXFMT_BGR24, hdr);
    *bytes = intfstream_get_ptr(intf_s);
 
    /* Trim the buffer to the actual written size instead of
@@ -1021,8 +1090,8 @@ uint8_t* rpng_save_image_rgb48_hdr_string(const uint16_t *data,
          RETRO_VFS_FILE_ACCESS_HINT_NONE,
          _len);
 
-   ret    = rpng_save_image_stream((const uint8_t*)data,
-            intf_s, width, height, pitch, 6, hdr);
+   ret    = rpng_save_image_stream_fmt((const uint8_t*)data,
+            intf_s, width, height, pitch, RPNG_PIXFMT_RGB48, hdr);
    *bytes = intfstream_get_ptr(intf_s);
 
    if (ret && *bytes > 0)

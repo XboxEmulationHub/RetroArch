@@ -100,6 +100,11 @@
 #include "play_feature_delivery/play_feature_delivery.h"
 #endif
 
+#if defined(ANDROID) && defined(HAVE_SAF)
+bool android_get_vfs_authorized_locations(
+      struct retro_vfs_authorized_locations *locations);
+#endif
+
 #ifdef HAVE_PRESENCE
 #include "network/presence.h"
 #endif
@@ -407,6 +412,11 @@ static runloop_state_t runloop_state      = {0};
 runloop_state_t *runloop_state_get_ptr(void)
 {
    return &runloop_state;
+}
+
+bool runloop_is_content_closing(void)
+{
+   return runloop_state.content_closing;
 }
 
 bool state_manager_frame_is_reversed(void)
@@ -1504,8 +1514,11 @@ bool runloop_environment_cb(unsigned cmd, void *data)
                return true;
             }
 
-            RARCH_DBG("[Environ] GET_VARIABLE: %s = \"%s\"\n",
-                  var->key, var->value);
+            /* Log initial environment gets here and handle
+             * runtime logging in 'core_option_manager.c' */
+            if (runloop_st->core_options->log)
+               RARCH_DBG("[Environ] GET_VARIABLE: %s = \"%s\"\n",
+                     var->key, var->value);
          }
          break;
 
@@ -1770,10 +1783,11 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
             if (runloop_st->core_options && core_options_display)
             {
-               RARCH_DBG("[Environ] SET_CORE_OPTIONS_DISPLAY: %s = %s\n",
-                     core_options_display->key,
-                     core_options_display->visible ? "visible" : "hidden");
-               core_option_manager_set_visible(
+               if (runloop_st->core_options->log)
+                  RARCH_DBG("[Environ] SET_CORE_OPTIONS_DISPLAY: %s = %s\n",
+                        core_options_display->key,
+                        core_options_display->visible ? "visible" : "hidden");
+               core_option_manager_set_display(
                      runloop_st->core_options,
                      core_options_display->key,
                      core_options_display->visible);
@@ -2811,7 +2825,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
             /* no need to reinit camera or microphone here */
             reinit_flags &= ~(DRIVER_CAMERA_MASK | DRIVER_MICROPHONE_MASK);
 
-            RARCH_LOG("[Environ] SET_SYSTEM_AV_INFO: %ux%u, Aspect: %.3f, FPS: %.2f, Sample rate: %.2f Hz.\n",
+            RARCH_LOG("[Environ] SET_SYSTEM_AV_INFO: %ux%u, Aspect: %.4f, FPS: %.4f, Sample rate: %.0f Hz.\n",
                   (*info)->geometry.base_width, (*info)->geometry.base_height,
                   (*info)->geometry.aspect_ratio,
                   (*info)->timing.fps,
@@ -3191,6 +3205,16 @@ bool runloop_environment_cb(unsigned cmd, void *data)
             return false;
          }
          break;
+      }
+
+      case RETRO_ENVIRONMENT_GET_VFS_AUTHORIZED_LOCATIONS:
+      {
+#if defined(ANDROID) && defined(HAVE_SAF)
+         return android_get_vfs_authorized_locations(
+               (struct retro_vfs_authorized_locations*)data);
+#else
+         return false;
+#endif
       }
 
       case RETRO_ENVIRONMENT_GET_LED_INTERFACE:
@@ -3850,9 +3874,32 @@ bool runloop_environment_cb(unsigned cmd, void *data)
          /* True only when the active video driver presents a 10-bit source
           * surface natively; when false, XRGB2101010 frames are narrowed to
           * 8-bit by video_driver_frame, so a core with an 8-bit path should
-          * prefer it and skip the wasted 10-bit work. */
-         *(bool*)data =
-               video_driver_test_all_flags(GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE);
+          * prefer it and skip the wasted 10-bit work.
+          *
+          * A live instance answers from its flags.  When none exists the
+          * question still has to be answered: cores issue this query from
+          * retro_load_game while choosing their pixel format, i.e. during
+          * CMD_EVENT_CORE_INIT, which on a cold start into content runs
+          * before any video driver exists for the session being started
+          * (and on an in-process core switch the outgoing instance has been
+          * torn down, which clears ctx->get_flags and video_st->poke).  The
+          * flag test alone then reports "no" on every machine, purely
+          * because of when the core happens to ask, and a core that trusts
+          * the answer commits to an 8-bit format before anything better is
+          * known -- refusal is final, since SET_PIXEL_FORMAT follows
+          * immediately.  Fall back to the configured driver ident, exactly
+          * as SET_PIXEL_FORMAT's HDR10_2101010 gate already does (see
+          * video_driver_supports_10bit_source for why the ident is the only
+          * stable answer in that window). */
+         {
+            gfx_ctx_flags_t flags;
+            flags.flags = 0;
+            if (video_context_driver_get_flags(&flags))
+               *(bool*)data = BIT32_GET(flags.flags,
+                     GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE) ? true : false;
+            else
+               *(bool*)data = video_driver_supports_10bit_source();
+         }
          break;
 
       case RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE:
@@ -4753,18 +4800,14 @@ static bool event_init_content(
    if (input_st->bsv_movie_state.flags & BSV_FLAG_MOVIE_START_RECORDING)
    {
       configuration_set_uint(settings, settings->uints.rewind_granularity, 1);
-#ifndef HAVE_THREADS
-      /* Hack: the regular scheduler doesn't do the right thing here at
-         least in emscripten builds.  I would expect that the check in
-         task_movie.c:343 should defer recording until the movie task
-         is done, but maybe that task isn't enqueued again yet when the
-         movie-record task is checked?  Or the finder call in
-         content_load_state_in_progress is not correct?  Either way,
-         the load happens after the recording starts rather than the
-         right way around.
-      */
-      task_queue_wait(NULL, NULL);
-#endif
+      /* The record task defers itself until any state load has been
+       * applied (task_moviectl_record_handler).  That guard used to
+       * be unreliable on the unthreaded scheduler - it asked a queue
+       * finder, and the unthreaded gather lifts every running task
+       * off the queue before invoking any handler, so a sibling load
+       * task was invisible to it and recording started first.  The
+       * guard now reads a main-thread flag instead, so no
+       * whole-queue wait is needed here to force the ordering. */
       movie_start_record(input_st, input_st->bsv_movie_state.movie_start_path);
    }
    else if (input_st->bsv_movie_state.flags & BSV_FLAG_MOVIE_START_PLAYBACK)
@@ -5053,7 +5096,7 @@ static bool runloop_event_load_core(runloop_state_t *runloop_st,
 
    runloop_st->current_core.retro_get_system_av_info(&video_st->av_info);
 
-   RARCH_LOG("[Core] Geometry: %ux%u, Aspect: %.3f, FPS: %.2f, Sample rate: %.2f Hz.\n",
+   RARCH_LOG("[Core] Geometry: %ux%u, Aspect: %.4f, FPS: %.4f, Sample rate: %.0f Hz.\n",
          video_st->av_info.geometry.base_width, video_st->av_info.geometry.base_height,
          video_st->av_info.geometry.aspect_ratio,
          video_st->av_info.timing.fps,
@@ -8761,7 +8804,37 @@ void core_run(void)
    bool early_polling          = (new_poll_type == POLL_TYPE_EARLY);
    bool late_polling           = (new_poll_type == POLL_TYPE_LATE);
 #ifdef HAVE_NETWORKING
-   bool netplay_preframe       = netplay_driver_ctl(
+   /* Declared with the other locals and assigned below, so the
+    * closing guard can return before netplay's pre-frame call
+    * without putting a declaration after a statement. */
+   bool netplay_preframe;
+#endif
+
+   /* The core is being torn down: do not run it.
+    *
+    * retro_run() must not be entered once closing has begun, because
+    * the teardown unloads the library that function lives in.
+    *
+    * Today this cannot be reached - closing is synchronous, so the
+    * main thread sits inside the teardown and no frame runs - and
+    * the guard is placed first, inert, so that the change which does
+    * let frames run during a close is only about where the waiting
+    * happens, not about what the frame loop may touch.
+    *
+    * Poll and present anyway rather than returning bare, so input
+    * keeps being drained and whatever the close has put on screen
+    * keeps being drawn.  Same shape as the netplay-paused case
+    * below, for the same reason: a frame that stops being produced
+    * reads as a hang. */
+   if (runloop_st->content_closing)
+   {
+      input_driver_poll();
+      video_driver_cached_frame();
+      return;
+   }
+
+#ifdef HAVE_NETWORKING
+   netplay_preframe            = netplay_driver_ctl(
          RARCH_NETPLAY_CTL_PRE_FRAME, NULL);
 
    if (!netplay_preframe)

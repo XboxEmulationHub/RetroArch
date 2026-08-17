@@ -68,6 +68,7 @@
 #endif
 
 #include <boolean.h>
+#include <libretro.h>
 #include <retro_dirent.h>
 #include <retro_inline.h>
 #include <compat/strl.h>
@@ -123,10 +124,16 @@ enum platform_android_flags
 };
 
 static sthread_tls_t thread_key;
+static bool thread_key_inited            = false;
 static char app_dir[DIR_MAX_LENGTH];
 unsigned storage_permissions             = 0;
 struct android_app *g_android            = NULL;
 static uint8_t g_platform_android_flags  = 0;
+
+#ifdef HAVE_SAF
+static struct retro_vfs_authorized_location *android_vfs_authorized_locations = NULL;
+static size_t android_vfs_authorized_locations_count = 0;
+#endif
 #else
 #define PROC_APM_PATH                    "/proc/apm"
 #define PROC_ACPI_BATTERY_PATH           "/proc/acpi/battery"
@@ -216,6 +223,20 @@ int system_property_get(const char *command,
    return __len;
 }
 
+bool test_permissions(const char *path)
+{
+   char buf[PATH_MAX_LENGTH];
+   bool ret                  = false;
+
+   fill_pathname_join_special(buf, path, ".retroarch", sizeof(buf));
+   ret = path_mkdir(buf);
+
+   if (ret)
+      rmdir(buf);
+
+   return ret;
+}
+
 #ifdef ANDROID
 /* forward declaration */
 bool android_run_events(void *data);
@@ -276,13 +297,51 @@ static void android_app_set_activity_state(
    slock_unlock(android_app->mutex);
 }
 
+/* Upper bound on how long onDestroy() will block waiting for the app
+ * thread to unwind. ActivityManager gives a destroying activity on the
+ * order of ten seconds before it stops waiting, so stay well inside
+ * that: overrunning it buys nothing and turns a slow exit into an ANR. */
+#define ANDROID_DESTROY_TIMEOUT_US (5 * 1000 * 1000)
+
 static void android_app_free(struct android_app* android_app)
 {
+   bool acked;
+
+   /* Nothing ever wrote APP_CMD_DESTROY, so destroyRequested was dead
+    * and the app thread was never told to stop - while this function
+    * joined it holding the very mutex the thread needs to finish. If
+    * onDestroy() arrived with the thread still running, the Java UI
+    * thread blocked here until ActivityManager gave up.
+    *
+    * Ask the thread to shut down, then wait on the condvar (which
+    * releases the mutex, so the thread can take it in
+    * android_app_destroy). */
    slock_lock(android_app->mutex);
 
-   sthread_join(android_app->thread);
+   android_app->destroy_from_framework = 1;
+   android_app_write_cmd(android_app, APP_CMD_DESTROY);
+
+   acked = true;
+   while (!android_app->destroyed && acked)
+      acked = scond_wait_timeout(android_app->cond, android_app->mutex,
+            ANDROID_DESTROY_TIMEOUT_US);
+   acked = (android_app->destroyed != 0);
 
    slock_unlock(android_app->mutex);
+
+   /* If the thread did not acknowledge it may still be running and still
+    * holding references into this struct. Returning without joining lets
+    * the framework proceed instead of blocking the UI thread forever;
+    * leaking the allocation is the right trade against freeing memory a
+    * live thread is using, and the process is being torn down anyway. */
+   if (!acked)
+   {
+      RARCH_ERR("[Android] App thread did not acknowledge destroy; "
+            "skipping teardown.\n");
+      return;
+   }
+
+   sthread_join(android_app->thread);
 
    close(android_app->msgread);
    close(android_app->msgwrite);
@@ -313,29 +372,23 @@ static void onResume(ANativeActivity* activity)
 static void* onSaveInstanceState(
       ANativeActivity* activity, size_t* outLen)
 {
-   void* savedState = NULL;
-   struct android_app* android_app = (struct android_app*)
-      activity->instance;
-
-   slock_lock(android_app->mutex);
-
-   android_app->stateSaved = 0;
-   android_app_write_cmd(android_app, APP_CMD_SAVE_STATE);
-
-   while (!android_app->stateSaved)
-      scond_wait(android_app->cond, android_app->mutex);
-
-   if (android_app->savedState)
-   {
-      savedState                  = android_app->savedState;
-      *outLen                     = android_app->savedStateSize;
-      android_app->savedState     = NULL;
-      android_app->savedStateSize = 0;
-   }
-
-   slock_unlock(android_app->mutex);
-
-   return savedState;
+   /* RetroArch does not use the Android saved-instance-state blob.
+    * android_app->savedState is only ever populated from the blob handed
+    * to ANativeActivity_onCreate; nothing produces a new one, and the
+    * APP_CMD_SAVE_STATE handler on the app thread did nothing but set
+    * the acknowledgement flag.
+    *
+    * The upstream glue rendezvous here - write the command, wake the app
+    * thread, block the UI thread on the condvar until it acknowledges -
+    * therefore synchronised a field with no producer, once per
+    * backgrounding and once per configuration change (so on every screen
+    * rotation). Returning nothing skips the round trip entirely.
+    *
+    * Handing back the create-time blob, as the previous code did on the
+    * first call, would only have re-saved state that was already
+    * restored and is never consulted. */
+   *outLen = 0;
+   return NULL;
 }
 
 static void onPause(ANativeActivity* activity)
@@ -395,18 +448,41 @@ static void onContentRectChanged(ANativeActivity *activity,
       const ARect *rect)
 {
    struct android_app *instance = (struct android_app*)activity->instance;
-   unsigned width = rect->right - rect->left;
-   unsigned height = rect->bottom - rect->top;
-   instance->content_rect.changed = true;
-   instance->content_rect.width   = width;
-   instance->content_rect.height  = height;
+   int width                    = rect->right  - rect->left;
+   int height                   = rect->bottom - rect->top;
+
+   /* Store the dimensions before publishing the flag, so a reader that
+    * observes @changed cannot still see the previous size and build a
+    * swapchain at the wrong resolution. The old code set @changed first
+    * and used plain stores, leaving both the ordering and the visibility
+    * to chance. */
+   retro_atomic_store_release_int(&instance->content_rect.width,  width);
+   retro_atomic_store_release_int(&instance->content_rect.height, height);
+   retro_atomic_store_release_int(&instance->content_rect.changed, 1);
 }
 
 JNIEnv *jni_thread_getenv(void)
 {
    JNIEnv *env;
-   struct android_app* android_app = (struct android_app*)g_android;
-   int status = (*android_app->activity->vm)->
+   struct android_app* android_app;
+   int status;
+
+   /* Fast path. A JNIEnv is valid for the entire lifetime of the thread
+    * it was handed to, and this is called on only two threads (the app
+    * thread and, via the activity callbacks, the Java UI thread), so the
+    * cached pointer answers virtually every call.
+    *
+    * AttachCurrentThread on an already-attached thread is not free: it
+    * still crosses into the VM to look the thread up. The TLS slot was
+    * already being written below but never read back, so every one of
+    * the ~25 call sites - including the per-keystroke KeyCharacterMap
+    * lookup - paid for an attach it did not need. */
+   if (thread_key_inited)
+      if ((env = (JNIEnv*)sthread_tls_get(&thread_key)))
+         return env;
+
+   android_app = (struct android_app*)g_android;
+   status      = (*android_app->activity->vm)->
       AttachCurrentThread(android_app->activity->vm, &env, 0);
 
    if (status < 0)
@@ -414,7 +490,12 @@ JNIEnv *jni_thread_getenv(void)
       RARCH_ERR("jni_thread_getenv: Failed to attach current thread.\n");
       return NULL;
    }
-   sthread_tls_set(&thread_key, (void*)env);
+
+   /* Without a key there is nowhere to cache, and jni_thread_destruct
+    * will never run to detach - but the env is still usable, so return
+    * it rather than failing the call. */
+   if (thread_key_inited)
+      sthread_tls_set(&thread_key, (void*)env);
 
    return env;
 }
@@ -562,11 +643,30 @@ void ANativeActivity_onCreate(ANativeActivity* activity,
    ANativeActivity_setWindowFlags(activity, AWINDOW_FLAG_KEEP_SCREEN_ON
          | AWINDOW_FLAG_FULLSCREEN, 0);
 
-   if (!sthread_tls_create_with_dtor(&thread_key, jni_thread_destruct))
+   if (sthread_tls_create_with_dtor(&thread_key, jni_thread_destruct))
+      thread_key_inited = true;
+   else
       RARCH_ERR("Error initializing thread-local storage key.\n");
 
    activity->instance = android_app_create(activity,
          savedState, savedStateSize);
+}
+
+void frontend_android_get_manufacturer_model(char *s, size_t len)
+{
+   char manufacturer[PROP_VALUE_MAX] = {0};
+   char model[PROP_VALUE_MAX]        = {0};
+
+   if (!s || len == 0)
+      return;
+
+   __system_property_get("ro.product.manufacturer", manufacturer);
+   __system_property_get("ro.product.model", model);
+
+   if (manufacturer[0])
+      manufacturer[0] = (char)toupper((unsigned char)manufacturer[0]);
+
+   snprintf(s, len, "%s %s", manufacturer, model);
 }
 
 void frontend_android_get_name(char *s, size_t len)
@@ -647,7 +747,7 @@ static bool device_is_game_console(const char *name)
    return false;
 }
 
-bool test_permissions(const char *path)
+bool test_permissions_android(const char *path)
 {
    char buf[PATH_MAX_LENGTH];
    bool ret                  = false;
@@ -676,6 +776,160 @@ static void frontend_android_shutdown(bool unused)
 }
 
 #ifdef HAVE_SAF
+static void android_vfs_authorized_locations_free(void)
+{
+   size_t i;
+
+   if (!android_vfs_authorized_locations)
+      return;
+
+   for (i = 0; i < android_vfs_authorized_locations_count; i++)
+   {
+      free((void*)android_vfs_authorized_locations[i].path);
+      free((void*)android_vfs_authorized_locations[i].label);
+   }
+
+   free(android_vfs_authorized_locations);
+   android_vfs_authorized_locations       = NULL;
+   android_vfs_authorized_locations_count = 0;
+}
+
+static bool android_vfs_authorized_locations_refresh(void)
+{
+   JNIEnv *env;
+   jarray trees;
+   jsize trees_length;
+   jsize i;
+
+   android_vfs_authorized_locations_free();
+
+   if (!g_android || !g_android->have_saf)
+      return false;
+
+   env = jni_thread_getenv();
+   if (!env)
+      return false;
+
+   trees = (*env)->CallObjectMethod(
+         env,
+         g_android->activity->clazz,
+         g_android->getPersistedSafTrees);
+
+   if ((*env)->ExceptionOccurred(env))
+   {
+      (*env)->ExceptionDescribe(env);
+      (*env)->ExceptionClear(env);
+      return false;
+   }
+
+   if (!trees)
+      return false;
+
+   trees_length = (*env)->GetArrayLength(env, trees);
+   if ((*env)->ExceptionOccurred(env))
+   {
+      (*env)->ExceptionDescribe(env);
+      (*env)->ExceptionClear(env);
+      (*env)->DeleteLocalRef(env, trees);
+      return false;
+   }
+
+   if (trees_length <= 0)
+   {
+      (*env)->DeleteLocalRef(env, trees);
+      return true;
+   }
+
+   android_vfs_authorized_locations =
+      (struct retro_vfs_authorized_location*)calloc(
+            (size_t)trees_length,
+            sizeof(*android_vfs_authorized_locations));
+
+   if (!android_vfs_authorized_locations)
+   {
+      (*env)->DeleteLocalRef(env, trees);
+      return false;
+   }
+
+   for (i = 0; i < trees_length; ++i)
+   {
+      jstring tree;
+      const char *tree_chars;
+      char *serialized_path;
+
+      tree = (jstring)(*env)->GetObjectArrayElement(env, trees, i);
+      if ((*env)->ExceptionOccurred(env))
+      {
+         (*env)->ExceptionDescribe(env);
+         (*env)->ExceptionClear(env);
+         continue;
+      }
+
+      tree_chars = (*env)->GetStringUTFChars(env, tree, NULL);
+      if ((*env)->ExceptionOccurred(env))
+      {
+         (*env)->ExceptionDescribe(env);
+         (*env)->ExceptionClear(env);
+         (*env)->DeleteLocalRef(env, tree);
+         continue;
+      }
+
+      serialized_path = retro_vfs_path_join_saf(tree_chars, "");
+
+      if (serialized_path)
+      {
+         const char *label = msg_hash_to_str(MSG_REMOVABLE_STORAGE);
+
+         android_vfs_authorized_locations[android_vfs_authorized_locations_count].path  = serialized_path;
+         android_vfs_authorized_locations[android_vfs_authorized_locations_count].label = strdup(label ? label : "Storage");
+         android_vfs_authorized_locations[android_vfs_authorized_locations_count].flags = 0;
+
+         android_vfs_authorized_locations_count++;
+      }
+
+      (*env)->ReleaseStringUTFChars(env, tree, tree_chars);
+      if ((*env)->ExceptionOccurred(env))
+      {
+         (*env)->ExceptionDescribe(env);
+         (*env)->ExceptionClear(env);
+      }
+
+      (*env)->DeleteLocalRef(env, tree);
+      if ((*env)->ExceptionOccurred(env))
+      {
+         (*env)->ExceptionDescribe(env);
+         (*env)->ExceptionClear(env);
+      }
+   }
+
+   (*env)->DeleteLocalRef(env, trees);
+   if ((*env)->ExceptionOccurred(env))
+   {
+      (*env)->ExceptionDescribe(env);
+      (*env)->ExceptionClear(env);
+   }
+
+   return true;
+}
+
+bool android_get_vfs_authorized_locations(
+      struct retro_vfs_authorized_locations *locations)
+{
+   if (!g_android || !g_android->have_saf)
+      return false;
+
+   if (!android_vfs_authorized_locations && !android_vfs_authorized_locations_refresh())
+      return false;
+
+   if (!locations)
+      return true;
+
+   locations->locations = android_vfs_authorized_locations;
+   locations->count     = android_vfs_authorized_locations_count;
+
+   return true;
+}
+
 void android_show_saf_tree_picker(void)
 {
    JNIEnv *env;
@@ -730,6 +984,8 @@ JNIEXPORT void JNICALL Java_com_retroarch_browser_retroactivity_RetroActivityCom
       (*env)->ExceptionDescribe(env);
       (*env)->ExceptionClear(env);
    }
+
+   android_vfs_authorized_locations_refresh();
 #endif
 }
 
@@ -1753,18 +2009,22 @@ static void frontend_unix_get_env(int *argc,
       /* set paths depending on the ability to write
        * to internal_storage_path */
 
-      if (*internal_storage_path)
+      if (*internal_storage_path &&
+         test_permissions_android(internal_storage_path))
       {
-         if (test_permissions(internal_storage_path))
-            storage_permissions = INTERNAL_STORAGE_WRITABLE;
+         storage_permissions = INTERNAL_STORAGE_WRITABLE;
       }
-      else if (*internal_storage_app_path)
+      else if (*internal_storage_app_path &&
+               test_permissions_android(internal_storage_app_path))
       {
-         if (test_permissions(internal_storage_app_path))
-            storage_permissions = INTERNAL_STORAGE_APPDIR_WRITABLE;
+         storage_permissions = INTERNAL_STORAGE_APPDIR_WRITABLE;
       }
       else
+      {
+         // fallback to private data storage
+         // e.g. /data/user/0/com.retroarch.aarch64 then saves/ etc.
          storage_permissions = INTERNAL_STORAGE_NOT_WRITABLE;
+      }
 
       /* code to populate default paths*/
       if (*app_dir)
@@ -2133,6 +2393,17 @@ static void frontend_unix_get_env(int *argc,
    else
        fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_SYSTEM], base_path,
              "system", sizeof(g_defaults.dirs[DEFAULT_DIR_SYSTEM]));
+
+   if (test_permissions("/tmp") && path_mkdir("/tmp/retroarch-tmp"))
+   {
+      fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CACHE], "/tmp",
+         "retroarch-tmp", sizeof(g_defaults.dirs[DEFAULT_DIR_CACHE]));
+   }
+   else
+   {
+      fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CACHE], base_path,
+         "temp", sizeof(g_defaults.dirs[DEFAULT_DIR_CACHE]));
+   }
 #endif
 
 #ifndef IS_SALAMANDER
@@ -2170,11 +2441,18 @@ static void android_app_destroy(struct android_app *android_app)
 
    env = jni_thread_getenv();
 
-   if (env && android_app->onRetroArchExit)
+   /* onRetroArchExit() calls finish() on the activity. When the destroy
+    * originated from the framework we are already inside onDestroy(),
+    * so asking it to finish again is at best redundant. */
+   if (     env
+         && android_app->onRetroArchExit
+         && !android_app->destroy_from_framework)
       CALL_VOID_METHOD(env, android_app->activity->clazz,
             android_app->onRetroArchExit);
 
 #ifdef HAVE_SAF
+   android_vfs_authorized_locations_free();
+
    if (android_app->have_saf)
       retro_vfs_deinit_saf();
 #endif
@@ -2317,6 +2595,14 @@ static void frontend_unix_init(void *data)
          "onRetroArchExit", "()V");
    GET_METHOD_ID(env, android_app->isAndroidTV, class,
          "isAndroidTV", "()Z");
+   GET_METHOD_ID(env, android_app->getRefreshRate, class,
+         "getRefreshRate", "()F");
+   GET_METHOD_ID(env, android_app->getDisplayModes, class,
+         "getDisplayModes", "()[I");
+   GET_METHOD_ID(env, android_app->getCurrentDisplayModeId, class,
+         "getCurrentDisplayModeId", "()I");
+   GET_METHOD_ID(env, android_app->setDisplayModeId, class,
+         "setDisplayModeId", "(I)Z");
    GET_METHOD_ID(env, android_app->getPowerstate, class,
          "getPowerstate", "()I");
    GET_METHOD_ID(env, android_app->getBatteryLevel, class,
@@ -2362,7 +2648,8 @@ static void frontend_unix_init(void *data)
    GET_METHOD_ID(env, android_app->hideKeyboard, class,
          "hideKeyboard", "()V");
 
-   CALL_BOOLEAN_METHOD(env, android_app->is_play_store_build, android_app->activity->clazz, android_app->isPlayStoreBuild)
+   CALL_BOOLEAN_METHOD(env, android_app->is_play_store_build,
+         android_app->activity->clazz, android_app->isPlayStoreBuild);
 
 #ifdef HAVE_SAF
    GET_METHOD_ID(env, android_app->requestOpenDocumentTree, class,
@@ -2372,6 +2659,9 @@ static void frontend_unix_init(void *data)
          "getPersistedSafTrees", "()[Ljava/lang/String;");
 
    android_app->have_saf = retro_vfs_init_saf(jni_thread_getenv, android_app->activity->clazz);
+
+   if (android_app->have_saf)
+      android_vfs_authorized_locations_refresh();
 #endif
 
    GET_OBJECT_CLASS(env, class, obj);

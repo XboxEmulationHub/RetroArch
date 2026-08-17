@@ -828,7 +828,18 @@
 #define DEFAULT_MENU_SHOW_INFORMATION true
 #define DEFAULT_MENU_SHOW_CONFIGURATIONS true
 #define DEFAULT_MENU_SHOW_HELP true
+#if defined(ANDROID)
+/* Android's navigation model expects the user to leave via Home or the
+ * task switcher rather than an in-app control, and the Android TV
+ * guidelines state outright that an exit item should not appear in the
+ * menu. Default the entry off; the toggle stays available under
+ * Settings -> User Interface -> Menu Item Visibility for anyone who
+ * wants it back, and existing configs that already set the key are
+ * left untouched. */
+#define DEFAULT_MENU_SHOW_QUIT false
+#else
 #define DEFAULT_MENU_SHOW_QUIT true
+#endif
 #define DEFAULT_MENU_SHOW_RESTART true
 #define DEFAULT_MENU_SHOW_REBOOT true
 #define DEFAULT_MENU_SHOW_SHUTDOWN true
@@ -1079,7 +1090,7 @@
 
 /* Color of the message.
  * RGB hex value. */
-#define DEFAULT_MESSAGE_COLOR 0xffff00
+#define DEFAULT_MESSAGE_COLOR 0xffffff
 
 #define DEFAULT_MESSAGE_BGCOLOR_ENABLE false
 #define DEFAULT_MESSAGE_BGCOLOR_RED 0
@@ -1777,7 +1788,7 @@
 #else
 #define DEFAULT_MENU_TIMEDATE_ENABLE true
 #endif
-#define DEFAULT_MENU_TIMEDATE_STYLE          MENU_TIMEDATE_STYLE_DDMM_HM
+#define DEFAULT_MENU_TIMEDATE_STYLE          MENU_TIMEDATE_STYLE_YMD_HM
 #define DEFAULT_MENU_TIMEDATE_DATE_SEPARATOR MENU_TIMEDATE_DATE_SEPARATOR_HYPHEN
 #define DEFAULT_MENU_REMEMBER_SELECTION      MENU_REMEMBER_SELECTION_ALWAYS
 #define DEFAULT_MENU_STARTUP_PAGE            MENU_STARTUP_PAGE_MAIN_MENU
@@ -1816,7 +1827,7 @@
 
 #define DEFAULT_UI_MENUBAR_ENABLE true
 
-#if defined(__QNX__) || defined(_XBOX1) || defined(_XBOX360) || (defined(__MACH__) && defined(IOS)) || defined(ANDROID) || defined(WIIU) || defined(HAVE_NEON) || defined(GEKKO) || defined(__ARM_NEON__) || defined(__PS3__)
+#if defined(__QNX__) || defined(_XBOX1) || defined(_XBOX360) || (defined(__MACH__) && defined(IOS)) || defined(ANDROID) || defined(WIIU) || defined(HAVE_NEON) || defined(GEKKO) || defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__PS3__)
 #define DEFAULT_AUDIO_RESAMPLER_QUALITY_LEVEL RESAMPLER_QUALITY_LOWER
 #elif defined(PSP) || defined(_3DS) || defined(VITA) || defined(PS2) || defined(DINGUX)
 #define DEFAULT_AUDIO_RESAMPLER_QUALITY_LEVEL RESAMPLER_QUALITY_LOWEST

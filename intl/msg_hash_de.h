@@ -1404,7 +1404,7 @@ static const struct
    char s_012938fb[33];
    char s_a747cdc9[54];
    char s_2f169651[21];
-   char s_73674a86[28];
+   char s_73674a86[29];
    char s_705eee28[43];
    char s_62af62ac[35];
    char s_12b25a4b[46];
@@ -1891,7 +1891,7 @@ static const struct
    char s_c7bc8298[26];
    char s_e63b035a[17];
    char s_d21d875b[13];
-   char s_ae86fed0[32];
+   char s_ae86fed0[21];
    char s_b12ae22e[24];
    char s_b2d073c7[17];
    char s_1cbc2657[18];
@@ -2119,6 +2119,7 @@ static const struct
    char s_59f183c8[15];
    char s_59f183c9[14];
    char s_6b395e21[6];
+   char s_00ab7f5e[40];
    char s_71747541[10];
    char s_b45e4c28[22];
    char s_e92f8e07[26];
@@ -3290,14 +3291,14 @@ static const struct
    char s_69c0e487[57];
    char s_706ff4dc[201];
    char s_a0d1a85c[71];
-   char s_b5966528[37];
+   char s_b5966528[211];
    char s_907ef7cc[33];
    char s_b0a46506[50];
    char s_04624c88[60];
-   char s_91976dbe[39];
+   char s_91976dbe[49];
    char s_f6492edc[56];
-   char s_9bb85635[41];
-   char s_22a05685[35];
+   char s_9bb85635[219];
+   char s_22a05685[61];
 #endif
    char s_f3bfa8b9[119];
    char s_5fe2cee5[78];
@@ -3412,6 +3413,7 @@ static const struct
    char s_0d96ed73[35];
    char s_9f0fd076[125];
    char s_9f0fd077[124];
+   char s_c315b54c[453];
    char s_7a2050af[39];
    char s_d2859556[67];
    char s_ef13be35[66];
@@ -5695,7 +5697,7 @@ static const struct
    "Vorschaubilder-Skalierungsfaktor",
    "Wiedergabelistennamen k\303\274rzen (Neustart erforderlich)",
    "Verwende PAL60-Modus",
-   "\303\234bergeordnetes Verzeichnis",
+   "<\303\234bergeordetes Verzeichnis>",
    "Inhalt pausieren, wenn das Men\303\274 aktiv ist",
    "Inhalt pausieren, wenn nicht aktiv",
    "Inhalt beim Trennen des Controllers pausieren",
@@ -6190,7 +6192,7 @@ static const struct
    "SMB-Netzwerkeinstellungen",
    "SMB-Freigabename",
    "SMB-Freigabe",
-   "SMB-Unterverzeichnis (optional)",
+   "SMB-Unterverzeichnis",
    "SMB-Zeit\303\274berschreitung",
    "SMB-Benutzername",
    "SMB-Arbeitsgruppe",
@@ -6420,6 +6422,7 @@ static const struct
    "Vollbildbreite",
    "Vollbildh\303\266he",
    "Gamma",
+   "Direkte SPIR-V-Unterst\303\274tzung (Hinweis)",
    "GPU-Index",
    "Verwende GPU-Aufnahme",
    "Screenshot: GPU verwenden",
@@ -8067,14 +8070,18 @@ static const struct
    "gegen\303\274ber WLAN dringend empfohlen. Hinweis: Um diese Einstellungen zu \303\244ndern, muss"
    " RetroArch neu gestartet werden.",
    "Die maximale Anzahl der im Umfeld verwendeten Verbindungen ausw\303\244hlen.",
-   "Passwort f\303\274r die Authentifizierung.",
+   "Passwort f\303\274r die Authentifizierung. Dies ist optional, wenn Gastzugang auf dem Server akt"
+   "iviert ist. Windows 10 und h\303\266her: Gastzugang ist standardm\303\244\303\237ig deaktiviert,"
+   " daher ist hier ein Passwort erforderlich.",
    "Server-IP-Adresse oder Hostname.",
    "SMB-Netzwerkfreigabe-Einstellungen konfigurieren.",
    "Name der Netzwerkfreigabe, auf die zugegriffen werden soll.",
-   "Unterverzeichnispfad auf der Freigabe.",
+   "Unterverzeichnispfad auf der Freigabe. Optional.",
    "Die Standardzeit\303\274berschreitung in Sekunden ausw\303\244hlen.",
-   "Benutzername f\303\274r die Authentifizierung.",
-   "Arbeitsgruppen- oder Dom\303\244nenname.",
+   "Benutzername f\303\274r die Authentifizierung. Dies ist optional, wenn Gastzugang auf dem Server"
+   " aktiviert ist. Windows 10 und h\303\266her: Gastzugang ist standardm\303\244\303\237ig deaktivi"
+   "ert, daher ist hier ein Benutzername erforderlich.",
+   "Arbeitsgruppe oder Dom\303\244nenname. Optional in einigen Setups.",
 #endif
    "Speicherdaten in Ordnern sichern, die nach dem Verzeichnis benannt sind, in dem sich der ausgef"
    "\303\274hrte Inhalt befindet.",
@@ -8240,6 +8247,12 @@ static const struct
    " die Desktop-Aufl\303\266sung verwendet.",
    "Benutzerdefinierte Bildh\303\266he f\303\274r den Vollbildmodus. Wird dieser Wert nicht gesetzt,"
    " wird die Desktop-Aufl\303\266sung verwendet.",
+   "Shader als SPIR-V an den Grafiktreiber \303\274bergeben, anstatt sie zun\303\244chst in GLSL zu "
+   "kompilieren, was die Ladezeiten von Shader-Voreinstellungen verk\303\274rzen kann. Dies ist ledi"
+   "glich ein Hinweis: Es ist die Treibererweiterung \342\200\236GL_ARB_gl_spirv\342\200\234 erforde"
+   "rlich, und alle Shader oder Treiber, die diese nicht nutzen k\303\266nnen, greifen automatisch a"
+   "uf die Kreuzkompilierung zur\303\274ck. Die \303\204nderung wird beim n\303\244chsten Laden eine"
+   "r Shader-Voreinstellung wirksam.",
    "Zu verwendende Grafikkarte ausw\303\244hlen.",
    "Bildmaterial nach Shaderdurchl\303\244ufen aufnehmen, sofern verf\303\274gbar.",
    "Screenshots erfassen GPU-schattiertes Material, falls verf\303\274gbar.",
@@ -9033,7 +9046,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_de_blob_check[
-      (sizeof(msg_hash_de_blob) == (191741u
+      (sizeof(msg_hash_de_blob) == (192235u
 #ifdef ANDROID
        + 358u
 #endif
@@ -9171,7 +9184,7 @@ typedef char msg_hash_de_blob_check[
        + 26u
        + 17u
        + 13u
-       + 32u
+       + 21u
        + 24u
        + 17u
        + 18u
@@ -9363,14 +9376,14 @@ typedef char msg_hash_de_blob_check[
        + 57u
        + 201u
        + 71u
-       + 37u
+       + 211u
        + 33u
        + 50u
        + 60u
-       + 39u
+       + 49u
        + 56u
-       + 41u
-       + 35u
+       + 219u
+       + 61u
 #endif
 #ifdef HAVE_LAKKA
        + 45u
@@ -11557,6 +11570,7 @@ static const uint32_t msg_hash_de_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN_X,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GAMMA,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GL_DIRECT_SPIRV,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GPU_INDEX,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GPU_RECORD,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GPU_SCREENSHOT,
@@ -12848,6 +12862,7 @@ static const uint32_t msg_hash_de_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_FULLSCREEN_MODE_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_FULLSCREEN_X,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_FULLSCREEN_Y,
+   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_GL_DIRECT_SPIRV,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_GPU_INDEX,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_GPU_RECORD,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_GPU_SCREENSHOT,

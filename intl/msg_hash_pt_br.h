@@ -142,7 +142,7 @@ static const struct
    char s_f39c636f[376];
    char s_4c991c18[403];
    char s_4b299805[166];
-   char s_1bd35af2[30];
+   char s_1bd35af2[29];
    char s_24e40f00[269];
    char s_1382c258[250];
    char s_4caab10c[253];
@@ -1423,7 +1423,7 @@ static const struct
    char s_012938fb[30];
    char s_a747cdc9[54];
    char s_2f169651[20];
-   char s_73674a86[20];
+   char s_73674a86[17];
    char s_705eee28[31];
    char s_62af62ac[39];
    char s_12b25a4b[41];
@@ -1920,19 +1920,19 @@ static const struct
    char s_44ebca0d[37];
    char s_608ac5a1[22];
 #ifdef HAVE_SMBCLIENT
-   char s_3839f91d[27];
+   char s_3839f91d[32];
    char s_86b07599[36];
    char s_8d5f85ee[19];
-   char s_9b023eee[25];
-   char s_ccae82ba[10];
+   char s_9b023eee[27];
+   char s_ccae82ba[13];
    char s_ad6e88de[13];
-   char s_c7bc8298[28];
+   char s_c7bc8298[31];
    char s_e63b035a[29];
    char s_d21d875b[21];
-   char s_ae86fed0[29];
-   char s_b12ae22e[17];
-   char s_b2d073c7[24];
-   char s_1cbc2657[22];
+   char s_ae86fed0[21];
+   char s_b12ae22e[20];
+   char s_b2d073c7[27];
+   char s_1cbc2657[25];
 #endif
    char s_e2ffc38b[65];
    char s_9d7898f7[57];
@@ -2161,6 +2161,7 @@ static const struct
    char s_59f183c8[22];
    char s_59f183c9[21];
    char s_6b395e21[15];
+   char s_00ab7f5e[44];
    char s_71747541[15];
    char s_b45e4c28[23];
    char s_e92f8e07[26];
@@ -3332,18 +3333,18 @@ static const struct
    char s_46c57dde[58];
    char s_7eb20ecf[66];
 #ifdef HAVE_SMBCLIENT
-   char s_3e1e294b[50];
+   char s_3e1e294b[49];
    char s_69c0e487[59];
    char s_706ff4dc[226];
-   char s_a0d1a85c[57];
-   char s_b5966528[27];
+   char s_a0d1a85c[62];
+   char s_b5966528[194];
    char s_907ef7cc[53];
-   char s_b0a46506[59];
+   char s_b0a46506[62];
    char s_04624c88[47];
-   char s_91976dbe[46];
-   char s_f6492edc[46];
-   char s_9bb85635[38];
-   char s_22a05685[39];
+   char s_91976dbe[58];
+   char s_f6492edc[43];
+   char s_9bb85635[215];
+   char s_22a05685[76];
 #endif
    char s_f3bfa8b9[120];
    char s_5fe2cee5[91];
@@ -3458,6 +3459,7 @@ static const struct
    char s_0d96ed73[46];
    char s_9f0fd076[137];
    char s_9f0fd077[136];
+   char s_c315b54c[435];
    char s_7a2050af[44];
    char s_d2859556[67];
    char s_ef13be35[58];
@@ -4369,7 +4371,7 @@ static const struct
    "Define se o netplay ser\303\241 iniciado no modo espectador. Se definido como verdadeiro, o netp"
    "lay come\303\247ar\303\241 no modo espectador. Sempre \303\251 poss\303\255vel mudar o modo depo"
    "is.",
-   "Voltar para o diret\303\263rio pai.",
+   "Volta para o diret\303\263rio pai.",
    "Sair do RetroArch. Matar o programa de qualquer maneira dif\303\255cil (SIGKILL, etc.) encerrar"
    "\303\241 o RetroArch sem salvar a configura\303\247\303\243o. Em sistemas baseados em Unix, SIGI"
    "NT/SIGTERM permite uma 'desinicializa\303\247\303\243o' limpa que inclui salvamento de configura"
@@ -5775,7 +5777,7 @@ static const struct
    "Fator de escala de miniaturas",
    "Encurtar Nomes da Playlist (Requer reinicializa\303\247\303\243o)",
    "Utilizar modo PAL60",
-   "Diret\303\263rio superior",
+   "<Diret\303\263rio pai>",
    "Pausar conte\303\272do ao abrir menu",
    "Pausar conte\303\272do ao focar outra janela",
    "Pausar conte\303\272do ao desconectar controle",
@@ -6281,19 +6283,19 @@ static const struct
    "Instala\303\247\303\243o do n\303\272cleo bem-sucedida",
    "Taxa de c\303\242mera lenta",
 #ifdef HAVE_SMBCLIENT
-   "Modo de Autentica\303\247\303\243o SMB",
+   "Modo de autentifica\303\247\303\243o do SMB",
    "Navegador pelo Compartilhamento SMB",
    "Ativar Cliente SMB",
-   "M\303\241ximo de conex\303\265es SMB",
-   "Senha SMB",
+   "Limite de conex\303\265es do SMB",
+   "Senha do SMB",
    "Servidor SMB",
-   "Configura\303\247\303\265es de Rede SMB",
+   "Configura\303\247\303\265es de rede do SMB",
    "Nome do Compartilhamento SMB",
    "Compartilhamento SMB",
-   "Subdiret\303\263rio SMB (opcional)",
-   "Tempo limite SMB",
-   "\342\200\213Nome de Usu\303\241rio SMB",
-   "Grupo de Trabalho SMB",
+   "Subdiret\303\263rio do SMB",
+   "Tempo limite do SMB",
+   "\342\200\213Nome de usu\303\241rio do SMB",
+   "Grupo de trabalho do SMB",
 #endif
    "Arquivo de Save: Organizar em Pastas por Diret\303\263rio de Conte\303\272do",
    "Arquivo de Save: Organizar em Pastas por Pome do N\303\272cleo",
@@ -6524,6 +6526,7 @@ static const struct
    "Largura em tela cheia",
    "Altura em tela cheia",
    "Gama de v\303\255deo",
+   "Suporte direto para SPIR-V (recomenda\303\247\303\243o)",
    "\303\215ndice da GPU",
    "Usar grava\303\247\303\243o da GPU",
    "Captura de Tela: Usar GPU",
@@ -8229,20 +8232,24 @@ static const struct
    "Instala ou restaura um n\303\272cleo do diret\303\263rio \"Downloads\".",
    "A taxa que o conte\303\272do ser\303\241 reproduzido ao usar a c\303\242mera lenta.",
 #ifdef HAVE_SMBCLIENT
-   "Selecione a autentica\303\247\303\243o usada no seu ambiente.",
+   "Define a autentifica\303\247\303\243o usada no seu ambiente.",
    "Navega pelos arquivos no compartilhamento SMB configurado.",
    "Ativa o acesso a compartilhamento de rede via SMB. Recomenda-se fortemente o uso de Ethernet em "
    "vez de Wi-Fi para uma conex\303\243o mais est\303\241vel. Nota: a altera\303\247\303\243o destas"
    " configura\303\247\303\265es requer a reinicializa\303\247\303\243o do RetroArch.",
-   "Selecione o m\303\241ximo de conex\303\265es usadas no seu ambiente.",
-   "Senha para autentica\303\247\303\243o.",
+   "Define o n\303\272mero m\303\241ximo de conex\303\265es usadas no seu ambiente.",
+   "Senha para autentifica\303\247\303\243o. Opcional ao habilitar o acesso de convidade no servidor"
+   ". Windows 10 e posterior: o acesso de convidade \303\251 desabilitado por padr\303\243o, ent\303"
+   "\243o uma senha \303\251 necess\303\241ria.",
    "Endere\303\247o IP do Servidor ou nome do host (hostname).",
-   "Define as configura\303\247\303\265es de compartilhamento de rede SMB.",
+   "Define as configura\303\247\303\265es do compartilhamento de rede do SMB.",
    "Nome do compartilhamento de rede para acessar.",
-   "Caminho do subdiret\303\263rio no compartilhamento.",
-   "Selecione o tempo limite padr\303\243o em segundos.",
-   "Nome de usu\303\241rio para autentica\303\247\303\243o.",
-   "Grupo de trabalho ou nome de dom\303\255nio.",
+   "Endere\303\247o do subdiret\303\263rio no compartilhamento. Opcional.",
+   "Define o tempo limite padr\303\243o em segundos.",
+   "Nome de usu\303\241rio para autentifica\303\247\303\243o. Opcional ao habilitar o acesso de conv"
+   "idado no servidor. Windows 10 e posterior: o acesso de convidado \303\251 desabilitado por padr"
+   "\303\243o, ent\303\243o um nome de usu\303\241rio \303\251 necess\303\241rio.",
+   "Nome do grupo de trabalho ou dom\303\255nio. Opcional em algumas configura\303\247\303\265es.",
 #endif
    "Ordena os arquivos de dados da mem\303\263ria do jogo em pastas com o nome do diret\303\263rio e"
    "m que o conte\303\272do est\303\241 localizado.",
@@ -8416,6 +8423,12 @@ static const struct
    " ir\303\241 usar a resolu\303\247\303\243o da \303\241rea de trabalho.",
    "Define a altura personalizada para o modo de tela cheia em n\303\243o-janela. Deixar desativado "
    "ir\303\241 usar a resolu\303\247\303\243o da \303\241rea de trabalho.",
+   "Envia os sombreamentos para o driver gr\303\241fico como SPIR-V em vez de usar compila\303\247"
+   "\303\243o cruzada em GLSL, que pode encurtar o tempo de carregamento da predefini\303\247\303"
+   "\243o de sombreador. Apenas uma recomenda\303\247\303\243o: requer a extens\303\243o de driver "
+   "\"GL_ARB_gl_spiry\", e qualquer sombreador ou driver que n\303\243o pode usa-l\303\241 discretam"
+   "ente retorna \303\240 compila\303\247\303\243o cruzada. A mudan\303\247a \303\251 aplicada no pr"
+   "\303\263ximo carregamento da predefini\303\247\303\243o de sombreador.",
    "Seleciona qual placa de v\303\255deo ser\303\241 usada.",
    "Se dispon\303\255vel, grave o material gerado atrav\303\251s do shader da GPU.",
    "Captura a tela com shader de GPU caso esteja dispon\303\255vel.",
@@ -9241,7 +9254,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_pt_br_blob_check[
-      (sizeof(msg_hash_pt_br_blob) == (193234u
+      (sizeof(msg_hash_pt_br_blob) == (193709u
 #ifdef ANDROID
        + 352u
 #endif
@@ -9373,19 +9386,19 @@ typedef char msg_hash_pt_br_blob_check[
 #endif
 #ifdef HAVE_SMBCLIENT
        + 22u
-       + 27u
+       + 32u
        + 36u
        + 19u
-       + 25u
-       + 10u
+       + 27u
        + 13u
-       + 28u
+       + 13u
+       + 31u
        + 29u
        + 21u
-       + 29u
-       + 17u
-       + 24u
-       + 22u
+       + 21u
+       + 20u
+       + 27u
+       + 25u
 #endif
 #ifdef HAVE_LAKKA
        + 14u
@@ -9568,18 +9581,18 @@ typedef char msg_hash_pt_br_blob_check[
 #endif
 #ifdef HAVE_SMBCLIENT
        + 44u
-       + 50u
+       + 49u
        + 59u
        + 226u
-       + 57u
-       + 27u
+       + 62u
+       + 194u
        + 53u
-       + 59u
+       + 62u
        + 47u
-       + 46u
-       + 46u
-       + 38u
-       + 39u
+       + 58u
+       + 43u
+       + 215u
+       + 76u
 #endif
 #ifdef HAVE_LAKKA
        + 60u
@@ -11807,6 +11820,7 @@ static const uint32_t msg_hash_pt_br_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN_X,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_FULLSCREEN_Y,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GAMMA,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GL_DIRECT_SPIRV,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GPU_INDEX,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GPU_RECORD,
    (uint32_t)MENU_ENUM_LABEL_VALUE_VIDEO_GPU_SCREENSHOT,
@@ -13103,6 +13117,7 @@ static const uint32_t msg_hash_pt_br_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_FULLSCREEN_MODE_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_FULLSCREEN_X,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_FULLSCREEN_Y,
+   (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_GL_DIRECT_SPIRV,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_GPU_INDEX,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_GPU_RECORD,
    (uint32_t)MENU_ENUM_SUBLABEL_VIDEO_GPU_SCREENSHOT,

@@ -42,6 +42,8 @@ import android.view.accessibility.AccessibilityManager;
 import android.view.HapticFeedbackConstants;
 import android.view.InputDevice;
 import android.view.Surface;
+import android.graphics.Point;
+import android.view.Display;
 import android.view.WindowManager;
 import android.view.KeyEvent;
 import android.view.View;
@@ -864,6 +866,302 @@ public class RetroActivityCommon extends NativeActivity
     Log.i("RetroActivity", "battery: level = " + level + ", scale = " + scale + ", percent = " + percent);
 
     return (int)percent;
+  }
+
+  /**
+   * The refresh rate the screen is actually running at, in Hz, or 0
+   * if it cannot be determined.
+   *
+   * Three tiers, because the way to reach the Display changed twice
+   * and this ships back to API 16:
+   *
+   *  - API 30+ : Activity.getDisplay().  getDefaultDisplay() is
+   *              deprecated from here, and on a non-visual context it
+   *              can hand back something that reports nothing useful.
+   *  - API 23+ : the display's current Display.Mode, which is the
+   *              exact rate of the mode in effect rather than a
+   *              rounded nominal figure.
+   *  - below   : Display.getRefreshRate(), present since API 1.
+   *
+   * Read live rather than cached: the rate changes underneath us when
+   * the system switches mode, which is precisely what a user checking
+   * this setting wants to see.
+   */
+  /**
+   * The display modes the screen supports, packed for JNI as
+   * {id, width, height, millihertz} per mode.
+   *
+   * Mode enumeration is API 23: Display.getSupportedModes() and
+   * Display.Mode both arrived in Marshmallow, and nothing before it
+   * exposes more than the size currently in effect.  So on older
+   * devices - Lollipop, KitKat, and the API 16 floor the jelly-bean
+   * tree still builds against - this reports a single mode
+   * describing the current state, which is all the platform knows.
+   * That keeps the caller's shape identical everywhere: there is
+   * always at least one mode, and exactly one of them is current.
+   *
+   * Refresh rate is carried as millihertz because the caller's
+   * config carries an integer rate alongside the float one, and
+   * 59.94 must not become 59 on the way through.
+   *
+   * Returns null when nothing can be determined.
+   */
+  @SuppressWarnings("deprecation")
+  public int[] getDisplayModes()
+  {
+    try
+    {
+      Display display = getActiveDisplay();
+
+      if (display == null)
+        return null;
+
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+      {
+        Display.Mode[] modes = display.getSupportedModes();
+
+        if (modes != null && modes.length > 0)
+        {
+          int[] packed = new int[modes.length * 4];
+
+          for (int i = 0; i < modes.length; i++)
+          {
+            packed[i * 4]     = modes[i].getModeId();
+            packed[i * 4 + 1] = modes[i].getPhysicalWidth();
+            packed[i * 4 + 2] = modes[i].getPhysicalHeight();
+            packed[i * 4 + 3] = Math.round(modes[i].getRefreshRate() * 1000.0f);
+          }
+
+          return packed;
+        }
+      }
+
+      /* Pre-Marshmallow, or a display that reports no modes: describe
+       * the one state we can see. */
+      {
+        Point size = new Point();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1)
+          display.getRealSize(size);
+        else
+          display.getSize(size);
+
+        if (size.x <= 0 || size.y <= 0)
+          return null;
+
+        return new int[] {
+          0, size.x, size.y,
+          Math.round(display.getRefreshRate() * 1000.0f)
+        };
+      }
+    }
+    catch (Exception e)
+    {
+      Log.w("RetroActivityCommon", "getDisplayModes failed: " + e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * The mode id currently in effect, or 0 when it cannot be
+   * determined - which is also the id reported for the synthesised
+   * single mode on pre-Marshmallow devices, so the two agree.
+   */
+  public int getCurrentDisplayModeId()
+  {
+    try
+    {
+      Display display = getActiveDisplay();
+
+      if (display == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M)
+        return 0;
+
+      Display.Mode mode = display.getMode();
+      return (mode != null) ? mode.getModeId() : 0;
+    }
+    catch (Exception e)
+    {
+      Log.w("RetroActivityCommon",
+            "getCurrentDisplayModeId failed: " + e.getMessage());
+      return 0;
+    }
+  }
+
+  /**
+   * Asks the system for a display mode by id.  Returns false when
+   * the request cannot be made, which on anything before API 23
+   * means always: preferredDisplayModeId arrived with the mode API
+   * itself, and there is no older way to ask.
+   *
+   * A request, not a guarantee - the system may keep the current
+   * mode.  getCurrentDisplayModeId() is what says whether it took.
+   */
+  public boolean setDisplayModeId(final int modeId)
+  {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M)
+      return false;
+
+    try
+    {
+      /* Window attributes are the UI thread's to touch. */
+      runOnUiThread(new Runnable() {
+        @Override
+        public void run()
+        {
+          try
+          {
+            WindowManager.LayoutParams params = getWindow().getAttributes();
+
+            params.preferredDisplayModeId     = modeId;
+
+            /* Clearing the rate preference is what makes the mode
+             * request effective.
+             *
+             * preferredRefreshRate is a SEPARATE request, and the two
+             * contradict each other: a rate preference of 60 makes
+             * the framework vote
+             *   APP_REQUEST_REFRESH_RATE_RANGE [60, 60]
+             *                     disableRefreshRateSwitching=true
+             * which pins the display at 60 no matter which mode id
+             * was asked for.  Selecting a 120 Hz mode then changed
+             * nothing, because the app was still asking not to leave
+             * 60.  The mode id names a rate already, so a rate
+             * preference alongside it is redundant as well as
+             * conflicting. */
+            params.preferredRefreshRate       = 0.0f;
+
+            getWindow().setAttributes(params);
+
+            /* Remember it, so onResume() does not re-pin the rate and
+             * undo this the next time the app comes forward. */
+            explicitDisplayModeId             = modeId;
+
+            Log.i("RetroActivityCommon",
+                  "preferredDisplayModeId set to " + modeId
+                  + " (rate preference cleared); display now reports"
+                  + " mode " + getCurrentDisplayModeId());
+          }
+          catch (Exception e)
+          {
+            Log.w("RetroActivityCommon",
+                  "setDisplayModeId failed: " + e.getMessage());
+          }
+        }
+      });
+      return true;
+    }
+    catch (Exception e)
+    {
+      Log.w("RetroActivityCommon",
+            "setDisplayModeId failed: " + e.getMessage());
+      return false;
+    }
+  }
+
+  /**
+   * Re-assert a chosen display mode when the activity comes back to
+   * the foreground.
+   *
+   * The window is torn down when the app goes to the background, and
+   * the mode chosen for it does not survive - which is why a 120 Hz
+   * selection came back as 60 on returning from the Android UI.
+   * Nothing was overriding it; it had simply gone with the window.
+   */
+  protected void reapplyDisplayMode()
+  {
+    if (explicitDisplayModeId == 0)
+      return;
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M)
+      return;
+
+    try
+    {
+      WindowManager.LayoutParams params = getWindow().getAttributes();
+
+      if (params.preferredDisplayModeId == explicitDisplayModeId
+            && params.preferredRefreshRate == 0.0f)
+        return;
+
+      params.preferredDisplayModeId = explicitDisplayModeId;
+      params.preferredRefreshRate   = 0.0f;
+      getWindow().setAttributes(params);
+
+      Log.i("RetroActivityCommon",
+            "Re-applied display mode " + explicitDisplayModeId
+            + " on resume; display reports mode "
+            + getCurrentDisplayModeId());
+    }
+    catch (Exception e)
+    {
+      Log.w("RetroActivityCommon",
+            "reapplyDisplayMode failed: " + e.getMessage());
+    }
+  }
+
+  /**
+   * Non-zero once a display mode has been chosen explicitly, which
+   * means the refresh rate preference must not be re-applied: doing
+   * so re-pins the rate and undoes the selection.
+   */
+  protected int explicitDisplayModeId = 0;
+
+  /**
+   * True when a display mode has been chosen explicitly, so a caller
+   * knows not to express a competing rate preference.
+   */
+  public boolean hasExplicitDisplayMode()
+  {
+    return explicitDisplayModeId != 0;
+  }
+
+  /**
+   * The Display this activity is on.  getDefaultDisplay() is
+   * deprecated from API 30, and on a non-visual context it can hand
+   * back something that reports nothing useful, so prefer the
+   * activity's own display where it exists.
+   */
+  @SuppressWarnings("deprecation")
+  private Display getActiveDisplay()
+  {
+    Display display = null;
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+      display = getDisplay();
+
+    if (display == null)
+    {
+      WindowManager wm = (WindowManager)getSystemService(Context.WINDOW_SERVICE);
+      if (wm != null)
+        display = wm.getDefaultDisplay();
+    }
+
+    return display;
+  }
+
+  @SuppressWarnings("deprecation")
+  public float getRefreshRate()
+  {
+    try
+    {
+      Display display = getActiveDisplay();
+
+      if (display == null)
+        return 0.0f;
+
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+      {
+        Display.Mode mode = display.getMode();
+        if (mode != null)
+          return mode.getRefreshRate();
+      }
+
+      return display.getRefreshRate();
+    }
+    catch (Exception e)
+    {
+      Log.w("RetroActivityCommon", "getRefreshRate failed: " + e.getMessage());
+      return 0.0f;
+    }
   }
 
   public int getPowerstate()

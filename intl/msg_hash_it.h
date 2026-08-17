@@ -1382,7 +1382,6 @@ static const struct
    char s_012938fb[30];
    char s_a747cdc9[41];
    char s_2f169651[20];
-   char s_73674a86[21];
    char s_705eee28[53];
    char s_62af62ac[46];
    char s_12b25a4b[61];
@@ -1870,7 +1869,6 @@ static const struct
    char s_c7bc8298[25];
    char s_e63b035a[22];
    char s_d21d875b[17];
-   char s_ae86fed0[32];
    char s_b12ae22e[12];
    char s_b2d073c7[16];
    char s_1cbc2657[21];
@@ -3213,14 +3211,10 @@ static const struct
    char s_69c0e487[51];
    char s_706ff4dc[202];
    char s_a0d1a85c[67];
-   char s_b5966528[31];
    char s_907ef7cc[37];
    char s_b0a46506[57];
    char s_04624c88[48];
-   char s_91976dbe[49];
    char s_f6492edc[45];
-   char s_9bb85635[34];
-   char s_22a05685[37];
 #endif
    char s_f3bfa8b9[101];
    char s_5fe2cee5[88];
@@ -5566,7 +5560,6 @@ static const struct
    "Fattore scala delle copertine",
    "Tronca nomi scaletta (Riavvio richiesto)",
    "Usa modalit\303\240 PAL60",
-   "Directory principale",
    "Metti in pausa il contenuto quando il menu \303\250 attivo",
    "Metti in pausa il contenuto quando non attivo",
    "Metti il contenuto in pausa quando il controller si scollega",
@@ -6060,7 +6053,6 @@ static const struct
    "Impostazioni di Rete SMB",
    "Nome Condivisione SMB",
    "Condivisione SMB",
-   "Sottocartelle SMB (facoltativo)",
    "Timeout SMB",
    "Nome Utente SMB",
    "Gruppo Di Lavoro SMB",
@@ -7779,14 +7771,10 @@ static const struct
    " cablata per maggiore affidabilit\303\240. Nota: la modifica di queste impostazioni richiede un "
    "riavvio di RetroArch.",
    "Seleziona il numero di connessioni massime usate nel tuo ambiente.",
-   "Password per l'autenticazione.",
    "Indirizzo IP del server o nome host.",
    "Configurare le impostazioni di condivisione di rete SMB.",
    "Nome della condivisione di rete a cui accedere.",
-   "Percorso delle sottocartelle della condivisione.",
    "Seleziona il timeout predefinito in secondi.",
-   "Nome utente per l'autenticazione.",
-   "Nome del gruppo di lavoro o dominio.",
 #endif
    "Ordina i file di salvataggio nelle cartelle denominate dalla directory in cui si trova il conten"
    "uto.",
@@ -8715,7 +8703,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_it_blob_check[
-      (sizeof(msg_hash_it_blob) == (183725u
+      (sizeof(msg_hash_it_blob) == (183704u
 #ifdef ANDROID
        + 376u
 #endif
@@ -8849,7 +8837,6 @@ typedef char msg_hash_it_blob_check[
        + 25u
        + 22u
        + 17u
-       + 32u
        + 12u
        + 16u
        + 21u
@@ -9039,14 +9026,10 @@ typedef char msg_hash_it_blob_check[
        + 51u
        + 202u
        + 67u
-       + 31u
        + 37u
        + 57u
        + 48u
-       + 49u
        + 45u
-       + 34u
-       + 37u
 #endif
 #ifdef HAVE_LAKKA
        + 60u
@@ -10495,7 +10478,6 @@ static const uint32_t msg_hash_it_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_OZONE_THUMBNAIL_SCALE_FACTOR,
    (uint32_t)MENU_ENUM_LABEL_VALUE_OZONE_TRUNCATE_PLAYLIST_NAME,
    (uint32_t)MENU_ENUM_LABEL_VALUE_PAL60_ENABLE,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_PARENT_DIRECTORY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_PAUSE_LIBRETRO,
    (uint32_t)MENU_ENUM_LABEL_VALUE_PAUSE_NONACTIVE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_PAUSE_ON_DISCONNECT,
@@ -10982,7 +10964,6 @@ static const uint32_t msg_hash_it_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_SMB_CLIENT_SETTINGS,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SMB_CLIENT_SHARE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SMB_CLIENT_SMB_SHARE,
-   (uint32_t)MENU_ENUM_LABEL_VALUE_SMB_CLIENT_SUBDIR,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SMB_CLIENT_TIMEOUT,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SMB_CLIENT_USERNAME,
    (uint32_t)MENU_ENUM_LABEL_VALUE_SMB_CLIENT_WORKGROUP,
@@ -12325,14 +12306,10 @@ static const uint32_t msg_hash_it_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_SMB_CLIENT_BROWSE,
    (uint32_t)MENU_ENUM_SUBLABEL_SMB_CLIENT_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_SMB_CLIENT_NUM_CONTEXTS,
-   (uint32_t)MENU_ENUM_SUBLABEL_SMB_CLIENT_PASSWORD,
    (uint32_t)MENU_ENUM_SUBLABEL_SMB_CLIENT_SERVER,
    (uint32_t)MENU_ENUM_SUBLABEL_SMB_CLIENT_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_SMB_CLIENT_SHARE,
-   (uint32_t)MENU_ENUM_SUBLABEL_SMB_CLIENT_SUBDIR,
    (uint32_t)MENU_ENUM_SUBLABEL_SMB_CLIENT_TIMEOUT,
-   (uint32_t)MENU_ENUM_SUBLABEL_SMB_CLIENT_USERNAME,
-   (uint32_t)MENU_ENUM_SUBLABEL_SMB_CLIENT_WORKGROUP,
 #endif
    (uint32_t)MENU_ENUM_SUBLABEL_SORT_SAVEFILES_BY_CONTENT_ENABLE,
    (uint32_t)MENU_ENUM_SUBLABEL_SORT_SAVEFILES_ENABLE,
