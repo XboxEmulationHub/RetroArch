@@ -686,6 +686,10 @@ struct ozone_handle
    char selection_entry_enumeration[NAME_MAX_LENGTH];
    char fullscreen_thumbnail_label[NAME_MAX_LENGTH];
 
+   /* The menu font path the fonts are built from. ozone_render()
+    * watches it alongside the scale factors and rebuilds them in
+    * place when it moves. */
+   char last_font_path[PATH_MAX_LENGTH];
    char assets_path[PATH_MAX_LENGTH];
    char png_path[PATH_MAX_LENGTH];
    char icons_path[PATH_MAX_LENGTH];
@@ -9998,25 +10002,49 @@ static bool ozone_init_font(
    int glyph_width               = 0;
    gfx_display_t *p_disp         = disp_get_ptr();
    const char *wideglyph_str     = msg_hash_get_wideglyph_str();
+   font_data_t *old_font;
 
-   /* Free existing */
-   if (font_data->font)
-   {
-      font_driver_free(font_data->font);
-      font_data->font            = NULL;
-   }
-
-   /* Enforce minimum readable font size for small screens */
+   /* Enforce minimum readable font size for small screens.
+    * Before the match test below, so it compares the size that would
+    * actually be built. */
    if (font_size < 9)
       font_size = 9;
+
+   /* Nothing to do if this is already the font that was asked for.
+    * ozone_set_layout() runs on padding and thumbnail-scale changes
+    * too, and each of the six fonts has its own scale factor, so most
+    * calls here are asking for a font that is already loaded.
+    *
+    * The wide-glyph sample follows the menu language and is not
+    * refreshed by font_driver_sync_impl(), so a change there has to
+    * fall through even when the face is unchanged. */
+   if (     font_data->wideglyph_str == wideglyph_str
+         && font_driver_matches(font_data->font, font_path, font_size))
+      return true;
+
+   old_font                      = font_data->font;
 
    /* Cache approximate dimensions */
    font_data->line_height        = (int)(font_size + 0.5f);
    font_data->glyph_width        = (int)((font_size * (3.0f / 4.0f)) + 0.5f);
 
-   /* Create font */
+   /* Create font.
+    *
+    * Built before the old one is released, and the old one retired
+    * rather than freed: ozone_set_layout() reaches here from
+    * ozone_render(), which runs before the video driver's frame
+    * function, so freeing the atlas outright can pull it out from
+    * under a command list that still references it. Building first
+    * also means a failure below leaves the previous font in place
+    * instead of leaving Ozone with none. */
    if (!(font_data->font = gfx_display_font_file(p_disp, font_path, font_size, is_threaded)))
+   {
+      font_data->font            = old_font;
       return false;
+   }
+
+   if (old_font)
+      font_driver_free_deferred(old_font);
 
    /* Get font metadata */
    if ((glyph_width = font_driver_get_message_width(font_data->font, "a", 1, 1.0f)) > 0)
@@ -10218,6 +10246,11 @@ static void ozone_set_layout(
 
    if (path_menu_font && *path_menu_font)
       strlcpy(font_path, path_menu_font, sizeof(font_path));
+
+   /* Recorded here rather than at the call sites, so context reset
+    * and the in-place rebuild cannot disagree on what is loaded. */
+   strlcpy(ozone->last_font_path, path_menu_font ? path_menu_font : "",
+         sizeof(ozone->last_font_path));
 
    font_inited = ozone_init_font(&ozone->fonts.title,
          is_threaded, font_path, FONT_SIZE_TITLE * scale_factor * font_scale_factor_global * font_scale_factor_title);
@@ -10667,7 +10700,9 @@ static void ozone_render(void *data,
          || (font_scale_factor_time != ozone->last_font_scale_factor_time)
          || (font_scale_factor_footer != ozone->last_font_scale_factor_footer)
          || (width != ozone->last_width)
-         || (height != ozone->last_height))
+         || (height != ozone->last_height)
+         || !string_is_equal(ozone->last_font_path,
+               settings->paths.path_menu_ozone_font))
    {
       ozone->last_scale_factor               = scale_factor;
       ozone->last_thumbnail_scale_factor     = thumbnail_scale_factor;

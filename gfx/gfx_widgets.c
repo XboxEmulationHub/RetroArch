@@ -939,23 +939,47 @@ static void gfx_widgets_font_init(
 {
    float scaled_size             = font_size * p_dispwidget->last_scale_factor;
 
-   /* Limit minimum font size to keep it readable */
+   /* Limit minimum font size to keep it readable.
+    * Before the match test below, so it compares the size that would
+    * actually be built. */
    if (scaled_size < 9)
       scaled_size = 9;
 
-   /* Free existing font */
-   if (font_data->font)
+   /* Nothing to do if this is already the font that was asked for.
+    * gfx_widgets_layout() runs on any video dimension change, but the
+    * size here derives from last_scale_factor alone, so a resize at
+    * an unchanged scale asks for the six fonts already loaded.
+    *
+    * usage_count is still cleared: it counts draws against the font
+    * since the last layout pass, and the callers below expect a
+    * layout to have reset it whether or not a rebuild happened. */
+   if (font_driver_matches(font_data->font, font_path, scaled_size))
    {
-      font_driver_free(font_data->font);
-      font_data->font = NULL;
+      font_data->usage_count     = 0;
+      return;
    }
 
    /* Get approximate glyph width */
    font_data->glyph_width        = scaled_size * (3.0f / 4.0f);
 
-   /* Create font */
-   font_data->font               = gfx_display_font_file(p_disp,
-         font_path, scaled_size, is_threaded);
+   /* Create font.
+    *
+    * Built before the old one is released, and the old one retired
+    * rather than freed: gfx_widgets_layout() reaches here from
+    * gfx_widgets_iterate(), which runs before the video driver's
+    * frame function, so freeing the atlas outright can pull it out
+    * from under a command list that still references it. */
+   {
+      font_data_t *old_font         = font_data->font;
+
+      font_data->font               = gfx_display_font_file(p_disp,
+            font_path, scaled_size, is_threaded);
+
+      if (!font_data->font)
+         font_data->font            = old_font;
+      else if (old_font)
+         font_driver_free_deferred(old_font);
+   }
 
    /* Get font metadata. gfx_display_font_file() can fail, and there is
     * no implicit font to fall back on any more, so the approximate
@@ -1015,6 +1039,11 @@ static void gfx_widgets_layout(
       bool is_threaded, const char *dir_assets, char *font_path)
 {
    size_t i;
+
+   /* Recorded here rather than at the call sites, so context reset
+    * and the in-place rebuild cannot disagree on what is loaded. */
+   strlcpy(p_dispwidget->last_font_path, font_path ? font_path : "",
+         sizeof(p_dispwidget->last_font_path));
 
    /* Initialise fonts */
    if (!font_path || !*font_path)
@@ -1121,11 +1150,16 @@ void gfx_widgets_iterate(
             p_disp,
             settings, width, height, fullscreen, true);
 
-   /* Check whether screen dimensions or menu scale
-    * factor have changed */
+   /* Check whether screen dimensions, menu scale factor or the
+    * notification font have changed. The font is watched here rather
+    * than from a settings callback because the rebuild needs the
+    * video driver up and the thread that drives it, which is what
+    * runs once a frame here. */
    if ((scale_factor != p_dispwidget->last_scale_factor) ||
        (width        != p_dispwidget->last_video_width) ||
-       (height       != p_dispwidget->last_video_height))
+       (height       != p_dispwidget->last_video_height) ||
+       !string_is_equal(p_dispwidget->last_font_path,
+             font_path ? font_path : ""))
    {
       p_dispwidget->last_scale_factor = scale_factor;
       p_dispwidget->last_video_width  = width;
