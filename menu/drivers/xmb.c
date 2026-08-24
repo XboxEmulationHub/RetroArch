@@ -1115,7 +1115,13 @@ static void xmb_draw_icon(
       )
       return;
 
-   if (!p_disp->dispctx->handles_transform)
+   /* Every draw below goes through dispctx; without one there is
+    * nothing to render (the context is torn down around a video
+    * driver reinit while cached frames may still be submitted). */
+   if (!dispctx)
+      return;
+
+   if (!dispctx->handles_transform)
    {
       float radians = rotation;
       float cosine  = cosf(radians);
@@ -7021,16 +7027,22 @@ static enum menu_action xmb_parse_menu_entry_action(
             else if (!config_get_ptr()->bools.menu_xmb_show_horizontal_list)
             {
                /* Reset horizontal list to Main Menu */
-               file_list_t *menu_stack    = MENU_LIST_GET(menu_list, 0);
+               file_list_t *menu_stack    = menu_list ? MENU_LIST_GET(menu_list, 0) : NULL;
                file_list_t *selection_buf = menu_list ? MENU_LIST_GET_SELECTION(menu_list, 0) : NULL;
-               size_t stack_size          = menu_stack->size;
+               size_t stack_size          = menu_stack ? menu_stack->size : 0;
 
-               if (menu_stack->list[stack_size - 1].label)
-                  free(menu_stack->list[stack_size - 1].label);
-               menu_stack->list[stack_size - 1].label = NULL;
+               /* Relabelling needs an entry to relabel: with an empty
+                * stack, stack_size - 1 indexes SIZE_MAX and the free
+                * releases whatever that read returns. */
+               if (stack_size > 0)
+               {
+                  if (menu_stack->list[stack_size - 1].label)
+                     free(menu_stack->list[stack_size - 1].label);
+                  menu_stack->list[stack_size - 1].label = NULL;
 
-               menu_stack->list[stack_size - 1].label = strdup(MENU_ENUM_LABEL_MAIN_MENU_STR);
-               menu_stack->list[stack_size - 1].type  = MENU_SETTINGS;
+                  menu_stack->list[stack_size - 1].label = strdup(MENU_ENUM_LABEL_MAIN_MENU_STR);
+                  menu_stack->list[stack_size - 1].type  = MENU_SETTINGS;
+               }
 
                menu_driver_deferred_push_content_list(selection_buf);
             }
@@ -9159,7 +9171,7 @@ error:
 
 static void xmb_frame(void *data, video_frame_info_t *video_info)
 {
-   math_matrix_4x4 mymat;
+   math_matrix_4x4 mymat               = {{ 0.0f }};
    unsigned i;
    char title_msg[128];
    char msg[1024];
@@ -9381,7 +9393,7 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
 
    selection = menu_st->selection_ptr;
 
-   if (!p_disp->dispctx->handles_transform)
+   if (dispctx && !dispctx->handles_transform)
    {
       float cosine             = 1.0f; /* cos(rad)  = cos(0)  = 1.0f */
       float sine               = 0.0f; /* sine(rad) = sine(0) = 0.0f */
@@ -9423,7 +9435,7 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
       if (show_icon_thumbnail)
       {
          size_t selection             = menu_st->selection_ptr;
-         xmb_node_t *node             = (xmb_node_t*)selection_buf->list[selection].userdata;
+         xmb_node_t *node             = NULL;
          float gfx_icon_x_margin      = left_thumbnail_margin_x * (xmb->use_ps3_layout ? 1 : 0);
          float gfx_icon_x             = gfx_icon_x_margin;
          float gfx_icon_y             = xmb->margins_screen_top + (xmb->icon_size / 1.5f);
@@ -9432,6 +9444,13 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
          float gfx_icon_width_draw    = 0;
          float gfx_icon_height_draw   = 0;
          float playlist_extra_x       = 0;
+
+         /* The selection can be stale against a list that was just
+          * rebuilt smaller, and freshly inserted entries may not
+          * carry a node yet; without one the thumbnail simply keeps
+          * the margin position. */
+         if (selection_buf && selection < selection_buf->size)
+            node = (xmb_node_t*)selection_buf->list[selection].userdata;
 
          gfx_thumbnail_get_draw_dimensions(
                icon_thumbnail,
@@ -9443,7 +9462,8 @@ static void xmb_frame(void *data, video_frame_info_t *video_info)
          if (xmb->is_playlist)
             gfx_icon_x += playlist_extra_x;
 
-         gfx_icon_x += node->x;
+         if (node)
+            gfx_icon_x += node->x;
 
          if (gfx_icon_x < gfx_icon_x_margin)
             gfx_icon_x = gfx_icon_x_margin;
@@ -10815,7 +10835,14 @@ static void xmb_list_cache(void *data, enum menu_list_type type,
                break;
          }
 
-         stack_size = menu_stack->size;
+         stack_size = menu_stack ? menu_stack->size : 0;
+
+         /* Relabelling needs an entry to relabel: with an empty stack,
+          * stack_size - 1 indexes SIZE_MAX and the free below releases
+          * whatever that read returns. Nothing else in this case
+          * depends on the relabel, so leave the switch. */
+         if (stack_size < 1)
+            break;
 
          if (menu_stack->list[stack_size - 1].label)
             free(menu_stack->list[stack_size - 1].label);

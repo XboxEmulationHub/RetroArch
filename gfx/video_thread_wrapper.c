@@ -530,6 +530,8 @@ static void video_thread_loop(void *data)
    bool updated;
    thread_video_t *thr = (thread_video_t*)data;
 
+   sthread_setname("ra-video");
+
    for (;;)
    {
       slock_lock(thr->lock);
@@ -757,6 +759,18 @@ static bool video_thread_frame(void *data, const void *frame_,
       uint8_t       *dst   = thr->frame.buffer;
       unsigned copy_stride = width *
          (thr->info.rgb32 ? sizeof(uint32_t) : sizeof(uint16_t));
+      /* The buffer holds the maximum geometry the core declared at init.
+       * A core is free to hand over a bigger frame than that, so publish
+       * only the rows that fit: the worker renders thr->frame.height out
+       * of this same buffer, so an unclamped height would be read past
+       * the end of the allocation whether or not anything was copied
+       * into it. A stride too wide for a single row yields zero. */
+      unsigned rows        = copy_stride
+         ? (unsigned)(thr->frame.buffer_size / copy_stride)
+         : 0;
+
+      if (height > rows)
+         height            = rows;
 
       if (src)
       {
@@ -856,6 +870,8 @@ static bool video_thread_init(thread_video_t *thr,
 #endif
       if (!thr->frame.buffer)
          return false;
+
+      thr->frame.buffer_size = max_size;
 
       memset(thr->frame.buffer, 0x80, max_size);
    }

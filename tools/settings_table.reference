@@ -82,6 +82,7 @@ bool	menu_timedate_enable	1	1
 bool	menu_battery_level_enable	1	1
 bool	menu_core_enable	1	1
 bool	menu_show_sublabels	1	1
+bool	menu_show_sublabels_current_selection_only	1	0
 bool	menu_show_confirm	1	1
 bool	menu_rgui_shadows	1	0
 bool	rgui_particle_effect_screensaver	1	1
@@ -576,7 +577,6 @@ uint	netplay_input_latency_frames_range	1	0
 uint	network_cmd_port	1	55355
 uint	network_remote_base_port	1	55400
 uint	user_language	1	frontend_driver_get_user_language()
-uint	bundle_assets_extract_version_current	1	0
 uint	bundle_assets_extract_last_version	1	0
 uint	cheevos_appearance_anchor	1	0
 float	video_aspect_ratio	1	1.3333f
@@ -726,6 +726,7 @@ bool	menu_timedate_enable	1	1
 bool	menu_battery_level_enable	1	1
 bool	menu_core_enable	1	1
 bool	menu_show_sublabels	1	1
+bool	menu_show_sublabels_current_selection_only	1	0
 bool	menu_show_confirm	1	1
 bool	menu_rgui_shadows	1	0
 bool	rgui_particle_effect_screensaver	1	1
@@ -1365,6 +1366,7 @@ bool	menu_timedate_enable	1	1
 bool	menu_battery_level_enable	1	1
 bool	menu_core_enable	1	1
 bool	menu_show_sublabels	1	1
+bool	menu_show_sublabels_current_selection_only	1	0
 bool	menu_show_confirm	1	1
 bool	menu_rgui_shadows	1	0
 bool	rgui_particle_effect_screensaver	1	1

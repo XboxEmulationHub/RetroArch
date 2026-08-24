@@ -55,6 +55,13 @@
 #include "tasks/task_content.h"
 #include "tasks/tasks_internal.h"
 #include "accessibility.h"
+#ifdef ANDROID
+/* Defined in frontend/drivers/platform_unix.c; declared here rather
+ * than via platform_unix.h, whose JNI includes host-side tooling
+ * cannot preprocess. */
+void android_app_set_window_settings(bool notch_write_over,
+      bool auto_mouse_grab);
+#endif
 
 #include "list_special.h"
 
@@ -1697,9 +1704,13 @@ static struct config_path_setting *populate_settings_path(
       return NULL;
 
    /* Paths */
+#if !defined(ANDROID)
+   /* On Android the bundle asset paths come from the launch intent
+    * (see platform_unix.c) and are not user configuration. */
    SETTING_PATH("bundle_assets_src_path",        settings->paths.bundle_assets_src, false, NULL, true);
    SETTING_PATH("bundle_assets_dst_path",        settings->paths.bundle_assets_dst, false, NULL, true);
    SETTING_PATH("bundle_assets_dst_path_subdir", settings->paths.bundle_assets_dst_subdir, false, NULL, true);
+#endif
    SETTING_PATH("core_updater_buildbot_cores_url",  settings->paths.network_buildbot_url, false, NULL, true);
    SETTING_PATH("core_updater_buildbot_assets_url", settings->paths.network_buildbot_assets_url, false, NULL, true);
    SETTING_PATH("libretro_directory",            settings->paths.directory_libretro, false, NULL, false);
@@ -3938,7 +3949,7 @@ static struct config_uint_setting *populate_settings_uint(
 #ifdef HAVE_LANGEXTRA
    SETTING_UINT("user_language",                 msg_hash_get_uint(MSG_HASH_USER_LANGUAGE), true, frontend_driver_get_user_language(), false);
 #endif
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(ANDROID)
    SETTING_UINT("bundle_assets_extract_version_current", &settings->uints.bundle_assets_extract_version_current, true, 0, false);
 #endif
    SETTING_UINT("bundle_assets_extract_last_version",    &settings->uints.bundle_assets_extract_last_version, true, 0, false);
@@ -5487,6 +5498,17 @@ void config_set_defaults(void *data)
    if (!g_defaults.settings_in_latency)
       g_defaults.settings_in_latency          = DEFAULT_IN_LATENCY;
 
+   /* Device-optimal audio parameters supplied by the frontend.
+    * Values saved in the config file still override these on
+    * load. */
+   if (g_defaults.settings_out_sample_rate > 0)
+      settings->uints.audio_output_sample_rate =
+            (unsigned)g_defaults.settings_out_sample_rate;
+
+   if (g_defaults.settings_out_block_frames > 0)
+      settings->uints.audio_block_frames       =
+            (unsigned)g_defaults.settings_out_block_frames;
+
 
    audio_set_float(AUDIO_ACTION_VOLUME_GAIN, settings->floats.audio_volume);
 #ifdef HAVE_AUDIOMIXER
@@ -5621,7 +5643,7 @@ void config_set_defaults(void *data)
    *settings->paths.path_content_music_history   = '\0';
    *settings->paths.path_content_video_history   = '\0';
    *settings->paths.path_cheat_settings          = '\0';
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(ANDROID)
    *settings->paths.bundle_assets_src            = '\0';
    *settings->paths.bundle_assets_dst            = '\0';
    *settings->paths.bundle_assets_dst_subdir     = '\0';
@@ -7058,6 +7080,11 @@ static bool config_load_file(global_t *global,
 #endif
 
    frontend_driver_set_sustained_performance_mode(settings->bools.sustained_performance_mode);
+#ifdef ANDROID
+   android_app_set_window_settings(
+         settings->bools.video_notch_write_over_enable,
+         settings->bools.input_auto_mouse_grab);
+#endif
    recording_driver_update_streaming_url();
 
    if (!config_get_entry(conf, "user_language"))

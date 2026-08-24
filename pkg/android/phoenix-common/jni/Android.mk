@@ -19,7 +19,23 @@ DEFINES     :=
 LIBRETRO_COMM_DIR := $(RARCH_DIR)/libretro-common
 DEPS_DIR          := $(RARCH_DIR)/deps
 
-GIT_VERSION := $(shell git rev-parse --short HEAD 2>/dev/null)
+RA_ROOT := $(abspath $(LOCAL_PATH)/$(RARCH_DIR))
+
+# Ask git whether RA_ROOT is itself the repository root. An empty prefix
+# means it is; a non-empty one means we resolved an enclosing repository
+# and must not use its HEAD. Comparing paths is unreliable here because
+# make and git may disagree on path syntax.
+ifeq ($(GIT_VERSION),)
+GIT_PROBE := $(strip $(shell git -C "$(RA_ROOT)" rev-parse --show-prefix 2>/dev/null && echo GIT_OK))
+ifeq ($(GIT_PROBE),GIT_OK)
+   GIT_VERSION := $(shell git -C "$(RA_ROOT)" rev-parse --short HEAD 2>/dev/null)
+else
+ifneq ($(GIT_PROBE),)
+   $(warning RetroArch: $(RA_ROOT) is not a git toplevel, omitting git version)
+endif
+endif
+endif
+
 ifneq ($(GIT_VERSION),)
    DEFINES += -DHAVE_GIT_VERSION -DGIT_VERSION=$(GIT_VERSION)
 endif

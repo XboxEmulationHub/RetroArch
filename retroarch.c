@@ -1809,6 +1809,16 @@ void drivers_init(
 #endif
          menu_contentless_cores_context_init();
       }
+      else if (     menu_st->driver_ctx
+                 && menu_st->driver_ctx->context_reset)
+         /* Counterpart of the video-only context_destroy in
+          * driver_uninit(): the menu survived the video swap with
+          * its state intact but its fonts/textures released, so
+          * rebuild them against the new video driver instance. A
+          * no-op when the menu was never initialised (NULL userdata
+          * returns early in every menu driver's context_reset). */
+         menu_st->driver_ctx->context_reset(menu_st->userdata,
+               video_is_threaded);
    }
 
    /* Initialising the menu driver will also initialise
@@ -1902,6 +1912,29 @@ void driver_uninit(int flags, enum driver_lifetime_flags lifetime_flags)
 #endif
 
       menu_driver_ctl(RARCH_MENU_CTL_DEINIT, NULL);
+   }
+   else if (flags & DRIVER_VIDEO_MASK)
+   {
+      /* Video-only teardown (VIDEO_REINIT network command, CRT
+       * switch): the video driver instance every menu font's cached
+       * driver pointer refers to is about to be freed, but without
+       * DRIVER_MENU_MASK nothing released those fonts/textures and
+       * nothing rebuilt them on the way back up - the next menu
+       * frame then flushed a font block against the freed instance
+       * (observed as a use-after-free in
+       * gl2_raster_font_setup_viewport on Android).
+       *
+       * Release just the menu's GPU-held resources here; menu state
+       * itself persists exactly as it does across a full reinit
+       * (MENU_ST_FLAG_DATA_OWN). drivers_init() mirrors this with a
+       * bare context_reset once the new video driver is up. Runs
+       * after the video_thread_wait_idle() barrier above, so no
+       * in-flight threaded frame still references the resources
+       * being freed. */
+      struct menu_state *menu_st = menu_state_get_ptr();
+      if (     menu_st->driver_ctx
+            && menu_st->driver_ctx->context_destroy)
+         menu_st->driver_ctx->context_destroy(menu_st->userdata);
    }
 #endif
 
@@ -4657,6 +4690,16 @@ bool command_event(enum event_command cmd, void *data)
                   configuration_set_bool(settings,
                         settings->bools.core_info_cache_enable, false);
             }
+
+            /* The rebuild went through CMD_EVENT_CORE_INFO_DEINIT,
+             * which frees the current-core entry alongside the list
+             * it borrows from.  With a core still loaded, resolve
+             * the entry against the fresh list so consumers keep
+             * the running core's identity and the savestate support
+             * gate keeps its info-file answer instead of falling
+             * back to the no-core default. */
+            if (!path_is_empty(RARCH_PATH_CORE))
+               core_info_load(path_get(RARCH_PATH_CORE));
          }
          break;
       case CMD_EVENT_CORE_DEINIT:
@@ -8504,7 +8547,10 @@ bool retroarch_main_init(int argc, char *argv[])
 
       {
          char str_output[256];
-         char str[128];
+         /* Wide enough for every name the mask can name at once, so
+          * the log does not stop mid-list on a CPU that reports a lot
+          * of them. */
+         char str[192];
          int len;
          retroarch_get_capabilities(RARCH_CAPABILITIES_CPU, str, sizeof(str));
 
@@ -8714,6 +8760,17 @@ bool retroarch_main_init(int argc, char *argv[])
             && (menu_st->driver_ctx != menu_ctx_new))
       {
          uint16_t menu_data_own = (menu_st->flags & MENU_ST_FLAG_DATA_OWN);
+#ifdef HAVE_THREADS
+         /* Same barrier as driver_uninit(): RARCH_MENU_CTL_DEINIT runs
+          * the old driver's context_destroy(), which frees the textures
+          * and fonts an in-flight threaded frame is still drawing with.
+          *
+          * No-op when threaded video is not active. */
+         video_driver_state_t *video_st = video_state_get_ptr();
+         if (     VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
+               && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE))
+            video_thread_wait_idle();
+#endif
          menu_st->flags        &= ~MENU_ST_FLAG_DATA_OWN;
          menu_driver_ctl(RARCH_MENU_CTL_DEINIT, NULL);
          menu_st->flags        |= menu_data_own;
@@ -9313,48 +9370,69 @@ size_t retroarch_get_capabilities(enum rarch_capabilities type,
    {
       case RARCH_CAPABILITIES_CPU:
          {
+            /* Each name carries its own separator, so appending one is
+             * a single bounded copy. */
+            static const struct
+            {
+               uint64_t    bit;
+               const char *name;
+            } simd_names[] = {
+               { RETRO_SIMD_MMX,    "MMX " },
+               { RETRO_SIMD_MMXEXT, "MMXEXT " },
+               { RETRO_SIMD_SSE,    "SSE " },
+               { RETRO_SIMD_SSE2,   "SSE2 " },
+               { RETRO_SIMD_SSE3,   "SSE3 " },
+               { RETRO_SIMD_SSSE3,  "SSSE3 " },
+               { RETRO_SIMD_SSE4,   "SSE4 " },
+               { RETRO_SIMD_SSE42,  "SSE42 " },
+               { RETRO_SIMD_AES,    "AES " },
+               { RETRO_SIMD_PCLMUL, "PCLMUL " },
+               { RETRO_SIMD_AVX,    "AVX " },
+               { RETRO_SIMD_AVX2,   "AVX2 " },
+               { RETRO_SIMD_AVX512, "AVX512 " },
+               { RETRO_SIMD_FMA3,   "FMA3 " },
+               { RETRO_SIMD_FMA4,   "FMA4 " },
+               { RETRO_SIMD_LZCNT,  "LZCNT " },
+               { RETRO_SIMD_NEON,   "NEON " },
+               { RETRO_SIMD_VFPV3,  "VFPV3 " },
+               { RETRO_SIMD_VFPV4,  "VFPV4 " },
+               { RETRO_SIMD_VMX,    "VMX " },
+               { RETRO_SIMD_VMX128, "VMX128 " },
+               { RETRO_SIMD_VFPU,   "VFPU " },
+               { RETRO_SIMD_PS,     "PS " },
+               { RETRO_SIMD_ASIMD,  "ASIMD " },
+               { RETRO_SIMD_CRC32,  "CRC32 " },
+               { RETRO_SIMD_SHA512, "SHA512 " },
+               { RETRO_SIMD_SHA1,   "SHA1 " },
+               { RETRO_SIMD_SHA256, "SHA256 " },
+            };
             uint64_t cpu = cpu_features_get();
-            if (cpu & RETRO_SIMD_MMX)
-               _len += strlcpy(s + _len, "MMX ", len - _len);
-            if (cpu & RETRO_SIMD_MMXEXT)
-               _len += strlcpy(s + _len, "MMXEXT ", len - _len);
-            if (cpu & RETRO_SIMD_SSE)
-               _len += strlcpy(s + _len, "SSE ", len - _len);
-            if (cpu & RETRO_SIMD_SSE2)
-               _len += strlcpy(s + _len, "SSE2 ", len - _len);
-            if (cpu & RETRO_SIMD_SSE3)
-               _len += strlcpy(s + _len, "SSE3 ", len - _len);
-            if (cpu & RETRO_SIMD_SSSE3)
-               _len += strlcpy(s + _len, "SSSE3 ", len - _len);
-            if (cpu & RETRO_SIMD_SSE4)
-               _len += strlcpy(s + _len, "SSE4 ", len - _len);
-            if (cpu & RETRO_SIMD_SSE42)
-               _len += strlcpy(s + _len, "SSE42 ", len - _len);
-            if (cpu & RETRO_SIMD_AES)
-               _len += strlcpy(s + _len, "AES ", len - _len);
-            if (cpu & RETRO_SIMD_AVX)
-               _len += strlcpy(s + _len, "AVX ", len - _len);
-            if (cpu & RETRO_SIMD_AVX2)
-               _len += strlcpy(s + _len, "AVX2 ", len - _len);
-            if (cpu & RETRO_SIMD_AVX512)
-               _len += strlcpy(s + _len, "AVX512 ", len - _len);
-            if (cpu & RETRO_SIMD_NEON)
-               _len += strlcpy(s + _len, "NEON ", len - _len);
-            if (cpu & RETRO_SIMD_VFPV3)
-               _len += strlcpy(s + _len, "VFPV3 ", len - _len);
-            if (cpu & RETRO_SIMD_VFPV4)
-               _len += strlcpy(s + _len, "VFPV4 ", len - _len);
-            if (cpu & RETRO_SIMD_VMX)
-               _len += strlcpy(s + _len, "VMX ", len - _len);
-            if (cpu & RETRO_SIMD_VMX128)
-               _len += strlcpy(s + _len, "VMX128 ", len - _len);
-            if (cpu & RETRO_SIMD_VFPU)
-               _len += strlcpy(s + _len, "VFPU ", len - _len);
-            if (cpu & RETRO_SIMD_PS)
-               _len += strlcpy(s + _len, "PS ", len - _len);
-            if (cpu & RETRO_SIMD_ASIMD)
-               _len += strlcpy(s + _len, "ASIMD ", len - _len);
-            break;
+            size_t   i;
+
+            /* A mask with nothing in it still has to leave a string
+             * behind: the callers hand this an uninitialised buffer
+             * and print it. */
+            if (len)
+               s[0] = '\0';
+
+            for (i = 0; i < ARRAY_SIZE(simd_names); i++)
+            {
+               size_t nlen;
+
+               if (!(cpu & simd_names[i].bit))
+                  continue;
+
+               /* Stop while the remaining count is still a count.
+                * strlcpy() reports what it would have written, so
+                * adding its return once it has truncated carries _len
+                * past len and turns every later len - _len into a
+                * very large size_t. */
+               nlen = strlen(simd_names[i].name);
+               if (_len + nlen >= len)
+                  break;
+
+               _len += strlcpy(s + _len, simd_names[i].name, len - _len);
+            }
          }
          break;
       case RARCH_CAPABILITIES_COMPILER:

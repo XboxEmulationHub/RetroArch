@@ -20,6 +20,7 @@
 #include <array/rbuf.h>
 #include <file/file_path.h>
 #include <string/stdstring.h>
+#include <string/rstrtod.h>
 #include <streams/file_stream.h>
 #include <lists/string_list.h>
 
@@ -2107,18 +2108,25 @@ static bool menu_content_find_first_core(
     * going to use the current core to load this. */
    if (load_content_with_current_core)
    {
-      core_info_get_current_core((core_info_t**)&info);
-      if (info)
+      core_info_t *current = NULL;
+      core_info_get_current_core(&current);
+      /* Until core_info_load() has matched the loaded core against
+       * the info list, the current-core entry is a zeroed shell
+       * with no path (core_info_init_current_core()); it cannot be
+       * used to load content, so fall back to the scanned list. */
+      if (current && current->path && *current->path)
+      {
+         info      = current;
          supported = 1;
+      }
    }
 
    /* There are multiple deferred cores and a
     * selection needs to be made from a list, return 0. */
-   if (supported != 1)
+   if (supported != 1 || !info || !info->path || !*info->path)
       return false;
 
-    if (info)
-      strlcpy(s, info->path, len);
+   strlcpy(s, info->path, len);
 
    return true;
 }
@@ -7384,7 +7392,7 @@ static int generic_action_ok_dropdown_setting(const char *path, const char *labe
                *setting->value.target.fraction = val;
             }
             else
-               *setting->value.target.fraction = (float)atof(path);
+               *setting->value.target.fraction = rstrtof(path, NULL);
          }
          break;
       case ST_STRING_OPTIONS:
@@ -7455,7 +7463,7 @@ int action_cb_push_dropdown_item_resolution(const char *path,
    while (*end == ' ' || *end == '(')
       ++end;
 
-   refreshrate = (float)strtod(end, NULL);
+   refreshrate = (float)rstrtod(end, NULL);
 
 
    if (video_display_server_set_resolution(width, height,
@@ -7526,7 +7534,7 @@ static int action_ok_push_dropdown_item_video_shader_param_generic(const char *p
 #if defined(HAVE_CG) || defined(HAVE_GLSL) || defined(HAVE_SLANG) || defined(HAVE_HLSL)
    video_shader_ctx_t shader_info;
    unsigned offset                           = (unsigned)setting_offset;
-   float val                                 = atof(path);
+   float val                                 = rstrtof(path, NULL);
    struct video_shader *shader               = menu_shader_get();
    struct video_shader_parameter *param_menu = NULL;
    struct video_shader_parameter *param_prev = NULL;
@@ -9210,9 +9218,6 @@ static int action_ok_smb_browse(const char *path,
 {
    settings_t *settings = config_get_ptr();
    char smb_path[PATH_MAX_LENGTH];
-   char *ptr       = smb_path;
-   size_t remaining = sizeof(smb_path);
-   size_t len;
 
    if (!settings->bools.smb_client_enable)
    {
@@ -9224,7 +9229,7 @@ static int action_ok_smb_browse(const char *path,
       return -1;
    }
 
-   if (!*settings->arrays.smb_client_server_address)
+   if (!menu_displaylist_build_smb_root(smb_path, sizeof(smb_path)))
    {
       runloop_msg_queue_push(
             "SMB server address not configured.",
@@ -9232,41 +9237,6 @@ static int action_ok_smb_browse(const char *path,
             MESSAGE_QUEUE_ICON_DEFAULT,
             MESSAGE_QUEUE_CATEGORY_ERROR);
       return -1;
-   }
-
-   /* Build base SMB path: smb://<server> */
-   len = snprintf(ptr, remaining, "smb://%s",
-         settings->arrays.smb_client_server_address);
-   if (len >= remaining)
-      len = remaining - 1;
-   ptr       += len;
-   remaining -= len;
-
-   /* Append /<share> if set */
-   if (remaining > 1 && *settings->arrays.smb_client_share)
-   {
-      *ptr++ = '/';
-      remaining--;
-      len = strlcpy(ptr, settings->arrays.smb_client_share, remaining);
-      if (len >= remaining)
-         len = remaining - 1;
-      ptr       += len;
-      remaining -= len;
-   }
-
-   /* Append /<subdir> if set */
-   if (remaining > 1 && *settings->arrays.smb_client_subdir)
-   {
-      if (settings->arrays.smb_client_subdir[0] != '/')
-      {
-         *ptr++ = '/';
-         remaining--;
-      }
-      len = strlcpy(ptr, settings->arrays.smb_client_subdir, remaining);
-      if (len >= remaining)
-         len = remaining - 1;
-      ptr       += len;
-      remaining -= len;
    }
 
    /* Push as a content list under the same label Load Content uses:

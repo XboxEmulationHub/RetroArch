@@ -76,6 +76,9 @@ struct android_poll_source
    void (*process)(struct android_app* app, struct android_poll_source* source);
 };
 
+#define PLAT_ANDROID_PERM_RESOLVED (1 << 0)
+#define PLAT_ANDROID_PERM_GRANTED  (1 << 1)
+
 struct android_app
 {
    /* The application can place a pointer to its own state object
@@ -132,6 +135,29 @@ struct android_app
    int msgread;
    int msgwrite;
 
+   /* Startup storage-permission gate.  Written from the Java UI
+    * thread via permissionsResolved() under 'mutex'; read by the
+    * native thread in frontend_unix_init before any filesystem-
+    * dependent startup work runs. */
+   unsigned permission_state;
+
+   /* Completion counters for the lifecycle commands a Java callback
+    * blocks on: APP_CMD_INIT_WINDOW, APP_CMD_TERM_WINDOW and
+    * APP_CMD_INPUT_CHANGED.  The UI thread takes a ticket from
+    * 'cmd_seq' for every such command it posts and waits for
+    * 'done_seq' to reach it; the app thread advances 'done_seq' once
+    * it has finished acting on one.  Both are written only under
+    * 'mutex', and both are compared wrap-safely rather than for
+    * equality, so neither needs to be atomic or reset.
+    *
+    * A waiter must key on these rather than on the window or input
+    * queue handle it asked for: the framework reuses those addresses,
+    * so a handle comparison can already hold when the command is still
+    * queued and lets the callback return while the app thread is about
+    * to tear the surface down behind it. */
+   unsigned cmd_seq;
+   unsigned done_seq;
+
    sthread_t *thread;
 
    struct android_poll_source cmdPollSource;
@@ -187,6 +213,7 @@ struct android_app
    jmethodID getPowerstate;
    jmethodID getBatteryLevel;
    jmethodID setSustainedPerformanceMode;
+   jmethodID setWindowSettings;
    jmethodID setScreenOrientation;
    jmethodID getUserLanguageString;
    jmethodID doVibrate;
@@ -471,7 +498,22 @@ extern JNIEnv *jni_thread_getenv(void);
  * silently reverts on the next resume. */
 void android_display_server_reapply_mode(void);
 
-void android_app_write_cmd(struct android_app *android_app, int8_t cmd);
+/* Performs the pause-time save of SRAM and config requested by
+ * APP_CMD_PAUSE, if one is outstanding. Called from the runloop, which is
+ * the nearest point outside the core: the command that requests it is read
+ * by the input driver's poll, and a core reaches that poll from inside
+ * retro_run(). No-op when nothing is pending. */
+void android_input_flush_pending_state(void);
+
+bool android_app_write_cmd(struct android_app *android_app, int8_t cmd);
+
+#ifdef HAVE_ANDROID_LIFECYCLE_HOOKS
+/* Runs a named shell script from the app's private data directory, if one
+ * is present. Build with -DHAVE_ANDROID_LIFECYCLE_HOOKS to enable; see
+ * android_run_lifecycle_hook() for what the hooks may and may not do. */
+void android_run_lifecycle_hook(struct android_app *android_app,
+      const char *name);
+#endif
 
 extern struct android_app *g_android;
 
@@ -484,6 +526,11 @@ void frontend_android_get_version(int32_t *major, int32_t *minor, int32_t *rel);
 void frontend_android_get_version_sdk(int32_t *sdk);
 
 bool is_screen_reader_enabled(void);
+
+/* Pushes the live values of the window-affecting settings to the
+ * activity, so the Java side never reads them from the config file. */
+void android_app_set_window_settings(bool notch_write_over,
+      bool auto_mouse_grab);
 
 #ifdef HAVE_SAF
 struct retro_vfs_authorized_locations;

@@ -28,6 +28,7 @@
 #include <lists/file_list.h>
 #include <file/file_path.h>
 #include <string/stdstring.h>
+#include <string/rstrtod.h>
 #include <lists/string_list.h>
 #include <streams/file_stream.h>
 #include <audio/audio_resampler.h>
@@ -100,6 +101,13 @@
 #include "../bluetooth/bluetooth_driver.h"
 #endif
 #include "../midi_driver.h"
+#ifdef ANDROID
+/* Defined in frontend/drivers/platform_unix.c; declared here rather
+ * than via platform_unix.h, whose JNI includes host-side tooling
+ * cannot preprocess. */
+void android_app_set_window_settings(bool notch_write_over,
+      bool auto_mouse_grab);
+#endif
 #include "../location_driver.h"
 #include "../network/cloud_sync_driver.h"
 #include "../record/record_driver.h"
@@ -513,8 +521,7 @@ static int setting_set_with_string_representation(rarch_setting_t* setting,
          {
             char *ptr;
             uint32_t flags = setting->flags;
-            /* strtof() is C99/POSIX. Just use the more portable kind. */
-            *setting->value.target.fraction = (float)strtod(value, &ptr);
+            *setting->value.target.fraction = rstrtof(value, &ptr);
             if (flags & SD_FLAG_HAS_RANGE)
             {
                float min   = setting->min;
@@ -621,7 +628,7 @@ static void menu_input_st_float_cb(void *userdata, const char *str)
    if (str && *str)
    {
       char *end = NULL;
-      (void)strtod(str, &end);
+      (void)rstrtod(str, &end);
       if (end != str && *end == '\0')
       {
          struct menu_state *menu_st  = menu_state_get_ptr();
@@ -9543,6 +9550,14 @@ static void general_write_handler(rarch_setting_t *setting)
       case MENU_ENUM_LABEL_SUSTAINED_PERFORMANCE_MODE:
          frontend_driver_set_sustained_performance_mode(settings->bools.sustained_performance_mode);
          break;
+#ifdef ANDROID
+      case MENU_ENUM_LABEL_VIDEO_NOTCH_WRITE_OVER:
+      case MENU_ENUM_LABEL_INPUT_AUTO_MOUSE_GRAB:
+         android_app_set_window_settings(
+               settings->bools.video_notch_write_over_enable,
+               settings->bools.input_auto_mouse_grab);
+         break;
+#endif
       case MENU_ENUM_LABEL_REWIND_BUFFER_SIZE_STEP:
          {
             rarch_setting_t *buffer_size_setting = menu_setting_find_enum(MENU_ENUM_LABEL_REWIND_BUFFER_SIZE);

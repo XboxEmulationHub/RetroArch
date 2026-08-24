@@ -284,6 +284,7 @@ OBJ += \
        $(LIBRETRO_COMM_DIR)/lists/file_list.o \
        $(LIBRETRO_COMM_DIR)/lists/dir_list.o \
        $(LIBRETRO_COMM_DIR)/file/retro_dirent.o \
+       $(LIBRETRO_COMM_DIR)/file/file_watch.o \
        $(LIBRETRO_COMM_DIR)/streams/stdin_stream.o \
        $(LIBRETRO_COMM_DIR)/streams/file_stream.o \
        $(LIBRETRO_COMM_DIR)/streams/file_stream_transforms.o \
@@ -299,6 +300,7 @@ endif
 
 OBJ += \
        $(LIBRETRO_COMM_DIR)/lists/string_list.o \
+       $(LIBRETRO_COMM_DIR)/string/rstrtod.o \
        $(LIBRETRO_COMM_DIR)/string/stdstring.o \
        $(LIBRETRO_COMM_DIR)/memmap/memalign.o \
        $(LIBRETRO_COMM_DIR)/memmap/memcpy_nt.o
@@ -714,6 +716,7 @@ else ifeq ($(HAVE_BUILTINMBEDTLS), 1)
                      deps/mbedtls/ripemd160.o \
                      deps/mbedtls/rsa.o \
                      deps/mbedtls/sha1.o \
+                     deps/mbedtls/sha_alt.o \
                      deps/mbedtls/sha256.o \
                      deps/mbedtls/sha512.o \
                      deps/mbedtls/threading.o \
@@ -2936,7 +2939,6 @@ endif
          deps/libsmb2/lib/krb5-wrapper.o \
          deps/libsmb2/lib/libsmb2.o \
          deps/libsmb2/lib/md4c.o \
-         deps/libsmb2/lib/md5.o \
          deps/libsmb2/lib/ntlmssp.o \
          deps/libsmb2/lib/pdu.o \
          deps/libsmb2/lib/sha1.o \

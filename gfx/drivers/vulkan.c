@@ -425,6 +425,12 @@ typedef struct vk
 
    } hw;
 
+   /* Textures released through vulkan_unload_texture, kept alive
+    * until enough frames have been submitted that neither the GPU
+    * nor a concurrently recorded or observed reference can still
+    * touch them. See vulkan_deferred_textures_tick(). */
+   struct vk_deferred_texture *deferred_textures;
+
    struct
    {
       uint64_t dirty;
@@ -1081,6 +1087,93 @@ static void vulkan_destroy_texture(
    tex->format                        = VK_FORMAT_UNDEFINED;
    tex->memory_size                   = 0;
    tex->layout                        = VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
+/* Textures released through vulkan_unload_texture are parked here
+ * instead of being destroyed immediately. Immediate destruction is
+ * unsafe on two fronts: vkQueueWaitIdle only covers submitted work,
+ * not command buffers still being recorded, and menu code running on
+ * another thread can observe a texture handle for a short window
+ * after the unload (the handle is zeroed by the caller only after
+ * the unload returns). Keeping the texture alive for a full
+ * swapchain cycle of subsequent submissions closes both windows.
+ *
+ * List discipline: mutations are serialised with queue_lock. The
+ * enqueue normally runs on the thread that records frames (the
+ * threaded wrapper marshals unloads there), but driver-reinit
+ * fallbacks can enqueue from the main thread while a frame ticks the
+ * list, so the lock is not optional. */
+struct vk_deferred_texture
+{
+   struct vk_deferred_texture *next;
+   struct vk_texture *texture;
+   unsigned frames_left;
+};
+
+/* Retire textures whose deferral window has elapsed. Called once per
+ * submitted frame. Nodes are detached under the lock and destroyed
+ * outside it. */
+static void vulkan_deferred_textures_tick(vk_t *vk)
+{
+   struct vk_deferred_texture **cur;
+   struct vk_deferred_texture *expired = NULL;
+
+#ifdef HAVE_THREADS
+   slock_lock(vk->context->queue_lock);
+#endif
+   cur = &vk->deferred_textures;
+   while (*cur)
+   {
+      struct vk_deferred_texture *node = *cur;
+      if (node->frames_left > 1)
+      {
+         node->frames_left--;
+         cur           = &node->next;
+      }
+      else
+      {
+         *cur          = node->next;
+         node->next    = expired;
+         expired       = node;
+      }
+   }
+#ifdef HAVE_THREADS
+   slock_unlock(vk->context->queue_lock);
+#endif
+
+   while (expired)
+   {
+      struct vk_deferred_texture *next = expired->next;
+      vulkan_destroy_texture(vk->context->device, expired->texture);
+      free(expired->texture);
+      free(expired);
+      expired = next;
+   }
+}
+
+/* Destroy every deferred texture immediately. Callers must guarantee
+ * the graphics queue is idle and no other thread is recording. */
+static void vulkan_deferred_textures_flush(vk_t *vk)
+{
+   struct vk_deferred_texture *node;
+
+#ifdef HAVE_THREADS
+   slock_lock(vk->context->queue_lock);
+#endif
+   node                  = vk->deferred_textures;
+   vk->deferred_textures = NULL;
+#ifdef HAVE_THREADS
+   slock_unlock(vk->context->queue_lock);
+#endif
+
+   while (node)
+   {
+      struct vk_deferred_texture *next = node->next;
+      vulkan_destroy_texture(vk->context->device, node->texture);
+      free(node->texture);
+      free(node);
+      node = next;
+   }
 }
 
 static struct vk_texture vulkan_create_texture(vk_t *vk,
@@ -2245,24 +2338,36 @@ static void *vulkan_font_init(void *data,
       const char *font_path, float font_size,
       bool is_threaded)
 {
-   vulkan_raster_t *font          =
-      (vulkan_raster_t*)calloc(1, sizeof(*font));
+   vulkan_raster_t *font;
+   vk_t *vk                       = (vk_t*)data;
 
-   if (!font)
+   /* This initialiser runs from the menu layer on a layout change
+    * (a DPI or dimension change), which on Android can land in the
+    * middle of a surface loss / driver bring-up: the video driver
+    * data or its Vulkan context can be absent, or the device gone.
+    * Creating GPU objects through a dead device faults inside the
+    * ICD (seen in the field as a SIGSEGV in the Adreno driver's
+    * vkCreateBuffer, reached from materialui_layout()), so refuse
+    * here instead. Callers treat a NULL font as "keep the previous
+    * one / draw no text", and the next layout pass rebuilds it.
+    * vulkan_font_free() already guards on exactly this triple. */
+   if (!vk || !vk->context || vk->context->device == VK_NULL_HANDLE)
       return NULL;
 
-   font->vk = (vk_t*)data;
+   if (!(font = (vulkan_raster_t*)calloc(1, sizeof(*font))))
+      return NULL;
+
+   font->vk = vk;
 
    {
       enum font_atlas_format fmt = FONT_ATLAS_FORMAT_A8;
 #ifdef VULKAN_HDR_SWAPCHAIN
       /* When the swapchain is HDR, ask for a higher-precision
        * coverage atlas (same policy as the d3d12 driver). */
-      if (     font->vk && font->vk->context
-            && (  font->vk->context->swapchain_format
-                     == VK_FORMAT_R16G16B16A16_SFLOAT
-               || font->vk->context->swapchain_format
-                     == VK_FORMAT_A2B10G10R10_UNORM_PACK32))
+      if (     font->vk->context->swapchain_format
+                  == VK_FORMAT_R16G16B16A16_SFLOAT
+            || font->vk->context->swapchain_format
+                  == VK_FORMAT_A2B10G10R10_UNORM_PACK32)
          fmt = FONT_ATLAS_FORMAT_A16;
 #endif
       if (!font_renderer_create_default(
@@ -2284,14 +2389,35 @@ static void *vulkan_font_init(void *data,
             font->atlas->width, font->atlas->height, tex_fmt, font->atlas->buffer,
             NULL, VULKAN_TEXTURE_STAGING);
 
-   {
-      struct vk_texture *texture = &font->texture;
-      vkMapMemory(font->vk->context->device, texture->memory, texture->offset, texture->size, 0, &texture->mapped);
-   }
+      /* vulkan_create_texture() fails soft (it returns a zeroed
+       * texture) on creation or allocation failure, which is a real
+       * outcome right after an Android wake: the first allocations
+       * against a recovering device can return errors before
+       * anything else notices. The glyph upload path writes through
+       * texture.mapped unconditionally, so a failure has to be
+       * turned into a failed font init here, not discovered as a
+       * NULL/garbage dereference later. */
+      if (font->texture.memory == VK_NULL_HANDLE)
+         goto error;
+
+      {
+         struct vk_texture *texture = &font->texture;
+         if (vkMapMemory(font->vk->context->device, texture->memory,
+                  texture->offset, texture->size, 0, &texture->mapped)
+               != VK_SUCCESS)
+         {
+            /* pData is only written on success. */
+            texture->mapped = NULL;
+            goto error;
+         }
+      }
 
       font->texture_optimal = vulkan_create_texture(font->vk, NULL,
             font->atlas->width, font->atlas->height, tex_fmt, NULL,
             NULL, VULKAN_TEXTURE_DYNAMIC);
+
+      if (font->texture_optimal.memory == VK_NULL_HANDLE)
+         goto error;
    }
 
    /* Initial upload is full atlas. */
@@ -2302,6 +2428,18 @@ static void *vulkan_font_init(void *data,
    font->needs_update = true;
 
    return font;
+
+error:
+   /* Nothing has been submitted to a queue on behalf of this font
+    * yet, so the partially built objects can be destroyed
+    * immediately; vulkan_destroy_texture() unmaps before freeing and
+    * is a no-op on handles that were never created. */
+   vulkan_destroy_texture(vk->context->device, &font->texture);
+   vulkan_destroy_texture(vk->context->device, &font->texture_optimal);
+   if (font->font_driver && font->font_data)
+      font->font_driver->free(font->font_data);
+   free(font);
+   return NULL;
 }
 
 static int vulkan_font_get_message_width(void *data, const char *msg,
@@ -4889,6 +5027,7 @@ static void vulkan_free(void *data)
 #ifdef HAVE_THREADS
       slock_unlock(vk->context->queue_lock);
 #endif
+      vulkan_deferred_textures_flush(vk);
       vulkan_deinit_pipelines(vk);
       vulkan_deinit_framebuffers(vk);
       vulkan_deinit_descriptor_pool(vk);
@@ -5526,6 +5665,9 @@ static void vulkan_check_swapchain(vk_t *vk)
 #ifdef HAVE_THREADS
    slock_unlock(vk->context->queue_lock);
 #endif
+   /* Queue is idle and this thread owns recording: safe point to
+    * destroy everything on the deferred list. */
+   vulkan_deferred_textures_flush(vk);
    vulkan_deinit_pipelines(vk);
    vulkan_deinit_framebuffers(vk);
    vulkan_deinit_descriptor_pool(vk);
@@ -7682,6 +7824,9 @@ static bool vulkan_frame(void *data, const void *frame,
    if (vk->ctx_driver->swap_buffers)
       vk->ctx_driver->swap_buffers(vk->ctx_data);
 
+   /* Retire unloaded textures whose deferral window has elapsed. */
+   vulkan_deferred_textures_tick(vk);
+
    if (!(vk->context->flags & VK_CTX_FLAG_SWAP_INTERVAL_EMULATION_LOCK))
    {
       if (vk->ctx_driver->update_window_title)
@@ -8135,11 +8280,10 @@ static void vulkan_set_texture_enable(void *data, bool state, bool fullscreen)
 #define VK_T0 0xff000000u
 #define VK_T1 0xffffffffu
 
-static uintptr_t vulkan_load_texture(void *video_data, void *data,
-      bool threaded, enum texture_filter_type filter_type)
+static uintptr_t vulkan_load_texture_internal(vk_t *vk, void *data,
+      enum texture_filter_type filter_type)
 {
    struct vk_texture *texture  = NULL;
-   vk_t *vk                    = (vk_t*)video_data;
    struct texture_image *image = (struct texture_image*)data;
    if (!image)
       return 0;
@@ -8203,23 +8347,48 @@ static uintptr_t vulkan_load_texture(void *video_data, void *data,
 #ifdef HAVE_THREADS
 typedef struct
 {
-   vk_t       *vk;
-   uintptr_t   handle;
+   vk_t                            *vk;
+   void                            *image;
+   const struct texture_compressed *tc;
+   uintptr_t                        handle;
+   enum texture_filter_type         filter_type;
 } vulkan_texture_cmd_t;
 #endif
 
-/* Inner unload function -- performs the queue wait and texture
- * destruction.  Must run on the same thread that owns the
- * Vulkan queue submissions (the video thread when threaded
- * video is active, otherwise the main thread). */
+/* Inner unload function.  Parks the texture on the deferred list;
+ * actual destruction happens on the frame-recording thread once a
+ * full swapchain cycle of submissions has passed, or at the next
+ * queue-idle flush point (swapchain recreation, driver teardown). */
 static void vulkan_unload_texture_internal(vk_t *vk, uintptr_t handle)
 {
+   struct vk_deferred_texture *node;
    struct vk_texture *texture = (struct vk_texture*)handle;
    if (!texture || !vk || !vk->context)
       return;
 
-   /* TODO: We really want to defer this deletion instead,
-    * but this will do for now. */
+   if (vk->context->device)
+   {
+      node = (struct vk_deferred_texture*)malloc(sizeof(*node));
+      if (node)
+      {
+         node->texture     = texture;
+         node->frames_left = vk->context->num_swapchain_images + 1;
+#ifdef HAVE_THREADS
+         if (vk->context->queue_lock)
+            slock_lock(vk->context->queue_lock);
+#endif
+         node->next            = vk->deferred_textures;
+         vk->deferred_textures = node;
+#ifdef HAVE_THREADS
+         if (vk->context->queue_lock)
+            slock_unlock(vk->context->queue_lock);
+#endif
+         return;
+      }
+   }
+
+   /* Out of memory (or no device): fall back to synchronous
+    * destruction behind a queue drain. */
 #ifdef HAVE_THREADS
    if (vk->context->queue_lock)
       slock_lock(vk->context->queue_lock);
@@ -8353,11 +8522,10 @@ static bool vulkan_supports_texture_format(void *data,
          & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
 }
 
-static uintptr_t vulkan_load_texture_compressed(void *video_data,
-      const struct texture_compressed *tc, bool threaded,
+static uintptr_t vulkan_load_texture_compressed_internal(vk_t *vk,
+      const struct texture_compressed *tc,
       enum texture_filter_type filter_type)
 {
-   vk_t                       *vk = (vk_t*)video_data;
    struct vk_texture     *texture = NULL;
    VkDevice                device;
    VkFormat                vkfmt;
@@ -8379,7 +8547,6 @@ static uintptr_t vulkan_load_texture_compressed(void *video_data,
    uint8_t                *dst;
    unsigned                i;
 
-   (void)threaded;
    if (!vk || !vk->context || !tc || tc->num_mips == 0)
       return 0;
    if (!vulkan_gpu_format_to_vk(tc->format, &vkfmt))
@@ -8541,6 +8708,80 @@ static uintptr_t vulkan_load_texture_compressed(void *video_data,
    if (filter_type == TEXTURE_FILTER_MIPMAP_LINEAR)
       texture->flags |= VK_TEX_FLAG_MIPMAP;
    return (uintptr_t)texture;
+}
+
+#ifdef HAVE_THREADS
+/* Both load wraps stash their result in cmd->handle;
+ * video_thread_texture_handle() is synchronous, so the caller reads it
+ * back once the video thread has run this. */
+static uintptr_t vulkan_texture_load_wrap(void *data)
+{
+   vulkan_texture_cmd_t *cmd = (vulkan_texture_cmd_t*)data;
+   cmd->handle               = vulkan_load_texture_internal(
+         cmd->vk, cmd->image, cmd->filter_type);
+   return 0;
+}
+
+static uintptr_t vulkan_texture_load_compressed_wrap(void *data)
+{
+   vulkan_texture_cmd_t *cmd = (vulkan_texture_cmd_t*)data;
+   cmd->handle               = vulkan_load_texture_compressed_internal(
+         cmd->vk, cmd->tc, cmd->filter_type);
+   return 0;
+}
+#endif
+
+/* Uploading a texture allocates, records and frees a command buffer on
+ * vk->staging_pool.  VkCommandPool is externally synchronised, and the
+ * video thread uses the same pool from vulkan_font_render_msg() for its
+ * glyph atlas uploads -- the queue_lock around the submit does not cover
+ * either end of that.  Dispatch to the video thread so all use of the
+ * pool stays on one thread, as the other drivers do. */
+static uintptr_t vulkan_load_texture(void *video_data, void *data,
+      bool threaded, enum texture_filter_type filter_type)
+{
+   vk_t *vk = (vk_t*)video_data;
+
+#ifdef HAVE_THREADS
+   if (threaded)
+   {
+      vulkan_texture_cmd_t cmd;
+      cmd.vk          = vk;
+      cmd.image       = data;
+      cmd.tc          = NULL;
+      cmd.handle      = 0;
+      cmd.filter_type = filter_type;
+      video_thread_texture_handle(&cmd, vulkan_texture_load_wrap);
+      return cmd.handle;
+   }
+#endif
+
+   return vulkan_load_texture_internal(vk, data, filter_type);
+}
+
+static uintptr_t vulkan_load_texture_compressed(void *video_data,
+      const struct texture_compressed *tc, bool threaded,
+      enum texture_filter_type filter_type)
+{
+   vk_t *vk = (vk_t*)video_data;
+
+#ifdef HAVE_THREADS
+   /* Same reasoning as vulkan_load_texture(). */
+   if (threaded)
+   {
+      vulkan_texture_cmd_t cmd;
+      cmd.vk          = vk;
+      cmd.image       = NULL;
+      cmd.tc          = tc;
+      cmd.handle      = 0;
+      cmd.filter_type = filter_type;
+      video_thread_texture_handle(&cmd,
+            vulkan_texture_load_compressed_wrap);
+      return cmd.handle;
+   }
+#endif
+
+   return vulkan_load_texture_compressed_internal(vk, tc, filter_type);
 }
 
 static const video_poke_interface_t vulkan_poke_interface = {

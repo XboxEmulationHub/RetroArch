@@ -116,6 +116,7 @@
 #include "../runloop.h"
 #include "../core.h"
 #include "../frontend/frontend_driver.h"
+#include <file/file_watch.h>
 #include "../ui/ui_companion_driver.h"
 #include "../gfx/video_display_server.h"
 #ifdef HAVE_GFX_WIDGETS
@@ -182,6 +183,51 @@ enum filebrowser_enums filebrowser_get_type(void)
    struct menu_displaylist_state *p_displist = &menu_displist_st;
    return p_displist->filebrowser_types;
 }
+
+#ifdef HAVE_SMBCLIENT
+bool menu_displaylist_build_smb_root(char *s, size_t len)
+{
+   size_t _len;
+   settings_t *settings = config_get_ptr();
+   const char *server   = settings->arrays.smb_client_server_address;
+   const char *share    = settings->arrays.smb_client_share;
+   const char *subdir   = settings->arrays.smb_client_subdir;
+
+   if (!settings->bools.smb_client_enable || !*server)
+      return false;
+
+   _len = strlcpy(s, "smb://", len);
+   if (_len >= len)
+      return false;
+   _len += strlcpy(s + _len, server, len - _len);
+   if (_len >= len)
+      return false;
+
+   if (*share)
+   {
+      _len += strlcpy(s + _len, "/", len - _len);
+      if (_len >= len)
+         return false;
+      _len += strlcpy(s + _len, share, len - _len);
+      if (_len >= len)
+         return false;
+   }
+
+   if (*subdir)
+   {
+      if (subdir[0] != '/')
+      {
+         _len += strlcpy(s + _len, "/", len - _len);
+         if (_len >= len)
+            return false;
+      }
+      if (strlcpy(s + _len, subdir, len - _len) >= len - _len)
+         return false;
+   }
+
+   return true;
+}
+#endif
 
 void filebrowser_clear_type(void)
 {
@@ -7062,13 +7108,22 @@ static int menu_displaylist_parse_disc_info(file_list_t *info_list,
    {
       char drive[2];
       char drive_string[NAME_MAX_LENGTH] = {0};
-      size_t _len = snprintf(drive_string, sizeof(drive_string),
+      /* snprintf() reports the length it would have written, which a
+       * long enough translation of msg_drive_number can carry past the
+       * buffer, so take the length that landed. */
+      int    _ret = snprintf(drive_string, sizeof(drive_string),
             msg_drive_number, i + 1);
+      size_t _len = (_ret < 0 || (size_t)_ret >= sizeof(drive_string))
+            ? sizeof(drive_string) - 1
+            : (size_t)_ret;
+
       _len += strlcpy(drive_string + _len, ": ",
               sizeof(drive_string) - _len);
-      strlcpy(        drive_string + _len,
-            list->elems[i].data,
-              sizeof(drive_string) - _len);
+
+      if (_len < sizeof(drive_string))
+         strlcpy(     drive_string + _len,
+               list->elems[i].data,
+                 sizeof(drive_string) - _len);
 
       drive[0]   = list->elems[i].attr.i;
       drive[1]   = '\0';
@@ -8137,7 +8192,7 @@ unsigned menu_displaylist_build_list(
             const char *dir_video_shader  = settings->paths.directory_video_shader;
             const char *dir_menu_config   = settings->paths.directory_menu_config;
 
-            if (frontend_driver_can_watch_for_changes())
+            if (file_watch_supported())
             {
                if (menu_entries_append(list,
                         msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SHADER_WATCH_FOR_CHANGES),
@@ -10979,6 +11034,7 @@ unsigned menu_displaylist_build_list(
 #endif
       case DISPLAYLIST_MENU_VIEWS_SETTINGS_LIST:
          {
+            const char *menu_driver = menu_driver_ident();
             static menu_displaylist_build_info_selective_t build_list[] = {
                {MENU_ENUM_LABEL_QUICK_MENU_VIEWS_SETTINGS,                             PARSE_ACTION, true     },
                {MENU_ENUM_LABEL_SETTINGS_VIEWS_SETTINGS,                               PARSE_ACTION, true     },
@@ -11040,6 +11096,15 @@ unsigned menu_displaylist_build_list(
                if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                         build_list[i].enum_idx,  build_list[i].parse_type,
                         false) == 0)
+                  count++;
+
+               if (     build_list[i].enum_idx == MENU_ENUM_LABEL_MENU_SHOW_SUBLABELS
+                     && settings->bools.menu_show_sublabels
+                     && (  string_is_equal(menu_driver, "ozone")
+                        || string_is_equal(menu_driver, "glui"))
+                     && MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                           MENU_ENUM_LABEL_MENU_SHOW_SUBLABELS_CURRENT_SELECTION_ONLY,
+                           PARSE_ONLY_BOOL, false) == 0)
                   count++;
             }
          }
@@ -17299,6 +17364,19 @@ static bool menu_displaylist_ctl_internal(
                         MENU_ENUM_LABEL_FILE_BROWSER_DIRECTORY,
                         FILE_TYPE_DIRECTORY, 0, 0, NULL))
                   count++;
+#ifdef HAVE_SMBCLIENT
+            {
+               char smb_root[PATH_MAX_LENGTH];
+
+               if (menu_displaylist_build_smb_root(smb_root, sizeof(smb_root)))
+                  if (menu_entries_append(info->list, smb_root, "",
+                           load_content ?
+                           MENU_ENUM_LABEL_FILE_DETECT_CORE_LIST_PUSH_DIR :
+                           MENU_ENUM_LABEL_FILE_BROWSER_DIRECTORY,
+                           FILE_TYPE_DIRECTORY, 0, 0, NULL))
+                     count++;
+            }
+#endif
          }
          else
          {

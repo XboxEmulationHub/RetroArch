@@ -62,6 +62,9 @@
 #endif
 
 #include <fcntl.h>
+#if defined(__linux__)
+#include <linux/falloc.h>
+#endif
 
 /* TODO: Some things are duplicated but I'm really afraid of breaking other platforms by touching this */
 #if defined(VITA)
@@ -1114,6 +1117,276 @@ int64_t retro_vfs_file_size_impl(libretro_vfs_implementation_file *stream)
    return 0;
 }
 
+/* Deallocate a range without changing the file's length. See
+ * filestream_punch_hole for why this is a capability rather than a
+ * guarantee: most backends cannot do it, and callers fall back to writing
+ * zeroes. Returns 0 on success, -1 otherwise. */
+#if defined(_WIN32) && !defined(_XBOX)
+/* The pieces of winioctl.h that retro_vfs_file_punch_hole_impl needs,
+ * declared here rather than by including that header.
+ *
+ * winioctl.h defines the storage class GUIDs, and in a unity build --
+ * griffin.c, where this file is compiled alongside the D3D headers that
+ * set INITGUID -- those definitions collide with the ones already emitted
+ * in the same translation unit, which is twenty-odd C2374 "redefinition;
+ * multiple initialization" errors on MSVC. Nothing here needs a GUID.
+ *
+ * The two control codes are the documented CTL_CODE expansions:
+ *   FSCTL_SET_SPARSE    = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 49, METHOD_BUFFERED, FILE_SPECIAL_ACCESS)
+ *   FSCTL_SET_ZERO_DATA = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 50, METHOD_BUFFERED, FILE_WRITE_DATA)
+ * Each is guarded, so a translation unit that has already seen
+ * winioctl.h through some other path keeps that header's definitions. */
+#ifndef FSCTL_SET_SPARSE
+#define FSCTL_SET_SPARSE 0x000900c4
+#endif
+#ifndef FSCTL_SET_ZERO_DATA
+#define FSCTL_SET_ZERO_DATA 0x000980c8
+#endif
+#ifndef FILE_ZERO_DATA_INFORMATION_DEFINED
+#define FILE_ZERO_DATA_INFORMATION_DEFINED
+typedef struct _RETRO_FILE_ZERO_DATA_INFORMATION
+{
+   LARGE_INTEGER FileOffset;
+   LARGE_INTEGER BeyondFinalZero;
+} RETRO_FILE_ZERO_DATA_INFORMATION;
+#endif
+#endif
+
+#if defined(_WIN32) && !defined(_XBOX)
+/* FILE_NAME_NORMALIZED came in with the Vista SDK, the same generation as
+ * GetFinalPathNameByHandleW itself.  The function is resolved by name at
+ * run time below precisely so that older toolchains still build this
+ * file; the flag has to clear the same bar, so supply the documented
+ * value when the SDK does not. */
+#ifndef FILE_NAME_NORMALIZED
+#define FILE_NAME_NORMALIZED 0x0
+#endif
+#endif
+
+/* Allocation unit of the filesystem holding this file: the smallest span
+ * retro_vfs_file_punch_hole_impl can actually free. 0 when unknown.
+ *
+ * This exists so a caller never has to reach for the descriptor itself.
+ * On NTFS this is the compression unit rather than the cluster, because
+ * that is what the filesystem actually deallocates in.
+ *
+ * PCSX2's ATA backend derived both the cluster size and the filesystem
+ * name by calling
+ * GetFinalPathNameByHandle on a HANDLE it pulled out of a FILE*, which is
+ * the one thing that kept it off the VFS -- the question is about the
+ * filesystem, not the file, and the backend that owns the handle is the
+ * right place to answer it. */
+int64_t retro_vfs_file_get_sparse_granularity_impl(
+      libretro_vfs_implementation_file *stream)
+{
+   if (!stream)
+      return 0;
+
+#if defined(_WIN32) && !defined(_XBOX)
+   {
+      /* GetFinalPathNameByHandleW and GetVolumeInformationByHandleW are
+       * Vista and later. Importing them statically costs more than the
+       * feature is worth: the loader resolves imports before main, so a
+       * binary that names them will not start at all on 9x or XP, and
+       * mingw does not even declare them below _WIN32_WINNT 0x0600, which
+       * is what the i686 MXE build targets. Resolved by name instead, so
+       * older systems simply report "unknown" and skip sparse handling. */
+      typedef DWORD (WINAPI *final_path_t)(HANDLE, LPWSTR, DWORD, DWORD);
+      typedef BOOL  (WINAPI *vol_info_t)(HANDLE, LPWSTR, DWORD, LPDWORD,
+            LPDWORD, LPDWORD, LPWSTR, DWORD);
+      typedef BOOL  (WINAPI *vol_path_t)(LPCWSTR, LPWSTR, DWORD);
+      typedef BOOL  (WINAPI *disk_free_t)(LPCWSTR, LPDWORD, LPDWORD,
+            LPDWORD, LPDWORD);
+
+      static final_path_t p_final_path = NULL;
+      static vol_info_t   p_vol_info   = NULL;
+      static vol_path_t   p_vol_path   = NULL;
+      static disk_free_t  p_disk_free  = NULL;
+      static int          resolved     = 0;
+
+      DWORD    sectors_per_cluster = 0;
+      DWORD    bytes_per_sector    = 0;
+      DWORD    tmp1                = 0;
+      DWORD    tmp2                = 0;
+      DWORD    len;
+      HANDLE   handle              = stream->fh;
+      wchar_t *final_path;
+      wchar_t  root[MAX_PATH + 1];
+      wchar_t  fs_name[MAX_PATH + 1];
+      int64_t  cluster;
+
+      if (!resolved)
+      {
+         HMODULE k32 = GetModuleHandle("kernel32.dll");
+
+         resolved = 1;
+         if (k32)
+         {
+            p_final_path = (final_path_t)GetProcAddress(k32,
+                  "GetFinalPathNameByHandleW");
+            p_vol_info   = (vol_info_t)GetProcAddress(k32,
+                  "GetVolumeInformationByHandleW");
+            /* Wide GetVolumePathName is 2000 and later, and 9x does not
+             * export it at all -- a static import would stop the binary
+             * loading there, so every one of these is resolved by name. */
+            p_vol_path   = (vol_path_t)GetProcAddress(k32,
+                  "GetVolumePathNameW");
+            p_disk_free  = (disk_free_t)GetProcAddress(k32,
+                  "GetDiskFreeSpaceW");
+         }
+      }
+
+      if (!p_final_path || !p_vol_path || !p_disk_free)
+         return 0;
+
+      if (!handle || handle == INVALID_HANDLE_VALUE)
+      {
+         if (!stream->fp)
+            return 0;
+         handle = (HANDLE)_get_osfhandle(_fileno(stream->fp));
+         if (handle == INVALID_HANDLE_VALUE)
+            return 0;
+      }
+
+      /* The volume that matters is the one the file really lives on, so
+       * the path has to be resolved through any junctions first. */
+      len = p_final_path(handle, NULL, 0, FILE_NAME_NORMALIZED);
+      if (len == 0)
+         return 0;
+
+      final_path = (wchar_t*)calloc(len + 1, sizeof(wchar_t));
+      if (!final_path)
+         return 0;
+
+      if (p_final_path(handle, final_path, len, FILE_NAME_NORMALIZED) == 0)
+      {
+         free(final_path);
+         return 0;
+      }
+
+      /* GetVolumePathNameW gives the mount point, which is what
+       * GetDiskFreeSpaceW wants, and unlike splitting the string by hand
+       * it copes with a path mounted on a folder rather than a letter. */
+      if (!p_vol_path(final_path, root, MAX_PATH))
+      {
+         free(final_path);
+         return 0;
+      }
+      free(final_path);
+
+      if (!p_disk_free(root, &sectors_per_cluster, &bytes_per_sector,
+               &tmp1, &tmp2))
+         return 0;
+
+      cluster = (int64_t)sectors_per_cluster * (int64_t)bytes_per_sector;
+
+      /* On NTFS the cluster size is not the answer. A sparse file is
+       * deallocated in compression units, which are 16 clusters, capped
+       * at 64K -- so a 4K-cluster volume, the common case, frees in 64K
+       * chunks and punching a single 4K cluster frees nothing at all.
+       * Other filesystems deallocate by cluster, so the cluster size
+       * stands. Without the volume query, assume the conservative case. */
+      if (!p_vol_info)
+         return cluster;
+
+      if (p_vol_info(handle, NULL, 0, NULL, NULL, NULL, fs_name, MAX_PATH)
+            && !wcscmp(fs_name, L"NTFS"))
+      {
+         const int64_t unit = cluster * 16;
+         return (unit > 65536) ? 65536 : unit;
+      }
+
+      return cluster;
+   }
+#elif !defined(VITA) && !defined(PSP) && !defined(PS2) && !defined(ORBIS) && !defined(GEKKO) && !defined(_3DS)
+   {
+      struct stat st;
+      int         fd = stream->fd;
+
+      if (fd < 0)
+      {
+         if (!stream->fp)
+            return 0;
+         fd = fileno(stream->fp);
+         if (fd < 0)
+            return 0;
+      }
+
+      if (fstat(fd, &st) != 0)
+         return 0;
+      if (st.st_blksize <= 0)
+         return 0;
+
+      return (int64_t)st.st_blksize;
+   }
+#else
+   return 0;
+#endif
+}
+
+int retro_vfs_file_punch_hole_impl(libretro_vfs_implementation_file *stream,
+      int64_t offset, int64_t len)
+{
+   if (!stream || offset < 0 || len <= 0)
+      return -1;
+
+#if defined(_WIN32) && !defined(_XBOX)
+   {
+      RETRO_FILE_ZERO_DATA_INFORMATION zero_info;
+      DWORD                      returned = 0;
+      HANDLE                     handle   = stream->fh;
+
+      if (!handle || handle == INVALID_HANDLE_VALUE)
+      {
+         if (!stream->fp)
+            return -1;
+         handle = (HANDLE)_get_osfhandle(_fileno(stream->fp));
+         if (handle == INVALID_HANDLE_VALUE)
+            return -1;
+      }
+
+      /* The file has to be marked sparse before a zero-data range does
+       * anything; on a non-sparse file the call succeeds and writes real
+       * zeroes, which is correct but saves nothing. Marking is idempotent. */
+      {
+         DWORD tmp = 0;
+         DeviceIoControl(handle, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &tmp, NULL);
+      }
+
+      zero_info.FileOffset.QuadPart      = offset;
+      zero_info.BeyondFinalZero.QuadPart = offset + len;
+
+      if (!DeviceIoControl(handle, FSCTL_SET_ZERO_DATA, &zero_info,
+               sizeof(zero_info), NULL, 0, &returned, NULL))
+         return -1;
+      return 0;
+   }
+#elif defined(__linux__) && defined(FALLOC_FL_PUNCH_HOLE)
+   {
+      int fd = stream->fd;
+
+      if (fd < 0)
+      {
+         if (!stream->fp)
+            return -1;
+         fd = fileno(stream->fp);
+         if (fd < 0)
+            return -1;
+      }
+
+      if (fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+               (off_t)offset, (off_t)len) != 0)
+         return -1;
+      return 0;
+   }
+#else
+   /* No hole punching on this platform. */
+   (void)offset;
+   (void)len;
+   return -1;
+#endif
+}
+
 int64_t retro_vfs_file_truncate_impl(libretro_vfs_implementation_file *stream, int64_t len)
 {
 #ifdef _WIN32
@@ -2099,7 +2372,7 @@ libretro_vfs_implementation_dir *retro_vfs_opendir_impl(
 bool retro_vfs_readdir_impl(libretro_vfs_implementation_dir *rdir)
 {
 #ifdef HAVE_SMBCLIENT
-   if (rdir->smb_handle && rdir->smb_handle->dir)
+   if (rdir->smb_handle)
    {
       struct smbc_dirent *de = retro_vfs_readdir_smb(rdir->smb_handle);
       if (!de)
@@ -2198,7 +2471,7 @@ static const char *vfs_win32_name_utf16(
 const char *retro_vfs_dirent_get_name_impl(libretro_vfs_implementation_dir *rdir)
 {
 #ifdef HAVE_SMBCLIENT
-   if (rdir->smb_handle && rdir->smb_handle->dir)
+   if (rdir->smb_handle)
       return rdir->smb_path;
 #endif
 #if defined(ANDROID) && defined(HAVE_SAF)
@@ -2252,7 +2525,7 @@ static VFS_NOINLINE bool retro_vfs_dirent_is_dir_stat(
 bool retro_vfs_dirent_is_dir_impl(libretro_vfs_implementation_dir *rdir)
 {
 #ifdef HAVE_SMBCLIENT
-   if (rdir->smb_handle && rdir->smb_handle->dir)
+   if (rdir->smb_handle)
       return rdir->smb_is_dir;
 #endif
 #if defined(ANDROID) && defined(HAVE_SAF)
@@ -2293,7 +2566,7 @@ int retro_vfs_closedir_impl(libretro_vfs_implementation_dir *rdir)
       return -1;
 
 #ifdef HAVE_SMBCLIENT
-   if (rdir->smb_handle && rdir->smb_handle->dir)
+   if (rdir->smb_handle)
    {
       retro_vfs_closedir_smb(rdir->smb_handle);
       rdir->smb_handle = NULL;

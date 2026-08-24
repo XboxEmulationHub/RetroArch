@@ -98,6 +98,7 @@
 
 #if defined(ANDROID)
 #include "play_feature_delivery/play_feature_delivery.h"
+#include "frontend/drivers/platform_unix.h"
 #endif
 
 #if defined(ANDROID) && defined(HAVE_SAF)
@@ -3522,6 +3523,10 @@ bool runloop_environment_cb(unsigned cmd, void *data)
          struct retro_memory_status *memstat = (struct retro_memory_status *)data;
          memstat->free  = mem_stats_free();
          memstat->total = mem_stats_total();
+         /* A core sizing a pool against these will do total - free at
+          * some point; never hand it a pair that makes that negative. */
+         if (memstat->total && memstat->free > memstat->total)
+            memstat->free = memstat->total;
          /* If the active frontend driver cannot report memory, tell the core
           * the call is unsupported so it falls back to its own defaults. */
          if (memstat->free == 0 && memstat->total == 0)
@@ -4268,12 +4273,26 @@ static void uninit_libretro_symbols(
    camera_driver_state_t *camera_st = camera_state_get_ptr();
    location_driver_state_t *loc_st  = location_state_get_ptr();
 #ifdef HAVE_DYNAMIC
-   if (runloop_st->lib_handle)
-      dylib_close(runloop_st->lib_handle);
-   runloop_st->lib_handle = NULL;
+   dylib_t lib_handle_local         = runloop_st->lib_handle;
+
+   runloop_st->lib_handle           = NULL;
 #endif
 
+   /* Clear the callback pointers BEFORE the core library is unmapped.
+    * With the old order (dylib_close first, memset second) there was a
+    * window in which current_core still held function pointers into an
+    * already-unmapped .so. Anything observing runloop_state concurrently
+    * - e.g. a second rarch_main instance spawned by an overlapping
+    * Android activity lifecycle, whose APP_CMD_PAUSE handler flushes
+    * save files via core_get_system_info() - would pass the non-NULL
+    * pointer check and then jump into unmapped memory. Zeroing first
+    * degrades that race to a benign NULL check instead of a SIGSEGV. */
    memset(current_core, 0, sizeof(struct retro_core_t));
+
+#ifdef HAVE_DYNAMIC
+   if (lib_handle_local)
+      dylib_close(lib_handle_local);
+#endif
 
    runloop_st->flags &= ~RUNLOOP_FLAG_CORE_SET_SHARED_CONTEXT;
 
@@ -7922,6 +7941,13 @@ int runloop_iterate(void)
    bsv_movie_dequeue_next(input_st);
 #endif
 
+#ifdef ANDROID
+   /* Outside the core. APP_CMD_PAUSE is read by the input driver's poll,
+    * which a core enters from within retro_run(), so the save it asks for
+    * is performed here instead of where the command arrives. */
+   android_input_flush_pending_state();
+#endif
+
 #if defined(HAVE_DYNAMIC) && defined(HAVE_MENU)
    /* Perform the parked remainder of a deferred (prefetched) menu
     * load.  It runs here, not from the prefetch task's callback,
@@ -8689,7 +8715,7 @@ bool core_load_game(retro_ctx_load_content_info_t *load_info)
 bool core_get_system_info(struct retro_system_info *sysinfo)
 {
    runloop_state_t *runloop_st  = &runloop_state;
-   if (!sysinfo)
+   if (!sysinfo || !runloop_st->current_core.retro_get_system_info)
       return false;
    runloop_st->current_core.retro_get_system_info(sysinfo);
    return true;

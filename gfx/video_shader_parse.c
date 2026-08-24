@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <string/rstrtod.h>
 
 #ifdef HAVE_CONFIG_H
 #include "../config.h"
@@ -27,6 +28,7 @@
 #include <compat/msvc.h>
 #include <compat/strl.h>
 #include <file/file_path.h>
+#include <file/file_watch.h>
 #include <lrc_hash.h>
 #include <string/stdstring.h>
 #include <streams/file_stream.h>
@@ -90,7 +92,7 @@ struct wildcard_token
 };
 
 /* TODO/FIXME - global state - perhaps move outside this file */
-static path_change_data_t *file_change_data = NULL;
+static file_watch_t *file_change_data       = NULL;
 
 /**
  * fill_pathname_expanded_and_absolute:
@@ -1160,28 +1162,28 @@ void video_shader_resolve_parameters(struct video_shader *shader)
                p = end + 1; /* skip closing quote */
 
                /* Parse initial value */
-               param->initial = (float)strtod(p, &endptr);
+               param->initial = (float)rstrtod(p, &endptr);
                if (endptr == p)
                   continue;
                p = endptr;
                n_parsed = 1;
 
                /* Parse minimum */
-               param->minimum = (float)strtod(p, &endptr);
+               param->minimum = (float)rstrtod(p, &endptr);
                if (endptr == p)
                   continue;
                p = endptr;
                n_parsed = 2;
 
                /* Parse maximum */
-               param->maximum = (float)strtod(p, &endptr);
+               param->maximum = (float)rstrtod(p, &endptr);
                if (endptr == p)
                   continue;
                p = endptr;
                n_parsed = 3;
 
                /* Parse optional step */
-               param->step = (float)strtod(p, &endptr);
+               param->step = (float)rstrtod(p, &endptr);
                if (endptr != p)
                   n_parsed = 4;
 
@@ -1431,9 +1433,18 @@ static bool video_shader_write_root_preset(const struct video_shader *shader,
       /* Names of the textures */
       size_t _len = strlcpy(textures, shader->lut[0].id, sizeof(textures));
 
+      /* strlcpy() reports the length of its source, so the running
+       * offset is only usable while every name has fit. */
+      if (_len >= sizeof(textures))
+         _len = sizeof(textures) - 1;
+
       for (i = 1; i < shader->luts; i++)
       {
-         /* O(n^2), but number of textures is very limited. */
+         size_t nlen = strlen(shader->lut[i].id);
+
+         if (_len + 1 + nlen >= sizeof(textures))
+            break;
+
          _len += strlcpy(textures + _len, ";",               sizeof(textures) - _len);
          _len += strlcpy(textures + _len, shader->lut[i].id, sizeof(textures) - _len);
       }
@@ -2033,6 +2044,58 @@ end:
 }
 
 /**
+ * video_shader_watch_preset_files:
+ * @param shader
+ * Parsed shader whose root preset and pass sources should be watched.
+ * @param original_path
+ * The preset path the user loaded, when it differs from the root
+ * (i.e. it went through a #reference chain); NULL otherwise.
+ * @param chain
+ * Every preset in the reference chains, as gathered by
+ * video_shader_gather_reference_path_list; NULL when there are none.
+ *
+ * (Re)creates the file watcher over everything whose edit should
+ * trigger a live reload: the root preset, every pass source, the
+ * originally loaded preset and each intermediate reference.
+ **/
+static void video_shader_watch_preset_files(struct video_shader *shader,
+      const char *original_path, struct path_linked_list *chain)
+{
+   union string_list_elem_attr attr;
+   int event_mask                   =
+        FILE_WATCH_EVENT_MODIFIED
+      | FILE_WATCH_EVENT_WRITE_FILE_CLOSED
+      | FILE_WATCH_EVENT_FILE_MOVED
+      | FILE_WATCH_EVENT_FILE_DELETED;
+   struct string_list file_list     = {0};
+   size_t i;
+
+   attr.i = 0;
+
+   file_watch_free(file_change_data);
+   file_change_data = NULL;
+
+   string_list_initialize(&file_list);
+   string_list_append(&file_list, shader->path, attr);
+
+   if (original_path && !string_is_equal(original_path, shader->path))
+      string_list_append(&file_list, original_path, attr);
+
+   while (chain)
+   {
+      if (!string_is_empty(chain->path))
+         string_list_append(&file_list, chain->path, attr);
+      chain = chain->next;
+   }
+
+   for (i = 0; i < shader->passes; i++)
+      string_list_append(&file_list, shader->pass[i].source.path, attr);
+
+   file_change_data = file_watch_new(&file_list, event_mask);
+   string_list_deinitialize(&file_list);
+}
+
+/**
  * video_shader_load_root_config_into_shader:
  * @param conf
  * Preset file to read from.
@@ -2046,7 +2109,6 @@ end:
  **/
 static bool video_shader_load_root_config_into_shader(
       config_file_t *conf,
-      bool video_shader_watch_files,
       struct video_shader *shader)
 {
    size_t i;
@@ -2077,50 +2139,10 @@ static bool video_shader_load_root_config_into_shader(
    strlcpy(shader->loaded_preset_path, conf->path,
          sizeof(shader->loaded_preset_path));
 
-   if (video_shader_watch_files)
+   for (i = 0; i < shader->passes; i++)
    {
-      union string_list_elem_attr attr;
-      int flags                        =
-           PATH_CHANGE_TYPE_MODIFIED
-         | PATH_CHANGE_TYPE_WRITE_FILE_CLOSED
-         | PATH_CHANGE_TYPE_FILE_MOVED
-         | PATH_CHANGE_TYPE_FILE_DELETED;
-      struct string_list file_list     = {0};
-
-      attr.i         = 0;
-
-      if (file_change_data)
-         frontend_driver_watch_path_for_changes(NULL, 0, &file_change_data);
-
-      file_change_data = NULL;
-      string_list_initialize(&file_list);
-      string_list_append(&file_list, conf->path, attr);
-
-      /* TODO We aren't currently watching the originally loaded preset
-       * We should probably watch it for changes too */
-
-      for (i = 0; i < shader->passes; i++)
-      {
-         if (!video_shader_parse_pass(conf, &shader->pass[i], (unsigned)i))
-         {
-            string_list_deinitialize(&file_list);
-            return false;
-         }
-
-         string_list_append(&file_list, shader->pass[i].source.path, attr);
-      }
-
-      frontend_driver_watch_path_for_changes(&file_list, flags,
-            &file_change_data);
-      string_list_deinitialize(&file_list);
-   }
-   else
-   {
-      for (i = 0; i < shader->passes; i++)
-      {
-         if (!video_shader_parse_pass(conf, &shader->pass[i], (unsigned)i))
-            return false;
-      }
+      if (!video_shader_parse_pass(conf, &shader->pass[i], (unsigned)i))
+         return false;
    }
 
    if (!video_shader_parse_textures(conf, shader))
@@ -2414,8 +2436,9 @@ bool video_shader_load_preset_into_shader(const char *path,
    if (string_is_equal(root_conf->path, path))
    {
       /* Load the config from the shader chain from the first reference into the shader */
-      video_shader_load_root_config_into_shader(root_conf,
-            config_get_ptr()->bools.video_shader_watch_files, shader);
+      video_shader_load_root_config_into_shader(root_conf, shader);
+      if (config_get_ptr()->bools.video_shader_watch_files)
+         video_shader_watch_preset_files(shader, NULL, NULL);
       goto end;
    }
 
@@ -2474,8 +2497,7 @@ bool video_shader_load_preset_into_shader(const char *path,
    }
 
    /* Load the config from the shader chain from the first reference into the shader */
-   video_shader_load_root_config_into_shader(root_conf,
-         config_get_ptr()->bools.video_shader_watch_files, shader);
+   video_shader_load_root_config_into_shader(root_conf, shader);
 
    /* Set Path for originally loaded preset because it is different than the root preset path */
    strlcpy(shader->loaded_preset_path, path, sizeof(shader->loaded_preset_path));
@@ -2487,6 +2509,11 @@ bool video_shader_load_preset_into_shader(const char *path,
    /* Gather all the paths of all of the presets in all reference chains */
    override_paths_list = path_linked_list_new();
    video_shader_gather_reference_path_list(override_paths_list, conf->path, 0);
+
+   /* Watch the whole chain: the originally loaded preset and every
+    * intermediate reference, so editing any of them live-reloads. */
+   if (config_get_ptr()->bools.video_shader_watch_files)
+      video_shader_watch_preset_files(shader, path, override_paths_list);
 
    /* Step through the references and apply overrides for each one
     * Start on the second item since the first is empty */
@@ -2616,7 +2643,7 @@ bool video_shader_check_for_changes(void)
    if (!file_change_data)
       return false;
 
-   return frontend_driver_check_for_path_changes(file_change_data);
+   return file_watch_poll(file_change_data);
 }
 
 void video_shader_dir_free_shader(

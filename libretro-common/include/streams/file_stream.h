@@ -508,6 +508,59 @@ char* filestream_getline(RFILE *stream);
  */
 libretro_vfs_implementation_file* filestream_get_vfs_handle(RFILE *stream);
 
+/**
+ * filestream_punch_hole:
+ * @stream: file handle.
+ * @offset: byte offset to start deallocating at.
+ * @len   : number of bytes to deallocate.
+ *
+ * Deallocate a range within a file, leaving the file's length unchanged
+ * and subsequent reads of the range returning zeroes. This is what makes a
+ * sparse image sparse: a disk image that is mostly untouched occupies only
+ * the blocks that were actually written.
+ *
+ * Not every backend can do this, and that is the normal case rather than
+ * an error. It works when the stream came from libretro-common's own
+ * implementation on a filesystem that supports it -- fallocate() with
+ * FALLOC_FL_PUNCH_HOLE on Linux, FSCTL_SET_ZERO_DATA on Windows. It does
+ * not work when the frontend supplied its own VFS, because a frontend
+ * handle need not be a file at all and the interface exposes no
+ * descriptor. Rather than extend the frontend ABI for one operation that
+ * most backends cannot implement, this is a capability: callers ask, and
+ * fall back to writing zeroes when the answer is no.
+ *
+ * Returns: 0 if the range was deallocated, -1 if the backend cannot do it
+ * or the call failed. A caller that must guarantee zeroes still has to
+ * write them when this returns -1; the only thing lost is the space
+ * saving.
+ */
+int filestream_punch_hole(RFILE *stream, int64_t offset, int64_t len);
+
+/**
+ * filestream_get_sparse_granularity:
+ * @stream: file handle.
+ *
+ * The allocation unit of the filesystem holding this file: the smallest
+ * span that filestream_punch_hole can actually deallocate. Punching a
+ * range shorter than this, or one not aligned to it, is accepted and
+ * frees nothing, so a caller that wants sparse files has to work in
+ * multiples of this value rather than assuming 4096.
+ *
+ * On Windows this is the cluster size on most filesystems, but on NTFS
+ * it is the compression unit -- 16 clusters, capped at 64K -- because
+ * that is the span NTFS actually deallocates. A 4K-cluster NTFS volume,
+ * the common case, frees in 64K chunks, so punching a single cluster
+ * frees nothing. On POSIX it is the block size the filesystem reports
+ * for the file.
+ *
+ * Returns: the granularity in bytes, or 0 when it cannot be determined --
+ * from a frontend-supplied VFS, for instance, which has no descriptor to
+ * ask about. A caller that gets 0 should either skip hole punching or
+ * pick a conservative unit; it must not treat 0 as "no alignment
+ * needed".
+ */
+int64_t filestream_get_sparse_granularity(RFILE *stream);
+
 RETRO_END_DECLS
 
 /** @} */

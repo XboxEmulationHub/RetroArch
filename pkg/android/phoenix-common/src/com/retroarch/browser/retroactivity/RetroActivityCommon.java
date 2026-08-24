@@ -33,6 +33,7 @@ import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbManager;
 import android.media.AudioAttributes;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.storage.StorageManager;
@@ -60,6 +61,7 @@ import android.os.Vibrator;
 import android.os.VibrationEffect;
 import android.os.VibratorManager;
 import android.util.Log;
+import android.util.SparseArray;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.widget.EditText;
@@ -72,7 +74,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CountDownLatch;
 import java.util.Locale;
 
 /**
@@ -97,6 +98,10 @@ public class RetroActivityCommon extends NativeActivity
   public static final int RETRO_RUMBLE_STRONG = 0;
   public static final int RETRO_RUMBLE_WEAK = 1;
   public static final int REQUEST_CODE_OPEN_DOCUMENT_TREE = 0;
+  /* Startup permission flow; distinct from the in-session all-files
+   * re-ask loop on requestCode 124, which restarts the app on grant. */
+  private static final int REQUEST_CODE_STARTUP_ALL_FILES = 125;
+  private static final int REQUEST_CODE_STARTUP_PERMISSIONS = 126;
   public boolean sustainedPerformanceMode = true;
   public int screenOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
 
@@ -118,6 +123,16 @@ public class RetroActivityCommon extends NativeActivity
   /* Guards against permission request storms — one in-flight request per device. */
   private final Map<Integer, Boolean> mUsbPermissionPending =
           new HashMap<Integer, Boolean>();
+
+  /* Resolution cache for findUsbDeviceForInputDevice, including negative
+   * results.  doVibrateUSB runs for every controller on every rumble
+   * amplitude change, and an uncached miss costs an InputDevice binder
+   * lookup plus a full UsbManager.getDeviceList() marshal each time -
+   * per frame during rumble ramps on non-USB controllers.  Entries are
+   * invalidated from the InputDeviceListener callbacks.  Accessed from
+   * both the JNI rumble thread and the main thread. */
+  private final Map<Integer, UsbDevice> mUsbDeviceCache =
+          new HashMap<Integer, UsbDevice>();
 
   /* Clears the in-flight permission flag when the user responds to the system dialog. */
   private BroadcastReceiver mUsbPermissionReceiver = new BroadcastReceiver() {
@@ -165,8 +180,17 @@ public class RetroActivityCommon extends NativeActivity
     }
     ((InputManager) getSystemService(Context.INPUT_SERVICE))
             .registerInputDeviceListener(this, null);
+    /* Bind the hardware volume keys to the game audio stream;
+     * previously done by the Java launcher activity. */
+    setVolumeControlStream(AudioManager.STREAM_MUSIC);
+
     PlayCoreManager.getInstance().onCreate(this);
     super.onCreate(savedInstanceState);
+
+    /* super.onCreate has loaded the native library and started the
+     * native thread; it now waits on the permission gate until this
+     * resolves. */
+    resolveStartupPermissions();
   }
 
   @Override
@@ -179,9 +203,117 @@ public class RetroActivityCommon extends NativeActivity
     super.onDestroy();
   }
 
+  /** Current storage permission state for this SDK level. */
+  private boolean hasStoragePermission()
+  {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+      return android.os.Environment.isExternalStorageManager();
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+      return checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+              == android.content.pm.PackageManager.PERMISSION_GRANTED
+          && checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+              == android.content.pm.PackageManager.PERMISSION_GRANTED;
+    return true;
+  }
+
+  /**
+   * Resolves the startup storage permission and releases the native
+   * startup gate.  A launch through the Java launcher (recognized by
+   * its CONFIGFILE extra), a Play Store build, or an already-settled
+   * permission resolves immediately; only a direct launch that is
+   * missing the permission asks, and any outcome - grant, denial,
+   * cancel - releases the gate, with denial falling back to
+   * app-private storage.
+   */
+  private void resolveStartupPermissions()
+  {
+    boolean viaLauncher = getIntent() != null && getIntent().hasExtra("CONFIGFILE");
+
+    if (viaLauncher || isPlayStoreBuild() || hasStoragePermission())
+    {
+      permissionsResolved(hasStoragePermission());
+      return;
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+    {
+      new android.app.AlertDialog.Builder(this)
+        .setMessage("RetroArch requires All Files Access permission to scan and load game ROMs from your storage.")
+        .setPositiveButton(android.R.string.ok, new android.content.DialogInterface.OnClickListener()
+        {
+          @Override
+          public void onClick(android.content.DialogInterface dialog, int which)
+          {
+            try
+            {
+              Intent intent = new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+              intent.addCategory("android.intent.category.DEFAULT");
+              intent.setData(Uri.parse(String.format("package:%s", getPackageName())));
+              startActivityForResult(intent, REQUEST_CODE_STARTUP_ALL_FILES);
+            }
+            catch (Exception e)
+            {
+              try
+              {
+                Intent intent = new Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                startActivityForResult(intent, REQUEST_CODE_STARTUP_ALL_FILES);
+              }
+              catch (Exception e2)
+              {
+                permissionsResolved(false);
+              }
+            }
+          }
+        })
+        .setNegativeButton(android.R.string.cancel, new android.content.DialogInterface.OnClickListener()
+        {
+          @Override
+          public void onClick(android.content.DialogInterface dialog, int which)
+          {
+            permissionsResolved(false);
+          }
+        })
+        .setOnCancelListener(new android.content.DialogInterface.OnCancelListener()
+        {
+          @Override
+          public void onCancel(android.content.DialogInterface dialog)
+          {
+            permissionsResolved(false);
+          }
+        })
+        .show();
+      return;
+    }
+
+    /* Android 6 through 10: runtime storage permissions. */
+    requestPermissions(new String[] {
+        android.Manifest.permission.READ_EXTERNAL_STORAGE,
+        android.Manifest.permission.WRITE_EXTERNAL_STORAGE },
+        REQUEST_CODE_STARTUP_PERMISSIONS);
+  }
+
+  @Override
+  public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults)
+  {
+    if (requestCode == REQUEST_CODE_STARTUP_PERMISSIONS)
+    {
+      permissionsResolved(hasStoragePermission());
+      return;
+    }
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+  }
+
   @Override
   public void onActivityResult(int requestCode, int resultCode, Intent intent)
   {
+    if (requestCode == REQUEST_CODE_STARTUP_ALL_FILES)
+    {
+      /* The Settings return carries no intent; resolve from the live
+       * state and proceed either way. */
+      permissionsResolved(hasStoragePermission());
+      return;
+    }
+
     if (requestCode == 124)
     {
       if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R)
@@ -241,6 +373,76 @@ public class RetroActivityCommon extends NativeActivity
     startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQUEST_CODE_OPEN_DOCUMENT_TREE);
   }
 
+  /* Shared attributes for every vibrate() call.  Built lazily from
+   * SDK-guarded paths only: AudioAttributes is API 21 and this class
+   * must stay loadable on older devices.  The unsynchronized lazy init
+   * is a benign race - the object is immutable and the reference write
+   * is atomic. */
+  private static AudioAttributes sVibrateAttrs;
+
+  private static AudioAttributes vibrateAttrs()
+  {
+    if (sVibrateAttrs == null)
+      sVibrateAttrs = new AudioAttributes.Builder()
+          .setUsage(AudioAttributes.USAGE_GAME)
+          .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+          .build();
+    return sVibrateAttrs;
+  }
+
+  /* Per-device VibratorManager cache for the API 31+ dual-motor rumble
+   * path.  Rumble amplitude changes arrive per frame during effect
+   * ramps, and resolving InputDevice.getDevice() plus
+   * getVibratorManager() costs a binder round trip each time; caching
+   * them leaves only the vibrate() call itself on the hot path.
+   * Referenced exclusively from SDK_INT >= S guarded code, so the
+   * class is never loaded - and its API 31 member types never
+   * resolved - on older devices. */
+  @TargetApi(Build.VERSION_CODES.S)
+  private static final class JoypadVibrators
+  {
+    private static final SparseArray<JoypadVibrators> sCache =
+            new SparseArray<JoypadVibrators>();
+
+    final VibratorManager vm;
+    final int[] ids;
+
+    private JoypadVibrators(VibratorManager vm, int[] ids)
+    {
+      this.vm = vm;
+      this.ids = ids;
+    }
+
+    static JoypadVibrators get(int deviceId)
+    {
+      synchronized (sCache)
+      {
+        JoypadVibrators entry = sCache.get(deviceId);
+        if (entry != null)
+          return entry;
+
+        InputDevice dev = InputDevice.getDevice(deviceId);
+        if (dev == null)
+          return null;
+
+        VibratorManager vm = dev.getVibratorManager();
+        entry = new JoypadVibrators(vm, vm.getVibratorIds());
+        sCache.put(deviceId, entry);
+        Log.i("RetroActivity", "doVibrateJoypad id=" + deviceId
+            + ": " + entry.ids.length + " vibrator(s)");
+        return entry;
+      }
+    }
+
+    static void remove(int deviceId)
+    {
+      synchronized (sCache)
+      {
+        sCache.remove(deviceId);
+      }
+    }
+  }
+
   public void doVibrate(int id, int effect, int strength, int oneShot)
   {
     Vibrator vibrator = null;
@@ -274,10 +476,7 @@ public class RetroActivityCommon extends NativeActivity
       pattern[1] = 1000;
 
     if (Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-      if (id >= 0)
-        Log.i("RetroActivity", "Vibrate id " + id + ": strength " + strength);
-
-      vibrator.vibrate(VibrationEffect.createWaveform(pattern, strengths, repeat), new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
+      vibrator.vibrate(VibrationEffect.createWaveform(pattern, strengths, repeat), vibrateAttrs());
     }else{
       vibrator.vibrate(pattern, repeat);
     }
@@ -334,15 +533,37 @@ public class RetroActivityCommon extends NativeActivity
   @TargetApi(Build.VERSION_CODES.S)
   private boolean doVibrateJoypadApi31(int id, int strongStrength, int weakStrength)
   {
-    InputDevice dev = InputDevice.getDevice(id);
-    if (dev == null)
+    JoypadVibrators cached = JoypadVibrators.get(id);
+    if (cached == null)
       return false;
 
-    VibratorManager vm  = dev.getVibratorManager();
-    int[]  vibratorIds  = vm.getVibratorIds();
+    VibratorManager vm  = cached.vm;
+    int[]  vibratorIds  = cached.ids;
 
     if (vibratorIds.length == 0)
       return false;
+
+    try
+    {
+      return doVibrateJoypadMotors(id, vm, vibratorIds,
+          strongStrength, weakStrength);
+    }
+    catch (RuntimeException e)
+    {
+      /* Disconnect race: the cached manager can go stale between the
+       * removal callback and a rumble call in flight.  Drop the entry
+       * and let the caller take the single-vibrator fallback. */
+      Log.w("RetroActivity", "doVibrateJoypad id=" + id
+          + ": stale vibrator, invalidating", e);
+      JoypadVibrators.remove(id);
+      return false;
+    }
+  }
+
+  @TargetApi(Build.VERSION_CODES.S)
+  private boolean doVibrateJoypadMotors(int id, VibratorManager vm,
+      int[] vibratorIds, int strongStrength, int weakStrength)
+  {
 
     if (vibratorIds.length == 1)
     {
@@ -360,11 +581,7 @@ public class RetroActivityCommon extends NativeActivity
       long[] timings = {0, 1000};
       int[]  amps    = {0, singleStrength};
       singleVibrator.vibrate(
-          VibrationEffect.createWaveform(timings, amps, 0),
-          new AudioAttributes.Builder()
-              .setUsage(AudioAttributes.USAGE_GAME)
-              .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-              .build());
+          VibrationEffect.createWaveform(timings, amps, 0), vibrateAttrs());
       return true;
     }
 
@@ -388,10 +605,6 @@ public class RetroActivityCommon extends NativeActivity
         .combine();
 
     vm.vibrate(combined);
-
-    Log.i("RetroActivity", "doVibrateJoypad id=" + id
-        + " strong=" + strongStrength + " weak=" + weakStrength
-        + " vibrators=" + vibratorIds.length);
     return true;
   }
 
@@ -434,6 +647,26 @@ public class RetroActivityCommon extends NativeActivity
    * via USB or is not a supported HID target.
    */
   private UsbDevice findUsbDeviceForInputDevice(int deviceId)
+  {
+    Integer key = Integer.valueOf(deviceId);
+
+    synchronized (mUsbDeviceCache)
+    {
+      if (mUsbDeviceCache.containsKey(key))
+        return mUsbDeviceCache.get(key);
+    }
+
+    UsbDevice resolved = resolveUsbDeviceForInputDevice(deviceId);
+
+    synchronized (mUsbDeviceCache)
+    {
+      mUsbDeviceCache.put(key, resolved);
+    }
+    return resolved;
+  }
+
+  /** Uncached resolution behind findUsbDeviceForInputDevice. */
+  private UsbDevice resolveUsbDeviceForInputDevice(int deviceId)
   {
     InputDevice inputDevice = InputDevice.getDevice(deviceId);
     if (inputDevice == null)
@@ -555,6 +788,8 @@ public class RetroActivityCommon extends NativeActivity
   @Override
   public void onInputDeviceAdded(int deviceId)
   {
+    invalidateDeviceCaches(deviceId);
+
     UsbDevice usbDevice = findUsbDeviceForInputDevice(deviceId);
     if (usbDevice == null)
       return;
@@ -602,7 +837,11 @@ public class RetroActivityCommon extends NativeActivity
   }
 
   @Override
-  public void onInputDeviceChanged(int deviceId) { }
+  public void onInputDeviceChanged(int deviceId)
+  {
+    /* The vibrator topology can change with the device. */
+    invalidateDeviceCaches(deviceId);
+  }
 
   @Override
   public void onInputDeviceRemoved(int deviceId)
@@ -610,6 +849,18 @@ public class RetroActivityCommon extends NativeActivity
     /* Close any cached USB connection so we don't hold a stale handle. */
     closeUsbConnection(deviceId);
     mUsbPermissionPending.remove(Integer.valueOf(deviceId));
+    invalidateDeviceCaches(deviceId);
+  }
+
+  /** Drops every cached per-device lookup for an input device id. */
+  private void invalidateDeviceCaches(int deviceId)
+  {
+    synchronized (mUsbDeviceCache)
+    {
+      mUsbDeviceCache.remove(Integer.valueOf(deviceId));
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+      JoypadVibrators.remove(deviceId);
   }
 
   /**
@@ -806,6 +1057,29 @@ public class RetroActivityCommon extends NativeActivity
     return lang + '_' + country;
   }
 
+  /* Live values of native-owned window settings, pushed over JNI on
+   * config load and whenever they change (see
+   * android_app_set_window_settings in platform_unix.c). */
+  protected volatile boolean notchWriteOver = false;
+  protected volatile boolean autoMouseGrab = false;
+
+  public void setWindowSettings(boolean notchWriteOver, boolean autoMouseGrab)
+  {
+    boolean notchChanged = (this.notchWriteOver != notchWriteOver);
+
+    this.notchWriteOver = notchWriteOver;
+    this.autoMouseGrab = autoMouseGrab;
+
+    if (notchChanged)
+      onNotchSettingChanged();
+  }
+
+  /* Overridden where a display cutout mode is applied, so a changed
+   * notch setting takes effect without waiting for the next resume. */
+  protected void onNotchSettingChanged()
+  {
+  }
+
   @TargetApi(24)
   public void setSustainedPerformanceMode(boolean on)
   {
@@ -813,24 +1087,20 @@ public class RetroActivityCommon extends NativeActivity
 
     if (Build.VERSION.SDK_INT >= 24) {
       if (isSustainedPerformanceModeSupported()) {
-        final CountDownLatch latch = new CountDownLatch(1);
-
+        /* Window attributes are the UI thread's to touch, and this is
+         * called from the native thread (config load, settings change) as
+         * well as from onResume(). Post and return: the native thread must
+         * not wait on the UI thread's looper, which may be occupied by a
+         * lifecycle transition that is itself waiting for the native thread
+         * to acknowledge it. */
         runOnUiThread(new Runnable() {
           @Override
           public void run() {
             Log.i("RetroActivity", "setting sustained performance mode to " + sustainedPerformanceMode);
 
             getWindow().setSustainedPerformanceMode(sustainedPerformanceMode);
-
-            latch.countDown();
           }
         });
-
-        try {
-          latch.await();
-        }catch(InterruptedException e) {
-          e.printStackTrace();
-        }
       }
     }
   }
@@ -1459,6 +1729,14 @@ public class RetroActivityCommon extends NativeActivity
    * Called when the user grants access to a Storage Access Framework tree.
    */
   public native void safTreeAdded(String tree);
+
+  /**
+   * Tells the native side that the startup storage-permission flow has
+   * finished, releasing the startup gate.  granted reflects the current
+   * permission state; startup proceeds either way, falling back to
+   * app-private storage when denied.
+   */
+  public native void permissionsResolved(boolean granted);
 
   /**
    * Forwards system-keyboard text to native menu input.
