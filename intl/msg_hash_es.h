@@ -297,6 +297,8 @@ static const struct
    char s_8c7495e3[17];
    char s_ad7c73f6[16];
    char s_30acd6fb[16];
+   char s_35dcde4f[24];
+   char s_ce7da552[37];
    char s_04b30c51[25];
    char s_e5aeacf9[22];
    char s_24976a5b[32];
@@ -2430,6 +2432,7 @@ static const struct
    char s_f7cc6630[35];
    char s_310ec7bd[74];
    char s_5832a2c2[106];
+   char s_f47e544f[283];
    char s_20cc6597[99];
    char s_21b0bad3[79];
    char s_66e9521c[75];
@@ -2459,6 +2462,8 @@ static const struct
    char s_5977d6d8[49];
    char s_cb67f2a4[43];
    char s_3c3598a9[48];
+   char s_3bac47bd[444];
+   char s_90e7db40[499];
    char s_4b78ee7f[87];
    char s_aed11d67[145];
    char s_dbe6e749[106];
@@ -4693,6 +4698,8 @@ static const struct
    "Estado: detenida",
    "Sincronizaci\303\263n",
    "Sincronizaci\303\263n",
+   "Canalizaci\303\263n multihilo",
+   "Aumentar prioridad del hilo de audio",
    "Ganancia de volumen (dB)",
    "Modo WASAPI exclusivo",
    "Formato WASAPI de coma flotante",
@@ -6858,6 +6865,10 @@ static const struct
    "En este directorio se guardar\303\241n los recursos de los men\303\272s de RetroArch.",
    "Abre el panel de control del controlador ASIO para configurar el enrutado de dispositivos y los "
    "b\303\272feres.",
+   "Indica la cantidad de fotogramas que mover\303\241 el controlador de audio por bloque. Un valor "
+   "de 0 pedir\303\241 al controlador el valor del dispositivo, que es lo que esperan la mayor\303"
+   "\255a de configuraciones; un valor m\303\241s grande compensa la resistencia contra p\303\251rdi"
+   "das de audio con latencia.",
    "Fuerza el dispositivo que utilizar\303\241 el controlador de audio. Este ajuste depende del cont"
    "rolador.",
    "Selecciona el controlador de audio que se utilizar\303\241 (es necesario reiniciar).",
@@ -6908,6 +6919,17 @@ static const struct
    "Cambia los ajustes de entrada y salida de audio.",
    "Sincroniza el audio. Se recomienda su uso.",
    "Cambia los ajustes de sincronizaci\303\263n de audio.",
+   "Remuestrea, filtra y mezcla el audio en el hilo de audio en vez de hacerlo en cada fotograma. Ma"
+   "ntiene la misma latencia de la ruta sincronizada a fotogramas en cualquier ajuste de latencia de"
+   " audio, midiendo el control de frecuencias seg\303\272n el valor del dispositivos y ejecutando e"
+   "l remuestreo dentro de los l\303\255mites del fotograma. Los controladores de audio que no pueda"
+   "n activar el dispositivo mantendr\303\241n la ruta sincronizada a fotogramas.",
+   "Solicita al sistema operativo que programe el hilo de audio con m\303\241s prioridad que el rest"
+   "o del front-end, de esta forma, un fotograma que cargue m\303\241s a la CPU tendr\303\241 menos "
+   "probabilidad de privar al dispositivo de audio. Baja la latencia de audio en aquellos sistemas q"
+   "ue lo permitan, si un sistema lo rechaza, la prioridad sigue siendo la predeterminada sin m\303"
+   "\241s cambios. Esta opci\303\263n se aplica al hilo de audio en el que se ejecutan la canalizaci"
+   "\303\263n multihilo y las llamadas al n\303\272cleo de audio.",
    "Amplifica el volumen de audio (en dB). 0 dB es el volumen normal, sin ganancia alguna.",
    "Permite que el controlador WASAPI tome el control exclusivo del dispositivo de audio. Si se desa"
    "ctiva esta opci\303\263n se usar\303\241 el modo compartido.",
@@ -9374,7 +9396,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_es_blob_check[
-      (sizeof(msg_hash_es_blob) == (208388u
+      (sizeof(msg_hash_es_blob) == (209675u
 #ifdef ANDROID
        + 329u
 #endif
@@ -10073,6 +10095,8 @@ static const uint32_t msg_hash_es_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_STREAM_STATE_STOPPED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_SYNC,
    (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_SYNCHRONIZATION_SETTINGS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_THREADED_PIPELINE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_THREAD_PRIORITY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_VOLUME,
    (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_WASAPI_EXCLUSIVE_MODE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_WASAPI_FLOAT_FORMAT,
@@ -12205,6 +12229,7 @@ static const uint32_t msg_hash_es_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_APPICON_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_ASSETS_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_ASIO_CONTROL_PANEL,
+   (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_BLOCK_FRAMES,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_DEVICE,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_DRIVER,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_DSP_PLUGIN,
@@ -12232,6 +12257,8 @@ static const uint32_t msg_hash_es_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_SYNC,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_SYNCHRONIZATION_SETTINGS,
+   (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_THREADED_PIPELINE,
+   (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_THREAD_PRIORITY,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_VOLUME,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_WASAPI_EXCLUSIVE_MODE,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_WASAPI_FLOAT_FORMAT,

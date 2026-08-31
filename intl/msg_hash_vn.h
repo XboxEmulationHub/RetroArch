@@ -310,6 +310,8 @@ static const struct
    char s_8c7495e3[27];
    char s_ad7c73f6[23];
    char s_30acd6fb[23];
+   char s_35dcde4f[37];
+   char s_ce7da552[40];
    char s_04b30c51[31];
    char s_e5aeacf9[34];
    char s_24976a5b[34];
@@ -2460,6 +2462,7 @@ static const struct
    char s_f7cc6630[42];
    char s_310ec7bd[91];
    char s_5832a2c2[123];
+   char s_f47e544f[364];
    char s_20cc6597[152];
    char s_21b0bad3[80];
    char s_66e9521c[92];
@@ -2489,6 +2492,10 @@ static const struct
    char s_5977d6d8[45];
    char s_cb67f2a4[41];
    char s_3c3598a9[53];
+   char s_3bac47bd_0[500];
+   char s_3bac47bd_1[109];
+   char s_90e7db40_0[500];
+   char s_90e7db40_1[130];
    char s_4b78ee7f[141];
    char s_aed11d67[149];
    char s_dbe6e749[126];
@@ -5175,6 +5182,8 @@ static const struct
    "Tr\341\272\241ng th\303\241i: \304\220\303\243 d\341\273\253ng",
    "\304\220\341\273\223ng b\341\273\231 \303\242m thanh",
    "\304\220\341\273\223ng b\341\273\231 \303\242m thanh",
+   "Lu\341\273\223ng x\341\273\255 l\303\275 \303\242m thanh song song",
+   "T\304\203ng m\341\273\251c \306\260u ti\303\252n lu\341\273\223ng \303\242m thanh",
    "T\304\203ng/gi\341\272\243m \303\242m l\306\260\341\273\243ng (dB)",
    "Ch\341\272\277 \304\221\341\273\231 \304\221\341\273\231c quy\341\273\201n WASAPI",
    "\304\220\341\273\213nh d\341\272\241ng s\341\273\221 th\341\273\261c WASAPI",
@@ -7703,6 +7712,15 @@ static const struct
    "\273\203 c\341\272\245u h\303\254nh \304\221\341\273\213nh tuy\341\272\277n thi\341\272\277t b"
    "\341\273\213 v\303\240 c\303\241c thi\341\272\277t l\341\272\255p b\341\273\231 \304\221\341\273"
    "\207m.",
+   "S\341\273\221 khung h\303\254nh \303\242m thanh m\303\240 tr\303\254nh \304\221i\341\273\201u kh"
+   "i\341\273\203n \303\242m thanh x\341\273\255 l\303\275 trong m\341\273\227i kh\341\273\221i. 0 y"
+   "\303\252u c\341\272\247u tr\303\254nh \304\221i\341\273\201u khi\341\273\203n s\341\273\255 d"
+   "\341\273\245ng gi\303\241 tr\341\273\213 ri\303\252ng c\341\273\247a thi\341\272\277t b\341\273"
+   "\213, \304\221\303\242y l\303\240 l\341\273\261a ch\341\273\215n ph\303\271 h\341\273\243p v\341"
+   "\273\233i h\341\272\247u h\341\272\277t c\303\241c thi\341\272\277t l\341\272\255p; gi\303\241 t"
+   "r\341\273\213 kh\341\273\221i l\341\273\233n h\306\241n s\341\272\275 t\304\203ng \304\221\341"
+   "\273\231 \341\273\225n \304\221\341\273\213nh nh\306\260ng \304\221\341\273\225i l\341\272\241i "
+   "l\303\240m t\304\203ng \304\221\341\273\231 tr\341\273\205 \303\242m thanh.",
    "Ghi \304\221\303\250 thi\341\272\277t b\341\273\213 \303\242m thanh m\341\272\267c \304\221\341"
    "\273\213nh m\303\240 tr\303\254nh \304\221i\341\273\201u khi\341\273\203n \303\242m thanh s\341"
    "\273\255 d\341\273\245ng. \304\220i\341\273\201u n\303\240y ph\341\273\245 thu\341\273\231c v"
@@ -7814,6 +7832,37 @@ static const struct
    "\304\220\341\273\223ng b\341\273\231 \303\242m thanh. Khuy\341\272\277n ngh\341\273\213.",
    "Thay \304\221\341\273\225i c\303\240i \304\221\341\272\267t \304\221\341\273\223ng b\341\273\231"
    " h\303\263a \303\242m thanh.",
+   "L\341\272\245y m\341\272\253u l\341\272\241i, l\341\273\215c v\303\240 tr\341\273\231n \303\242m"
+   " thanh tr\303\252n lu\341\273\223ng \303\242m thanh thay v\303\254 th\341\273\261c hi\341\273"
+   "\207n b\303\252n trong t\341\273\253ng khung h\303\254nh. \304\220\341\273\231 tr\341\273\205 gi"
+   "\341\273\221ng v\341\273\233i ch\341\272\277 \304\221\341\273\231 x\341\273\255 l\303\275 \304"
+   "\221\341\273\223ng b\341\273\231 theo khung h\303\254nh \341\273\237 m\341\273\215i m\341\273"
+   "\251c \304\220\341\273\231 tr\341\273\205 \303\242m thanh, trong \304\221\303\263 vi\341\273\207"
+   "c \304\221i\341\273\201u ch\341\273\211nh t\341\273\221c \304\221\341\273\231 \304\221\306\260"
+   "\341\273\243c \304\221o theo t\341\273\221c \304\221\341\273\231 ho\341\272\241t \304\221\341"
+   "\273\231ng th\341\273\261c t\341\272\277 c\341\273\247a thi\341\272\277t b\341\273\213 v\303\240"
+   " b\341\273\231 l\341\272\245y m\341\272\253u l\341\272\241i kh\303\264ng chi\341\272\277m th\341"
+   "\273\235i gian x\341\273\255 l\303\275 c\341\273\247a khung h\303\254nh. C\303\241c tr\303\254nh"
+   " \304\221i\341\273\201u khi\341\273\203n \303\242m thanh kh\303\264ng th\341\273\203 \304\221"
+   "\303\241n",
+   "h th\341\273\251c theo thi\341\272\277t b\341\273\213 s\341\272\275 ti\341\272\277p t\341\273"
+   "\245c s\341\273\255 d\341\273\245ng ch\341\272\277 \304\221\341\273\231 x\341\273\255 l\303\275 "
+   "\304\221\341\273\223ng b\341\273\231 theo khung h\303\254nh.",
+   "Y\303\252u c\341\272\247u h\341\273\207 \304\221i\341\273\201u h\303\240nh \306\260u ti\303\252n"
+   " x\341\273\255 l\303\275 lu\341\273\223ng \303\242m thanh tr\306\260\341\273\233c c\303\241c ph"
+   "\341\272\247n c\303\262n l\341\272\241i c\341\273\247a tr\303\254nh gi\341\272\243 l\341\272\255"
+   "p, gi\303\272p gi\341\272\243m kh\341\272\243 n\304\203ng thi\341\272\277t b\341\273\213 \303"
+   "\242m thanh b\341\273\213 thi\341\272\277u d\341\273\257 li\341\273\207u khi m\341\273\231t khun"
+   "g h\303\254nh m\341\272\245t nhi\341\273\201u th\341\273\235i gian x\341\273\255 l\303\275. Cho "
+   "ph\303\251p gi\341\272\243m \304\220\341\273\231 Tr\341\273\205 \303\202m Thanh xu\341\273\221ng"
+   " th\341\272\245p h\306\241n tr\303\252n nh\341\273\257ng h\341\273\207 th\341\273\221ng h\341"
+   "\273\227 tr\341\273\243; n\341\272\277u h\341\273\207 th\341\273\221ng t\341\273\253 ch\341\273"
+   "\221i, lu\341\273\223ng \303\242m thanh s\341\272\275 gi\341\273\257 m\341\273\251c \306\260u ti"
+   "\303\252n m\341\272\267c \304\221\341\273\213nh v\303\240 kh\303\264ng c\303\263 thay \304\221"
+   "\341\273\225i n\303\240o kh\303\241c. \303\201p d\341\273\245ng cho l",
+   "u\341\273\223ng \303\242m thanh m\303\240 Lu\341\273\223ng X\341\273\255 L\303\275 \303\202m Tha"
+   "nh Song Song v\303\240 c\303\241c h\303\240m g\341\273\215i l\341\272\241i \303\242m thanh c\341"
+   "\273\247a l\303\265i gi\341\272\243 l\341\272\255p s\341\273\255 d\341\273\245ng.",
    "\303\202m l\306\260\341\273\243ng \303\242m thanh (t\303\255nh b\341\272\261ng dB). 0 dB l\303"
    "\240 \303\242m l\306\260\341\273\243ng b\303\254nh th\306\260\341\273\235ng v\303\240 kh\303\264"
    "ng \303\241p d\341\273\245ng b\341\272\245t k\341\273\263 m\341\273\251c khu\341\272\277ch \304"
@@ -12087,7 +12136,7 @@ static const struct
  * compiler that pads this struct fails here instead of
  * misindexing at runtime. */
 typedef char msg_hash_vn_blob_check[
-      (sizeof(msg_hash_vn_blob) == (228146u
+      (sizeof(msg_hash_vn_blob) == (229826u
 #ifdef ANDROID
        + 373u
 #endif
@@ -12795,6 +12844,8 @@ static const uint32_t msg_hash_vn_ids[] =
    (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_STREAM_STATE_STOPPED,
    (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_SYNC,
    (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_SYNCHRONIZATION_SETTINGS,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_THREADED_PIPELINE,
+   (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_THREAD_PRIORITY,
    (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_VOLUME,
    (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_WASAPI_EXCLUSIVE_MODE,
    (uint32_t)MENU_ENUM_LABEL_VALUE_AUDIO_WASAPI_FLOAT_FORMAT,
@@ -14944,6 +14995,7 @@ static const uint32_t msg_hash_vn_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_APPICON_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_ASSETS_DIRECTORY,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_ASIO_CONTROL_PANEL,
+   (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_BLOCK_FRAMES,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_DEVICE,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_DRIVER,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_DSP_PLUGIN,
@@ -14971,6 +15023,8 @@ static const uint32_t msg_hash_vn_ids[] =
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_SETTINGS,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_SYNC,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_SYNCHRONIZATION_SETTINGS,
+   (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_THREADED_PIPELINE,
+   (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_THREAD_PRIORITY,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_VOLUME,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_WASAPI_EXCLUSIVE_MODE,
    (uint32_t)MENU_ENUM_SUBLABEL_AUDIO_WASAPI_FLOAT_FORMAT,

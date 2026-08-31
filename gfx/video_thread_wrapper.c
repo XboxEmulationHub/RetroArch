@@ -21,6 +21,7 @@
 
 #include <compat/strl.h>
 #include <features/features_cpu.h>
+#include <memalign.h>
 
 #ifdef _3DS
 #include <3ds/types.h>
@@ -863,10 +864,13 @@ static bool video_thread_init(thread_video_t *thr,
       max_size              *= info.rgb32 ?
          sizeof(uint32_t) : sizeof(uint16_t);
 
+      /* The main thread copies every core frame in here and the video
+       * thread reads it back for upload; a cache-line start keeps both
+       * copies on aligned rows for the usual pitches. */
 #ifdef _3DS
       thr->frame.buffer      = linearMemAlign(max_size, 0x80);
 #else
-      thr->frame.buffer      = (uint8_t*)malloc(max_size);
+      thr->frame.buffer      = (uint8_t*)memalign_alloc(64, max_size);
 #endif
       if (!thr->frame.buffer)
          return false;
@@ -1010,7 +1014,7 @@ static void video_thread_free(void *data)
 #ifdef _3DS
       linearFree(thr->frame.buffer);
 #else
-      free(thr->frame.buffer);
+      memalign_free(thr->frame.buffer);
 #endif
       free(thr->alpha_mod);
 
@@ -1023,6 +1027,14 @@ static void video_thread_free(void *data)
       RARCH_LOG(
          "Threaded video stats: Frames pushed: %u, Frames dropped: %u.\n",
          thr->hit_count, thr->miss_count);
+
+      /* video_init_thread() pointed the video state at the vtable
+       * embedded in this struct. Point it back at the wrapped driver's
+       * static vtable before the struct goes away, so a later
+       * video_driver_free_internal() reading current_video sees a live
+       * driver, as it does without threading. */
+      if (video_state_get_ptr()->current_video == &thr->video_thread)
+         video_state_get_ptr()->current_video = (video_driver_t*)thr->driver;
 
       free(thr);
    }

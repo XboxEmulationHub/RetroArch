@@ -36,6 +36,7 @@
 
 #include "../menu_cbs.h"
 #include "../menu_driver.h"
+#include "../menu_str.h"
 #include "../menu_screensaver.h"
 
 #include "../../msg_hash_lbl_str.h"
@@ -58,6 +59,7 @@
 
 #ifdef HAVE_CHEEVOS
 #include "../../cheevos/cheevos_menu.h"
+#include <compat/strl.h>
 #endif
 
 /* Force a render phase out of line even though it has a single call
@@ -4561,7 +4563,7 @@ static void ozone_update_content_metadata(ozone_handle_t *ozone)
       _len  = strlcpy(ozone->selection_core_name,
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_CORE),
             sizeof(ozone->selection_core_name));
-      _len += strlcpy(ozone->selection_core_name + _len, " ",
+      _len += strlcpy_lit(ozone->selection_core_name + _len, " ",
             sizeof(ozone->selection_core_name)   - _len);
       strlcpy(ozone->selection_core_name + _len, core_label,
             sizeof(ozone->selection_core_name) - _len);
@@ -4604,14 +4606,14 @@ static void ozone_update_content_metadata(ozone_handle_t *ozone)
          size_t _len  = strlcpy(ozone->selection_playtime,
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_RUNTIME),
                sizeof(ozone->selection_playtime));
-         _len        += strlcpy(ozone->selection_playtime  + _len, " ",
+         _len        += strlcpy_lit(ozone->selection_playtime  + _len, " ",
                   sizeof(ozone->selection_playtime) - _len);
          strlcpy(ozone->selection_playtime + _len, disabled_str, sizeof(ozone->selection_playtime) - _len);
 
          _len  = strlcpy(ozone->selection_lastplayed,
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_PLAYLIST_SUBLABEL_LAST_PLAYED),
                sizeof(ozone->selection_lastplayed));
-         _len += strlcpy(ozone->selection_lastplayed  + _len, " ",
+         _len += strlcpy_lit(ozone->selection_lastplayed  + _len, " ",
                   sizeof(ozone->selection_lastplayed) - _len);
          strlcpy(ozone->selection_lastplayed + _len, disabled_str, sizeof(ozone->selection_lastplayed) - _len);
       }
@@ -4712,12 +4714,21 @@ static void ozone_free_node(ozone_node_t *node)
 
    node->console_name = NULL;
 
+   /* Shared with every other node of the same list; released by
+    * reference, never with free(). */
    if (node->fullpath)
-      free(node->fullpath);
+      menu_str_unref(node->fullpath);
 
    node->fullpath = NULL;
 
    free(node);
+}
+
+/* file_list_t::userdata_free hook; see the matching comment on
+ * xmb_free_node_cb(). */
+static void ozone_free_node_cb(void *userdata)
+{
+   ozone_free_node((ozone_node_t*)userdata);
 }
 
 static void ozone_free_list_nodes(file_list_t *list, bool actiondata)
@@ -4890,11 +4901,8 @@ static void ozone_change_tab(ozone_handle_t *ozone,
    if (stack_size < 1)
       return;
 
-   if (menu_stack->list[stack_size - 1].label)
-      free(menu_stack->list[stack_size - 1].label);
-   menu_stack->list[stack_size - 1].label = NULL;
-
-   menu_stack->list[stack_size - 1].label = strdup(msg_hash_to_str(tab));
+   file_list_set_label_at_offset(menu_stack, stack_size - 1,
+         msg_hash_to_str(tab));
    menu_stack->list[stack_size - 1].type  = type;
 
    ozone_list_cache(ozone, MENU_LIST_HORIZONTAL, MENU_ACTION_LEFT);
@@ -5310,7 +5318,7 @@ static void ozone_context_reset_horizontal_list(ozone_handle_t *ozone)
          __len    = fill_pathname_join_special(texturepath,
                ozone->icons_path, sysname,
                sizeof(texturepath));
-         strlcpy(texturepath + __len, ".png", sizeof(texturepath) - __len);
+         strlcpy_lit(texturepath + __len, ".png", sizeof(texturepath) - __len);
 
          /* If the playlist icon doesn't exist, return default */
          if (!path_is_valid(texturepath))
@@ -5323,7 +5331,7 @@ static void ozone_context_reset_horizontal_list(ozone_handle_t *ozone)
                texturepath, &node->icon,
                gfx_display_texture_filter(), NULL, NULL);
 
-         strlcpy(sysname + syslen, "-content.png", sizeof(sysname) - syslen);
+         strlcpy_lit(sysname + syslen, "-content.png", sizeof(sysname) - syslen);
          fill_pathname_join_special(
                texturepath, ozone->icons_path, sysname,
                sizeof(texturepath));
@@ -5798,7 +5806,6 @@ static void ozone_compute_entries_position(ozone_handle_t *ozone,
    file_list_t *selection_buf    = NULL;
    int entry_padding             = ozone_get_entries_padding(ozone);
    int sublabel_max_width        = 0;
-   float scale_factor            = ozone->last_scale_factor;
    bool menu_current_sel_only    = settings->bools.menu_show_sublabels_current_selection_only;
    bool cursor_in_sidebar        = (ozone->flags & OZONE_FLAG_CURSOR_IN_SIDEBAR);
    bool draw_old_list            = (ozone->flags & OZONE_FLAG_DRAW_OLD_LIST);
@@ -6272,9 +6279,15 @@ border_iterate:
          if (     e->type == FILE_TYPE_RPL_ENTRY
                && ozone->categories_selection_ptr > ozone->system_tab_end)
          {
-            ozone_node_t *sidebar_node = (ozone_node_t*)
-                  file_list_get_userdata_at_offset(&ozone->horizontal_list,
-                        ozone->categories_selection_ptr - ozone->system_tab_end - 1);
+            /* The horizontal list is a snapshot; the selection can
+             * outrun it while it is being rebuilt. */
+            ozone_node_t *sidebar_node =
+                  (ozone->categories_selection_ptr - ozone->system_tab_end - 1
+                        < ozone->horizontal_list.size)
+                  ? (ozone_node_t*)
+                        file_list_get_userdata_at_offset(&ozone->horizontal_list,
+                              ozone->categories_selection_ptr - ozone->system_tab_end - 1)
+                  : NULL;
 
             if (sidebar_node && sidebar_node->content_icon)
                texture = sidebar_node->content_icon;
@@ -6312,7 +6325,11 @@ border_iterate:
                      break;
                }
 
-               sidebar_node = (ozone_node_t*)file_list_get_userdata_at_offset(&ozone->horizontal_list, offset);
+               /* A missed match leaves offset == size, one entry
+                * past the end of the list. */
+               sidebar_node = (offset < ozone->horizontal_list.size)
+                     ? (ozone_node_t*)file_list_get_userdata_at_offset(&ozone->horizontal_list, offset)
+                     : NULL;
                if (sidebar_node && sidebar_node->icon)
                   texture = sidebar_node->icon;
             }
@@ -6370,10 +6387,17 @@ border_iterate:
                   }
                }
 
-               sidebar_node = (ozone_node_t*)
-                     (ozone->horizontal_list.size)
-                        ? (ozone_node_t*)file_list_get_userdata_at_offset(&ozone->horizontal_list, offset)
-                        : NULL;
+               /* entry_idx is an ordinal assigned when the Playlists
+                * view was pushed; the horizontal list is a snapshot
+                * from init or the last refresh. When playlists appear
+                * or disappear in between (a scan finishing, a playlist
+                * removed) the ordinals of the tail entries run past
+                * the snapshot, and the name-match loop above leaves
+                * offset == size when nothing matches. Either way an
+                * unbounded lookup reads past the end of the list. */
+               sidebar_node = (offset < ozone->horizontal_list.size)
+                     ? (ozone_node_t*)file_list_get_userdata_at_offset(&ozone->horizontal_list, offset)
+                     : NULL;
 
                if (sidebar_node && sidebar_node->icon)
                   texture = sidebar_node->icon;
@@ -13091,10 +13115,8 @@ static void ozone_set_header(ozone_handle_t *ozone)
                   break;
             }
 
-            /* A missed match must resolve to no node; the accessor
-             * does not bounds-check, so indexing with offset ==
-             * size reads one entry past the end of the list and the
-             * garbage is then dereferenced below. */
+            /* A missed match leaves offset == size and must resolve
+             * to no node. */
             node = (offset < ozone->horizontal_list.size)
                   ? (ozone_node_t*)file_list_get_userdata_at_offset(
                         &ozone->horizontal_list, offset)
@@ -13267,6 +13289,8 @@ static void ozone_populate_entries(
    struct menu_state *menu_st           = menu_state_get_ptr();
    menu_list_t *menu_list               = menu_st->entries.list;
    bool ozone_collapse_sidebar          = settings->bools.ozone_collapse_sidebar;
+   bool menu_show_sublabels             = settings->bools.menu_show_sublabels;
+   bool menu_current_sel_only           = settings->bools.menu_show_sublabels_current_selection_only;
    ozone_handle_t *ozone                = (ozone_handle_t*) data;
 
    if (!ozone)
@@ -13347,6 +13371,8 @@ static void ozone_populate_entries(
                                  && new_depth > ozone->depth;
 
    animate                     = new_depth != ozone->depth;
+   if (!animate && menu_show_sublabels && menu_current_sel_only)
+      ozone->selection_old     = ozone->selection;
 
    if (new_depth <= ozone->depth)
       ozone->flags            |=  OZONE_FLAG_FADE_DIRECTION;
@@ -13679,11 +13705,12 @@ static void ozone_list_insert(void *userdata,
    if (fullpath && *fullpath)
    {
       if (node->fullpath)
-         free(node->fullpath);
+         menu_str_unref(node->fullpath);
 
-      node->fullpath      = strdup(fullpath);
+      node->fullpath      = menu_str_ref(fullpath);
    }
 
+   list->userdata_free    = ozone_free_node_cb;
    list->list[i].userdata = node;
 }
 

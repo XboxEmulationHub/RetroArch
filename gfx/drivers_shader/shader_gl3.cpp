@@ -18,6 +18,7 @@
 #include "shader_gl3.h"
 #include "glslang_util.h"
 
+#include <string>
 #include <vector>
 #include <memory>
 #include <functional>
@@ -659,8 +660,8 @@ struct CommonResources
    std::vector<Texture> pass_outputs;
    std::vector<std::unique_ptr<StaticTexture>> luts;
 
-   std::unordered_map<std::string, slang_texture_semantic_map> texture_semantic_map;
-   std::unordered_map<std::string, slang_texture_semantic_map> texture_semantic_uniform_map;
+   slang_texture_semantic_name_map texture_semantic_map        = {};
+   slang_texture_semantic_name_map texture_semantic_uniform_map = {};
    std::unique_ptr<video_shader> shader_preset;
 
    GLuint quad_program = 0;
@@ -689,6 +690,8 @@ CommonResources::CommonResources()
 
 CommonResources::~CommonResources()
 {
+   slang_texture_semantic_name_map_free(&texture_semantic_map);
+   slang_texture_semantic_name_map_free(&texture_semantic_uniform_map);
    if (quad_program != 0)
       glDeleteProgram(quad_program);
    if (quad_vbo != 0)
@@ -1011,7 +1014,11 @@ private:
    void set_semantic_texture(slang_texture_semantic semantic,
          const Texture &texture);
 
-   slang_reflection reflection;
+   /* Plain C struct: must be explicitly zero-initialized, since the
+       * first build() and a teardown before any build() both run
+       * slang_reflection_free() on it.  The previous C++ type had a
+       * default constructor doing this implicitly. */
+      slang_reflection reflection = {};
 
    std::vector<uint8_t> uniforms;
 
@@ -1080,12 +1087,12 @@ private:
 
    void reflect_parameter(const std::string &name, slang_semantic_meta &meta);
    void reflect_parameter(const std::string &name, slang_texture_semantic_meta &meta);
-   void reflect_parameter_array(const char *name, std::vector<slang_texture_semantic_meta> &meta);
+   void reflect_parameter_array(const char *name, slang_texture_semantic_array &meta);
 };
 
 bool Pass::build()
 {
-   std::unordered_map<std::string, slang_semantic_map> semantic_map;
+   slang_semantic_name_map semantic_map = {};
    unsigned i;
    unsigned j = 0;
 
@@ -1098,25 +1105,44 @@ bool Pass::build()
 
    for (i = 0; i < parameters.size(); i++)
    {
-      if (!slang_set_unique_map(semantic_map, parameters[i].id,
-               slang_semantic_map{ SLANG_SEMANTIC_FLOAT_PARAMETER, j }))
+      if (!slang_semantic_name_map_set_unique(
+               &semantic_map, parameters[i].id.c_str(), NULL,
+               SLANG_SEMANTIC_FLOAT_PARAMETER, j))
+      {
+         slang_semantic_name_map_free(&semantic_map);
          return false;
+      }
       j++;
    }
 
-   reflection                              = slang_reflection{};
+   slang_reflection_free(&reflection);
+   if (!slang_reflection_init(&reflection))
+   {
+      slang_semantic_name_map_free(&semantic_map);
+      return false;
+   }
    reflection.pass_number                  = pass_number;
    reflection.texture_semantic_map         = &common->texture_semantic_map;
    reflection.texture_semantic_uniform_map = &common->texture_semantic_uniform_map;
    reflection.semantic_map                 = &semantic_map;
 
-   if (!slang_reflect_spirv(vertex_shader, fragment_shader, &reflection))
-      return false;
+   {
+      bool refl_ok = slang_reflect_spirv(
+            vertex_shader.data(), vertex_shader.size(),
+            fragment_shader.data(), fragment_shader.size(),
+            &reflection);
+      /* The parameter map is only needed during reflection; the
+       * reflection keeps a dangling pointer otherwise. */
+      slang_semantic_name_map_free(&semantic_map);
+      reflection.semantic_map = NULL;
+      if (!refl_ok)
+         return false;
+   }
 
    /* Filter out parameters which we will never use anyways. */
    filtered_parameters.clear();
 
-   for (i = 0; i < reflection.semantic_float_parameters.size(); i++)
+   for (i = 0; i < reflection.num_float_parameters; i++)
    {
       if (reflection.semantic_float_parameters[i].uniform ||
           reflection.semantic_float_parameters[i].push_constant)
@@ -1185,27 +1211,27 @@ void Pass::reflect_parameter(const std::string &name, slang_texture_semantic_met
    }
 }
 
-void Pass::reflect_parameter_array(const char *name, std::vector<slang_texture_semantic_meta> &meta)
+void Pass::reflect_parameter_array(const char *name, slang_texture_semantic_array &meta)
 {
    size_t i;
 
    if (spirv_binary)
       return;
 
-   for (i = 0; i < meta.size(); i++)
+   for (i = 0; i < meta.size; i++)
    {
       char n[128];
       size_t _len = strlcpy(n, name, sizeof(n));
       snprintf(n + _len, sizeof(n) - _len, "%u", (unsigned)i);
-      slang_texture_semantic_meta *m = (slang_texture_semantic_meta*)&meta[i];
+      slang_texture_semantic_meta *m = &meta.data[i];
 
       if (m->uniform)
       {
          int vert, frag;
          char vert_n[256];
          char frag_n[256];
-         size_t _len  = strlcpy(vert_n, "RARCH_UBO_VERTEX_INSTANCE.",   sizeof(vert_n));
-         size_t _len2 = strlcpy(frag_n, "RARCH_UBO_FRAGMENT_INSTANCE.", sizeof(frag_n));
+         size_t _len  = strlcpy_lit(vert_n, "RARCH_UBO_VERTEX_INSTANCE.",   sizeof(vert_n));
+         size_t _len2 = strlcpy_lit(frag_n, "RARCH_UBO_FRAGMENT_INSTANCE.", sizeof(frag_n));
          strlcpy(vert_n + _len,  n, sizeof(vert_n) - _len);
          strlcpy(frag_n + _len2, n, sizeof(frag_n) - _len2);
          vert = glGetUniformLocation(pipeline, vert_n);
@@ -1222,8 +1248,8 @@ void Pass::reflect_parameter_array(const char *name, std::vector<slang_texture_s
          int vert, frag;
          char vert_n[256];
          char frag_n[256];
-         size_t _len  = strlcpy(vert_n, "RARCH_PUSH_VERTEX_INSTANCE.",   sizeof(vert_n));
-         size_t _len2 = strlcpy(frag_n, "RARCH_PUSH_FRAGMENT_INSTANCE.", sizeof(frag_n));
+         size_t _len  = strlcpy_lit(vert_n, "RARCH_PUSH_VERTEX_INSTANCE.",   sizeof(vert_n));
+         size_t _len2 = strlcpy_lit(frag_n, "RARCH_PUSH_FRAGMENT_INSTANCE.", sizeof(frag_n));
          strlcpy(vert_n + _len,  n, sizeof(vert_n) - _len);
          strlcpy(frag_n + _len2, n, sizeof(frag_n) - _len2);
          vert = glGetUniformLocation(pipeline, vert_n);
@@ -1352,21 +1378,24 @@ bool Pass::init_pipeline()
          input_state_get_ptr()->shader_uses_sensors = true;
    }
 
-   reflect_parameter("OriginalSize", reflection.semantic_textures[SLANG_TEXTURE_SEMANTIC_ORIGINAL][0]);
-   reflect_parameter("SourceSize", reflection.semantic_textures[SLANG_TEXTURE_SEMANTIC_SOURCE][0]);
+   reflect_parameter("OriginalSize", reflection.semantic_textures[SLANG_TEXTURE_SEMANTIC_ORIGINAL].data[0]);
+   reflect_parameter("SourceSize", reflection.semantic_textures[SLANG_TEXTURE_SEMANTIC_SOURCE].data[0]);
    reflect_parameter_array("OriginalHistorySize", reflection.semantic_textures[SLANG_TEXTURE_SEMANTIC_ORIGINAL_HISTORY]);
    reflect_parameter_array("PassOutputSize", reflection.semantic_textures[SLANG_TEXTURE_SEMANTIC_PASS_OUTPUT]);
    reflect_parameter_array("PassFeedbackSize", reflection.semantic_textures[SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK]);
    reflect_parameter_array("UserSize", reflection.semantic_textures[SLANG_TEXTURE_SEMANTIC_USER]);
-   for (std::pair<const std::string, slang_texture_semantic_map> &m : common->texture_semantic_uniform_map)
+   for (size_t mi = 0; mi < common->texture_semantic_uniform_map.count; mi++)
    {
-      std::vector<slang_texture_semantic_meta> &array = reflection.semantic_textures[m.second.semantic];
-      if (m.second.index < array.size())
-         reflect_parameter(m.first, array[m.second.index]);
+      const slang_texture_semantic_map_entry *ent =
+         &common->texture_semantic_uniform_map.entries[mi];
+      slang_texture_semantic_array &array =
+         reflection.semantic_textures[ent->semantic];
+      if (ent->index < array.size)
+         reflect_parameter(ent->name, array.data[ent->index]);
    }
 
    for (Parameter &m : filtered_parameters)
-      if (m.semantic_index < reflection.semantic_float_parameters.size())
+      if (m.semantic_index < reflection.num_float_parameters)
          reflect_parameter(m.id, reflection.semantic_float_parameters[m.semantic_index]);
 
    return true;
@@ -1663,27 +1692,30 @@ void Pass::build_semantic_texture(uint8_t *buffer,
 void Pass::build_semantic_texture_array_vec4(uint8_t *data, slang_texture_semantic semantic,
       unsigned index, unsigned width, unsigned height)
 {
-   std::vector<slang_texture_semantic_meta> &refl = reflection.semantic_textures[semantic];
-   if (index >= refl.size())
+   const slang_texture_semantic_array &arr =
+      reflection.semantic_textures[semantic];
+   const slang_texture_semantic_meta *refl;
+   if (index >= arr.size)
       return;
+   refl = &arr.data[index];
 
-   if (data && refl[index].uniform)
+   if (data && refl->uniform)
    {
-      if (refl[index].location.ubo_vertex >= 0 || refl[index].location.ubo_fragment >= 0)
+      if (refl->location.ubo_vertex >= 0 || refl->location.ubo_fragment >= 0)
       {
          float v4[4];
          v4[0] = (float)(width);
          v4[1] = (float)(height);
          v4[2] = 1.0f / (float)(width);
          v4[3] = 1.0f / (float)(height);
-         if (refl[index].location.ubo_vertex >= 0)
-            glUniform4fv(refl[index].location.ubo_vertex, 1, v4);
-         if (refl[index].location.ubo_fragment >= 0)
-            glUniform4fv(refl[index].location.ubo_fragment, 1, v4);
+         if (refl->location.ubo_vertex >= 0)
+            glUniform4fv(refl->location.ubo_vertex, 1, v4);
+         if (refl->location.ubo_fragment >= 0)
+            glUniform4fv(refl->location.ubo_fragment, 1, v4);
       }
       else
       {
-         float *_data = reinterpret_cast<float *>(data + refl[index].ubo_offset);
+         float *_data = reinterpret_cast<float *>(data + refl->ubo_offset);
          _data[0]     = (float)(width);
          _data[1]     = (float)(height);
          _data[2]     = 1.0f / (float)(width);
@@ -1691,23 +1723,23 @@ void Pass::build_semantic_texture_array_vec4(uint8_t *data, slang_texture_semant
       }
    }
 
-   if (refl[index].push_constant)
+   if (refl->push_constant)
    {
-      if (refl[index].location.push_vertex >= 0 || refl[index].location.push_fragment >= 0)
+      if (refl->location.push_vertex >= 0 || refl->location.push_fragment >= 0)
       {
          float v4[4];
          v4[0] = (float)(width);
          v4[1] = (float)(height);
          v4[2] = 1.0f / (float)(width);
          v4[3] = 1.0f / (float)(height);
-         if (refl[index].location.push_vertex >= 0)
-            glUniform4fv(refl[index].location.push_vertex, 1, v4);
-         if (refl[index].location.push_fragment >= 0)
-            glUniform4fv(refl[index].location.push_fragment, 1, v4);
+         if (refl->location.push_vertex >= 0)
+            glUniform4fv(refl->location.push_vertex, 1, v4);
+         if (refl->location.push_fragment >= 0)
+            glUniform4fv(refl->location.push_fragment, 1, v4);
       }
       else
       {
-         float *_data = reinterpret_cast<float *>(push_constant_buffer.data() + refl[index].push_constant_offset);
+         float *_data = reinterpret_cast<float *>(push_constant_buffer.data() + refl->push_constant_offset);
          _data[0]     = (float)(width);
          _data[1]     = (float)(height);
          _data[2]     = 1.0f / (float)(width);
@@ -1736,6 +1768,7 @@ Pass::~Pass()
 {
    if (pipeline != 0)
       glDeleteProgram(pipeline);
+   slang_reflection_free(&reflection);
 }
 
 void Pass::set_shader(GLenum stage,
@@ -1767,9 +1800,9 @@ void Pass::add_parameter(unsigned index, const std::string &id)
 void Pass::set_semantic_texture(slang_texture_semantic semantic,
       const Texture &texture)
 {
-   if (reflection.semantic_textures[semantic][0].texture)
+   if (reflection.semantic_textures[semantic].data[0].texture)
    {
-      unsigned binding = reflection.semantic_textures[semantic][0].binding;
+      unsigned binding = reflection.semantic_textures[semantic].data[0].binding;
       glActiveTexture(GL_TEXTURE0 + binding);
       glBindTexture(GL_TEXTURE_2D, texture.texture.image);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, convert_filter_to_mag_gl(texture.filter));
@@ -1785,10 +1818,10 @@ void Pass::build_semantic_texture_array(uint8_t *buffer,
    build_semantic_texture_array_vec4(buffer, semantic, index,
          texture.texture.width, texture.texture.height);
 
-   if (index < reflection.semantic_textures[semantic].size() &&
-         reflection.semantic_textures[semantic][index].texture)
+   if (index < reflection.semantic_textures[semantic].size &&
+         reflection.semantic_textures[semantic].data[index].texture)
    {
-      unsigned binding = reflection.semantic_textures[semantic][index].binding;
+      unsigned binding = reflection.semantic_textures[semantic].data[index].binding;
       glActiveTexture(GL_TEXTURE0 + binding);
       glBindTexture(GL_TEXTURE_2D, texture.texture.image);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, convert_filter_to_mag_gl(texture.filter));
@@ -2372,7 +2405,7 @@ bool gl3_filter_chain::init_history()
    for (i = 0; i < passes.size(); i++)
    {
       size_t _y = passes[i]->get_reflection().semantic_textures[
-                SLANG_TEXTURE_SEMANTIC_ORIGINAL_HISTORY].size();
+                SLANG_TEXTURE_SEMANTIC_ORIGINAL_HISTORY].size;
       required_images = MAX(required_images, _y);
    }
 
@@ -2415,9 +2448,10 @@ bool gl3_filter_chain::init_feedback()
       for (std::unique_ptr<gl3_shader::Pass> &pass : passes)
       {
          const slang_reflection &r          = pass->get_reflection();
-         const std::vector<slang_texture_semantic_meta> &feedbacks  = r.semantic_textures[SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK];
+         const slang_texture_semantic_array &feedbacks =
+            r.semantic_textures[SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK];
 
-         if (i < feedbacks.size() && feedbacks[i].texture)
+         if (i < feedbacks.size && feedbacks.data[i].texture)
          {
             use_feedback  = true;
             use_feedbacks = true;
@@ -2447,8 +2481,8 @@ bool gl3_filter_chain::init_alias()
 {
    int i;
 
-   common.texture_semantic_map.clear();
-   common.texture_semantic_uniform_map.clear();
+   slang_texture_semantic_name_map_free(&common.texture_semantic_map);
+   slang_texture_semantic_name_map_free(&common.texture_semantic_uniform_map);
 
    for (i = 0; i < (int)passes.size(); i++)
    {
@@ -2459,37 +2493,41 @@ bool gl3_filter_chain::init_alias()
 
       j = (unsigned)(&passes[i] - passes.data());
 
-      if (!slang_set_unique_map(common.texture_semantic_map, name,
-               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_PASS_OUTPUT, j }))
+      if (!slang_texture_semantic_name_map_set_unique(
+               &common.texture_semantic_map, name.c_str(), NULL,
+               SLANG_TEXTURE_SEMANTIC_PASS_OUTPUT, j))
          return false;
 
-      if (!slang_set_unique_map(common.texture_semantic_uniform_map,
-               name + "Size",
-               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_PASS_OUTPUT, j }))
+      if (!slang_texture_semantic_name_map_set_unique(
+               &common.texture_semantic_uniform_map, name.c_str(), "Size",
+               SLANG_TEXTURE_SEMANTIC_PASS_OUTPUT, j))
          return false;
 
-      if (!slang_set_unique_map(common.texture_semantic_map,
-               name + "Feedback",
-               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK, j }))
+      if (!slang_texture_semantic_name_map_set_unique(
+               &common.texture_semantic_map, name.c_str(), "Feedback",
+               SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK, j))
          return false;
 
-      if (!slang_set_unique_map(common.texture_semantic_uniform_map,
-               name + "FeedbackSize",
-               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK, j }))
+      if (!slang_texture_semantic_name_map_set_unique(
+               &common.texture_semantic_uniform_map, name.c_str(),
+               "FeedbackSize",
+               SLANG_TEXTURE_SEMANTIC_PASS_FEEDBACK, j))
          return false;
    }
 
    for (i = 0; i < (int)common.luts.size(); i++)
    {
       unsigned j = (unsigned)(&common.luts[i] - common.luts.data());
-      if (!slang_set_unique_map(common.texture_semantic_map,
-               common.luts[i]->get_id(),
-               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_USER, j }))
+      if (!slang_texture_semantic_name_map_set_unique(
+               &common.texture_semantic_map,
+               common.luts[i]->get_id().c_str(), NULL,
+               SLANG_TEXTURE_SEMANTIC_USER, j))
          return false;
 
-      if (!slang_set_unique_map(common.texture_semantic_uniform_map,
-               common.luts[i]->get_id() + "Size",
-               slang_texture_semantic_map{ SLANG_TEXTURE_SEMANTIC_USER, j }))
+      if (!slang_texture_semantic_name_map_set_unique(
+               &common.texture_semantic_uniform_map,
+               common.luts[i]->get_id().c_str(), "Size",
+               SLANG_TEXTURE_SEMANTIC_USER, j))
          return false;
    }
 
@@ -2602,23 +2640,29 @@ bool gl3_filter_chain::compile_full_pass(unsigned pass_idx,
    }
 
    /* ---- Extract parameters ---- */
-   for (unsigned j = 0; j < output.meta.parameters.size(); j++)
+   for (size_t j = 0; j < output.meta.num_parameters; j++)
    {
-      auto meta_param = output.meta.parameters[j];
+      const glslang_parameter *meta_param = &output.meta.parameters[j];
 
       if (shader->num_parameters >= GFX_MAX_PARAMETERS)
       {
          RARCH_ERR("[GLCore] Exceeded maximum number of parameters (%u).\n",
                GFX_MAX_PARAMETERS);
+         glslang_output_free(&output);
          return false;
       }
 
       video_shader_parameter *itr = NULL;
       {
          unsigned k;
+         size_t mid_len = strlen(meta_param->id);
          for (k = 0; k < shader->num_parameters; k++)
          {
-            if (meta_param.id == shader->parameters[k].id)
+            /* Gate the memcmp behind two byte loads; the scan is
+             * O(n^2) across Mega Bezel-scale parameter counts. */
+            const char *sid = shader->parameters[k].id;
+            if (sid[0] == meta_param->id[0] && sid[mid_len] == '\0'
+                  && !memcmp(sid, meta_param->id, mid_len))
             {
                itr = &shader->parameters[k];
                break;
@@ -2628,45 +2672,46 @@ bool gl3_filter_chain::compile_full_pass(unsigned pass_idx,
 
       if (itr)
       {
-         if (   meta_param.desc    != itr->desc
-             || meta_param.initial != itr->initial
-             || meta_param.minimum != itr->minimum
-             || meta_param.maximum != itr->maximum
-             || meta_param.step    != itr->step)
+         if (   strcmp(meta_param->desc, itr->desc)
+             || meta_param->initial != itr->initial
+             || meta_param->minimum != itr->minimum
+             || meta_param->maximum != itr->maximum
+             || meta_param->step    != itr->step)
          {
             RARCH_ERR("[GLCore] Duplicate parameters found for \"%s\","
                   " but arguments do not match.\n", itr->id);
+            glslang_output_free(&output);
             return false;
          }
          add_parameter(pass_idx,
-               (unsigned)(itr - shader->parameters), meta_param.id);
+               (unsigned)(itr - shader->parameters), meta_param->id);
       }
       else
       {
          video_shader_parameter *param =
             &shader->parameters[shader->num_parameters];
-         strlcpy(param->id, meta_param.id.c_str(), sizeof(param->id));
-         strlcpy(param->desc, meta_param.desc.c_str(), sizeof(param->desc));
-         param->initial = meta_param.initial;
-         param->minimum = meta_param.minimum;
-         param->maximum = meta_param.maximum;
-         param->step    = meta_param.step;
-         add_parameter(pass_idx, shader->num_parameters, meta_param.id);
+         strlcpy(param->id, meta_param->id, sizeof(param->id));
+         strlcpy(param->desc, meta_param->desc, sizeof(param->desc));
+         param->initial = meta_param->initial;
+         param->minimum = meta_param->minimum;
+         param->maximum = meta_param->maximum;
+         param->step    = meta_param->step;
+         add_parameter(pass_idx, shader->num_parameters, meta_param->id);
          shader->num_parameters++;
       }
    }
 
    /* ---- Set SPIRV on the pass ---- */
    set_shader(pass_idx, GL_VERTEX_SHADER,
-         output.vertex.data(), output.vertex.size());
+         output.vertex, output.vertex_len);
    set_shader(pass_idx, GL_FRAGMENT_SHADER,
-         output.fragment.data(), output.fragment.size());
+         output.fragment, output.fragment_len);
 
    set_frame_count_period(pass_idx, pass->frame_count_mod);
 
    /* ---- Pass name (from shader #pragma or preset alias) ---- */
-   if (!output.meta.name.empty())
-      set_pass_name(pass_idx, output.meta.name.c_str());
+   if (output.meta.name[0])
+      set_pass_name(pass_idx, output.meta.name);
    if (*pass->alias)
       set_pass_name(pass_idx, pass->alias);
 
@@ -2676,7 +2721,10 @@ bool gl3_filter_chain::compile_full_pass(unsigned pass_idx,
    {
       alias_initialized = false;
       if (!init_alias_early())
+      {
+         glslang_output_free(&output);
          return false;
+      }
    }
 
    /* ---- Pass info (scale, filter, format) ---- */
@@ -2790,6 +2838,7 @@ bool gl3_filter_chain::compile_full_pass(unsigned pass_idx,
    }
 
    set_pass_info(pass_idx, p_info);
+   glslang_output_free(&output);
 
    /* ---- GPU compile/link (the expensive GL part) ---- */
    return init_single_pass(pass_idx);
@@ -3133,25 +3182,33 @@ gl3_filter_chain_t *gl3_filter_chain_create_from_preset(
          return nullptr;
       }
 
-      for (unsigned j = 0; j < output.meta.parameters.size(); j++)
+      for (size_t j = 0; j < output.meta.num_parameters; j++)
       {
-         auto meta_param = output.meta.parameters[j];
+         const glslang_parameter *meta_param = &output.meta.parameters[j];
 
          if (shader->num_parameters >= GFX_MAX_PARAMETERS)
          {
             RARCH_ERR("[GLCore] Exceeded maximum number of parameters (%u).\n", GFX_MAX_PARAMETERS);
+            glslang_output_free(&output);
             return nullptr;
          }
 
          video_shader_parameter *itr = NULL;
          {
             unsigned k;
-            for (k = 0; k < shader->num_parameters; k++)
             {
-               if (meta_param.id == shader->parameters[k].id)
+               /* Gated memcmp: O(n^2) across Mega Bezel-scale
+                * parameter counts. */
+               size_t mid_len = strlen(meta_param->id);
+               for (k = 0; k < shader->num_parameters; k++)
                {
-                  itr = &shader->parameters[k];
-                  break;
+                  const char *sid = shader->parameters[k].id;
+                  if (sid[0] == meta_param->id[0] && sid[mid_len] == '\0'
+                        && !memcmp(sid, meta_param->id, mid_len))
+                  {
+                     itr = &shader->parameters[k];
+                     break;
+                  }
                }
             }
          }
@@ -3160,46 +3217,47 @@ gl3_filter_chain_t *gl3_filter_chain_create_from_preset(
          {
             /* Allow duplicate #pragma parameter, but
              * only if they are exactly the same. */
-            if (   meta_param.desc    != itr->desc
-                || meta_param.initial != itr->initial
-                || meta_param.minimum != itr->minimum
-                || meta_param.maximum != itr->maximum
-                || meta_param.step    != itr->step)
+            if (   strcmp(meta_param->desc, itr->desc)
+                || meta_param->initial != itr->initial
+                || meta_param->minimum != itr->minimum
+                || meta_param->maximum != itr->maximum
+                || meta_param->step    != itr->step)
             {
                RARCH_ERR("[GLCore] Duplicate parameters found for \"%s\", but arguments do not match.\n",
                      itr->id);
+               glslang_output_free(&output);
                return nullptr;
             }
-            chain->add_parameter(i, (unsigned)(itr - shader->parameters), meta_param.id);
+            chain->add_parameter(i, (unsigned)(itr - shader->parameters), meta_param->id);
          }
          else
          {
             video_shader_parameter *param = &shader->parameters[shader->num_parameters];
-            strlcpy(param->id, meta_param.id.c_str(), sizeof(param->id));
-            strlcpy(param->desc, meta_param.desc.c_str(), sizeof(param->desc));
-            param->initial = meta_param.initial;
-            param->minimum = meta_param.minimum;
-            param->maximum = meta_param.maximum;
-            param->step    = meta_param.step;
-            chain->add_parameter(i, shader->num_parameters, meta_param.id);
+            strlcpy(param->id, meta_param->id, sizeof(param->id));
+            strlcpy(param->desc, meta_param->desc, sizeof(param->desc));
+            param->initial = meta_param->initial;
+            param->minimum = meta_param->minimum;
+            param->maximum = meta_param->maximum;
+            param->step    = meta_param->step;
+            chain->add_parameter(i, shader->num_parameters, meta_param->id);
             shader->num_parameters++;
          }
       }
 
       chain->set_shader(i,
             GL_VERTEX_SHADER,
-            output.vertex.data(),
-            output.vertex.size());
+            output.vertex,
+            output.vertex_len);
 
       chain->set_shader(i,
             GL_FRAGMENT_SHADER,
-            output.fragment.data(),
-            output.fragment.size());
+            output.fragment,
+            output.fragment_len);
 
       chain->set_frame_count_period(i, pass->frame_count_mod);
 
-      if (!output.meta.name.empty())
-         chain->set_pass_name(i, output.meta.name.c_str());
+      if (output.meta.name[0])
+         chain->set_pass_name(i, output.meta.name);
 
       /* Preset overrides. */
       if (*pass->alias)
@@ -3318,6 +3376,7 @@ gl3_filter_chain_t *gl3_filter_chain_create_from_preset(
       }
 
       chain->set_pass_info(i, pass_info);
+      glslang_output_free(&output);
    }
    }   /* include cache scope: freed here, and on any early return above */
 

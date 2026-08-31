@@ -223,6 +223,12 @@
 
 #define RFILE_HINT_UNBUFFERED (1 << 8)
 
+/* Largest count handed to one fread/fwrite/read/write call.  bionic's
+ * stdio routes counts through an int-typed callback (aborting via
+ * FORTIFY above INT_MAX) and one Linux read()/write() syscall moves at
+ * most MAX_RW_COUNT; both fit comfortably under 1 GiB. */
+#define VFS_STDIO_IO_CHUNK_MAX (1024 * 1024 * 1024)
+
 /* 64-bit seek on the descriptor path.
  *
  * The buffered path seeks with _fseeki64/fseeko.  The descriptor path
@@ -448,6 +454,12 @@ static int64_t retro_vfs_fd_seek64(int fd, int64_t offset, int whence)
    return (int64_t)_lseeki64(fd, (__int64)offset, whence);
 #elif defined(__ANDROID__)
    return (int64_t)lseek64(fd, (off64_t)offset, whence);
+#elif defined(VITA)
+   /* SCE_SEEK_SET/CUR/END are 0/1/2, the same values as SEEK_*. */
+   {
+      SceOff pos = sceIoLseek(fd, (SceOff)offset, whence);
+      return (pos < 0) ? -1 : (int64_t)pos;
+   }
 #else
    /* Compile-time: the cast is lossless exactly when off_t is wide
     * enough, and the guard costs nothing when it is (the comparison
@@ -667,6 +679,16 @@ libretro_vfs_implementation_file *retro_vfs_file_open_impl(
          && mode == RETRO_VFS_FILE_ACCESS_READ
          && stream->scheme == VFS_SCHEME_NONE)
       stream->hints |= RFILE_HINT_UNBUFFERED;
+#ifdef VFS_HAVE_DESCRIPTOR_WRITE
+   /* A write-once stream is the same shape: every byte it will ever
+    * write arrives in one call, so a stdio buffer only adds a copy
+    * and a flush. */
+   if (     (stream->hints & RETRO_VFS_FILE_ACCESS_HINT_SEQUENTIAL_BULK)
+         && (     mode == RETRO_VFS_FILE_ACCESS_WRITE
+               || mode == RETRO_VFS_FILE_ACCESS_READ_WRITE)
+         && stream->scheme == VFS_SCHEME_NONE)
+      stream->hints |= RFILE_HINT_UNBUFFERED;
+#endif
 #endif
 
    switch (mode)
@@ -920,6 +942,35 @@ libretro_vfs_implementation_file *retro_vfs_file_open_impl(
                if (path_wide)
                   free(path_wide);
 #endif
+#elif defined(VITA)
+               {
+                  int sce_flags = 0;
+                  SceUID uid;
+
+                  /* The POSIX flags above are for the open() targets. */
+                  (void)flags;
+
+                  switch (mode)
+                  {
+                     case RETRO_VFS_FILE_ACCESS_READ:
+                        sce_flags = SCE_O_RDONLY;
+                        break;
+                     case RETRO_VFS_FILE_ACCESS_WRITE:
+                        sce_flags = SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC;
+                        break;
+                     case RETRO_VFS_FILE_ACCESS_READ_WRITE:
+                        sce_flags = SCE_O_RDWR | SCE_O_CREAT | SCE_O_TRUNC;
+                        break;
+                     default:
+                        sce_flags = SCE_O_RDWR;
+                        break;
+                  }
+
+                  /* SceUID error codes are negative; the descriptor
+                   * path only ever tests for -1. */
+                  uid        = sceIoOpen(path, sce_flags, 0777);
+                  stream->fd = (uid < 0) ? -1 : (int)uid;
+               }
 #else
                stream->fd          = open(path, flags, S_IRUSR | S_IWUSR);
 #endif
@@ -1005,6 +1056,11 @@ libretro_vfs_implementation_file *retro_vfs_file_open_impl(
    }
    else
 #endif
+   /* A truncating open leaves a zero-length file positioned at 0,
+    * so the probe below - a seek to the end, a tell and a seek back,
+    * each a system call - would only ever confirm that. */
+   if (     mode != RETRO_VFS_FILE_ACCESS_WRITE
+         && mode != RETRO_VFS_FILE_ACCESS_READ_WRITE)
    {
       retro_vfs_file_seek_internal(stream, 0, SEEK_END);
 
@@ -1065,7 +1121,13 @@ int retro_vfs_file_close_impl(libretro_vfs_implementation_file *stream)
    }
 
    if (stream->fd >= 0)
+   {
+#if defined(VITA)
+      sceIoClose((SceUID)stream->fd);
+#else
       close(stream->fd);
+#endif
+   }
 #ifdef HAVE_CDROM
 end:
    /* Reached both by the goto above and by fall-through from the
@@ -1461,6 +1523,15 @@ int64_t retro_vfs_file_read_impl(libretro_vfs_implementation_file *stream,
    if (!stream || !s)
       return -1;
 
+   /* A length with the top bit set is a negative int64 that arrived
+    * through the unsigned parameter - no legitimate caller reads 8EiB.
+    * The stdio path below hands len to fread() unclamped, where bionic
+    * FORTIFY turns it into a process abort (observed in the field);
+    * fail the read instead, like the mapped path's clamp below already
+    * does for its overflow case. */
+   if (len > (uint64_t)INT64_MAX)
+      return -1;
+
    if ((stream->hints & RFILE_HINT_UNBUFFERED) == 0)
    {
 #ifdef HAVE_CDROM
@@ -1471,7 +1542,28 @@ int64_t retro_vfs_file_read_impl(libretro_vfs_implementation_file *stream,
       if (stream->scheme == VFS_SCHEME_SMB)
          return retro_vfs_file_read_smb(stream, s, len);
 #endif
-      return fread(s, 1, (size_t)len, stream->fp);
+      /* bionic's stdio dispatches fread through the FILE's int-typed
+       * read callback: a single count above INT_MAX truncates to a
+       * negative int inside libc, __sread sign-extends it back into
+       * read(), and FORTIFY aborts the process ("read: count ... >
+       * SSIZE_MAX").  Chunk the transfer so no single libc call sees
+       * a count any stdio cannot take. */
+      {
+         uint8_t *p     = (uint8_t*)s;
+         uint64_t total = 0;
+         while (len != 0)
+         {
+            size_t _chunk = (len > VFS_STDIO_IO_CHUNK_MAX)
+                  ? (size_t)VFS_STDIO_IO_CHUNK_MAX : (size_t)len;
+            size_t _got   = fread(p, 1, _chunk, stream->fp);
+            total        += _got;
+            if (_got < _chunk)
+               break;
+            p            += _got;
+            len          -= _got;
+         }
+         return (int64_t)total;
+      }
    }
 #ifdef VFS_HAVE_FILE_MAPPING
    if (stream->hints & RETRO_VFS_FILE_ACCESS_HINT_FREQUENT_ACCESS)
@@ -1504,7 +1596,31 @@ int64_t retro_vfs_file_read_impl(libretro_vfs_implementation_file *stream,
    }
 #endif
 
-   return read(stream->fd, s, (size_t)len);
+   /* One read() moves at most MAX_RW_COUNT (INT_MAX & PAGE_MASK) on
+    * Linux and returns short past it, so a large request needs the
+    * same chunk loop as the stdio path to honor the full count. */
+   {
+      uint8_t *p     = (uint8_t*)s;
+      uint64_t total = 0;
+      while (len != 0)
+      {
+         size_t  _chunk = (len > VFS_STDIO_IO_CHUNK_MAX)
+               ? (size_t)VFS_STDIO_IO_CHUNK_MAX : (size_t)len;
+#if defined(VITA)
+         ssize_t _got   = (ssize_t)sceIoRead((SceUID)stream->fd, p, (SceSize)_chunk);
+#else
+         ssize_t _got   = read(stream->fd, p, _chunk);
+#endif
+         if (_got < 0)
+            return (total != 0) ? (int64_t)total : -1;
+         total += (uint64_t)_got;
+         if ((size_t)_got < _chunk)
+            break;
+         p     += _got;
+         len   -= (uint64_t)_got;
+      }
+      return (int64_t)total;
+   }
 }
 
 int64_t retro_vfs_file_write_impl(libretro_vfs_implementation_file *stream, const void *s, uint64_t len)
@@ -1528,7 +1644,24 @@ int64_t retro_vfs_file_write_impl(libretro_vfs_implementation_file *stream, cons
       }
 #endif
       pos = retro_vfs_file_tell_impl(stream);
-      ret = fwrite(s, 1, (size_t)len, stream->fp);
+      /* Same int-typed stdio callback contract as the read side:
+       * chunk so no single fwrite count exceeds what bionic takes. */
+      {
+         const uint8_t *p = (const uint8_t*)s;
+         uint64_t total   = 0;
+         while (len != 0)
+         {
+            size_t _chunk = (len > VFS_STDIO_IO_CHUNK_MAX)
+                  ? (size_t)VFS_STDIO_IO_CHUNK_MAX : (size_t)len;
+            size_t _put   = fwrite(p, 1, _chunk, stream->fp);
+            total        += _put;
+            if (_put < _chunk)
+               break;
+            p            += _put;
+            len          -= _put;
+         }
+         ret = (ssize_t)total;
+      }
 
       if (ret > 0 && pos + ret > stream->size)
          stream->size = pos + ret;
@@ -1541,7 +1674,34 @@ int64_t retro_vfs_file_write_impl(libretro_vfs_implementation_file *stream, cons
 #endif
 
    pos = retro_vfs_file_tell_impl(stream);
-   ret = write(stream->fd, s, (size_t)len);
+   /* write() shares read()'s MAX_RW_COUNT clamp; loop for the full
+    * count. */
+   {
+      const uint8_t *p = (const uint8_t*)s;
+      uint64_t total   = 0;
+      while (len != 0)
+      {
+         size_t  _chunk = (len > VFS_STDIO_IO_CHUNK_MAX)
+               ? (size_t)VFS_STDIO_IO_CHUNK_MAX : (size_t)len;
+#if defined(VITA)
+         ssize_t _put   = (ssize_t)sceIoWrite((SceUID)stream->fd, p, (SceSize)_chunk);
+#else
+         ssize_t _put   = write(stream->fd, p, _chunk);
+#endif
+         if (_put < 0)
+         {
+            if (total == 0)
+               return -1;
+            break;
+         }
+         total += (uint64_t)_put;
+         if ((size_t)_put < _chunk)
+            break;
+         p     += _put;
+         len   -= (uint64_t)_put;
+      }
+      ret = (ssize_t)total;
+   }
 
    if (ret != -1 && pos + ret > stream->size)
       stream->size = pos + ret;
@@ -1767,6 +1927,60 @@ int retro_vfs_file_rename_impl(const char *old_path, const char *new_path)
 #endif
    return ret;
 
+#elif defined(VITA)
+   /* rename() here means "replace": the Win32 branch above says so
+    * with MOVEFILE_REPLACE_EXISTING and POSIX says so by definition,
+    * and the write-to-temporary-then-rename pattern - playlists, the
+    * config file, core info - is built on it.  The kernel's own
+    * sceIoRename() refuses an existing destination, and newlib's
+    * rename() bridges that gap by sceIoRemove()ing the destination
+    * first and renaming after.  Between those two calls nothing is
+    * on disk, and if the rename then fails the caller's temporary
+    * is discarded on top: the file that was being replaced is
+    * simply gone.
+    *
+    * So call the kernel directly and, when the destination is in the
+    * way, move it aside rather than delete it.  The old file is only
+    * removed once its replacement is in place, and is put back if
+    * the replacement cannot be. */
+   {
+      SceIoStat st;
+      size_t _len;
+      char *aside;
+      int ret;
+
+      if (!old_path || !*old_path || !new_path || !*new_path)
+         return -1;
+
+      if (sceIoRename(old_path, new_path) >= 0)
+         return 0;
+
+      /* Only worth trying when there is a destination to move aside. */
+      if (sceIoGetstat(new_path, &st) < 0)
+         return -1;
+
+      _len  = strlen(new_path);
+      if (!(aside = (char*)malloc(_len + sizeof(".old"))))
+         return -1;
+      memcpy(aside, new_path, _len);
+      memcpy(aside + _len, ".old", sizeof(".old"));
+
+      ret = -1;
+      sceIoRemove(aside);              /* a leftover from an earlier run */
+      if (sceIoRename(new_path, aside) >= 0)
+      {
+         if (sceIoRename(old_path, new_path) >= 0)
+         {
+            sceIoRemove(aside);
+            ret = 0;
+         }
+         else
+            sceIoRename(aside, new_path);
+      }
+
+      free(aside);
+      return ret;
+   }
 #else
    /* Every other platform */
    if (!old_path || !*old_path || !new_path || !*new_path)

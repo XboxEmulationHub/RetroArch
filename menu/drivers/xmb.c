@@ -41,6 +41,7 @@
 #include "../../frontend/frontend_driver.h"
 
 #include "../menu_driver.h"
+#include "../menu_str.h"
 #include "../menu_entries.h"
 #include "../menu_screensaver.h"
 
@@ -589,6 +590,11 @@ typedef struct xmb_handle
     * locking video_st via video_driver_get_output_size. */
    unsigned last_width;
    unsigned last_height;
+   /* Word-wrap scratch for the sublabel line ticker, grown on demand
+    * and kept for the menu's lifetime; it was malloc'd and freed on
+    * every frame the ticker ran. */
+   char  *wrap_scratch;
+   size_t wrap_scratch_cap;
 } xmb_handle_t;
 
 /* Constant color templates — safe to share across threads.
@@ -790,13 +796,25 @@ static void xmb_free_node(xmb_node_t *node)
    if (!node)
       return;
 
+   /* Shared with every other node of the same list; released by
+    * reference, never with free(). */
    if (node->fullpath)
-      free(node->fullpath);
+      menu_str_unref(node->fullpath);
 
    node->fullpath = NULL;
    xmb_node_icons_free(node);
 
    free(node);
+}
+
+/* file_list_t::userdata_free hook.  Installed wherever a node is put
+ * into a list, so that a list holding one knows how to take it apart
+ * however it is destroyed -- including file_list_pop() and the bare
+ * file_list_deinitialize() paths, which reached free() directly and
+ * leaked whatever the node owned. */
+static void xmb_free_node_cb(void *userdata)
+{
+   xmb_free_node((xmb_node_t*)userdata);
 }
 
 /**
@@ -1782,7 +1800,7 @@ static void xmb_path_dynamic_wallpaper(xmb_handle_t *xmb, char *s, size_t len)
                dir_dynamic_wallpapers,
                xmb->title_name,
                len);
-      strlcpy(s + _len, ".png", len - _len);
+      strlcpy_lit(s + _len, ".png", len - _len);
    }
 
    if (s && *s && path_is_valid(s))
@@ -2757,6 +2775,7 @@ static xmb_node_t *xmb_node_allocate_userdata(
    }
    xmb_free_node(tmp);
 
+   xmb->horizontal_list.userdata_free    = xmb_free_node_cb;
    xmb->horizontal_list.list[i].userdata = node;
 
    return node;
@@ -3671,20 +3690,20 @@ static void xmb_context_reset_horizontal_list(xmb_handle_t *xmb)
                sizeof(sysname));
          __len   = fill_pathname_join_special(texturepath, iconpath, sysname,
                sizeof(texturepath));
-         strlcpy(texturepath + __len, ".png", sizeof(texturepath) - __len);
+         strlcpy_lit(texturepath + __len, ".png", sizeof(texturepath) - __len);
 
          if (!path_is_valid(texturepath))
          {
             __len  = fill_pathname_join_special(texturepath, iconpath, "default",
                   sizeof(texturepath));
-            strlcpy(texturepath + __len, ".png", sizeof(texturepath) - __len);
+            strlcpy_lit(texturepath + __len, ".png", sizeof(texturepath) - __len);
          }
 
          gfx_display_load_icon(texturepath, supports_rgba,
                &node->icon, xmb_icon_load_gen,
                &xmb_icon_load_gen);
 
-         strlcpy(sysname + syslen, "-content.png", sizeof(sysname) - syslen);
+         strlcpy_lit(sysname + syslen, "-content.png", sizeof(sysname) - syslen);
          fill_pathname_join_special(texturepath, iconpath, sysname,
                sizeof(texturepath));
 
@@ -5032,7 +5051,8 @@ static size_t xmb_animation_line_ticker_generic(uint64_t idx,
    return (excess_lines * 2) - phase;
 }
 
-XMB_NOINLINE static bool xmb_animation_line_ticker(gfx_animation_t *p_anim, gfx_animation_ctx_line_ticker_t *line_ticker)
+XMB_NOINLINE static bool xmb_animation_line_ticker(xmb_handle_t *xmb,
+      gfx_animation_t *p_anim, gfx_animation_ctx_line_ticker_t *line_ticker)
 {
    char *wrapped_str            = NULL;
    size_t wrapped_str_len       = 0;
@@ -5054,8 +5074,15 @@ XMB_NOINLINE static bool xmb_animation_line_ticker(gfx_animation_t *p_anim, gfx_
    /* Line wrap input string */
    line_ticker_str_len = strlen(line_ticker->str);
    wrapped_str_len     = line_ticker_str_len + 1 + 10; /* 10 bytes use for inserting '\n' */
-   if (!(wrapped_str   = (char*)malloc(wrapped_str_len)))
-      goto end;
+   if (wrapped_str_len > xmb->wrap_scratch_cap)
+   {
+      char *grown = (char*)realloc(xmb->wrap_scratch, wrapped_str_len);
+      if (!grown)
+         goto end;
+      xmb->wrap_scratch     = grown;
+      xmb->wrap_scratch_cap = wrapped_str_len;
+   }
+   wrapped_str         = xmb->wrap_scratch;
 
    wrapped_str[0] = '\0';
 
@@ -5177,12 +5204,6 @@ XMB_NOINLINE static bool xmb_animation_line_ticker(gfx_animation_t *p_anim, gfx_
    p_anim->flags           |= GFX_ANIM_FLAG_TICKER_IS_ACTIVE;
 
 end:
-   if (wrapped_str)
-   {
-      free(wrapped_str);
-      wrapped_str = NULL;
-   }
-
    if (!ret)
       if (line_ticker->len > 0)
          line_ticker->s[0] = '\0';
@@ -5796,7 +5817,7 @@ XMB_NOINLINE static void xmb_draw_item_sublabel(
       line_ticker.len       = sizeof(entry_sublabel);
       line_ticker.str       = sublabel;
 
-      xmb_animation_line_ticker(ctx->p_anim, &line_ticker);
+      xmb_animation_line_ticker(xmb, ctx->p_anim, &line_ticker);
    }
 
    /* Draw sublabel */
@@ -6279,7 +6300,11 @@ XMB_NOINLINE static int xmb_draw_item(
                   break;
             }
 
-            sidebar_node = (xmb_node_t*)file_list_get_userdata_at_offset(&xmb->horizontal_list, offset);
+            /* Search loop misses leave offset == horizontal_list.size;
+             * indexing the list with it reads out of bounds */
+            sidebar_node = (offset < xmb->horizontal_list.size)
+                  ? (xmb_node_t*)file_list_get_userdata_at_offset(&xmb->horizontal_list, offset)
+                  : NULL;
             if (sidebar_node && sidebar_node->icon)
                texture = sidebar_node->icon;
          }
@@ -6304,10 +6329,14 @@ XMB_NOINLINE static int xmb_draw_item(
             }
          }
 
-         sidebar_node = (xmb_node_t*)
-               (xmb->horizontal_list.size)
-                  ? (xmb_node_t*)file_list_get_userdata_at_offset(&xmb->horizontal_list, offset)
-                  : NULL;
+         /* offset is either the entry's untrusted entry_idx or a
+          * search-loop result that equals horizontal_list.size on a
+          * miss - both can point past the end of the list, so it must
+          * be bounds-checked, not merely the list checked as
+          * non-empty */
+         sidebar_node = (offset < xmb->horizontal_list.size)
+               ? (xmb_node_t*)file_list_get_userdata_at_offset(&xmb->horizontal_list, offset)
+               : NULL;
 
          if (sidebar_node && sidebar_node->icon)
             texture = sidebar_node->icon;
@@ -7036,11 +7065,8 @@ static enum menu_action xmb_parse_menu_entry_action(
                 * releases whatever that read returns. */
                if (stack_size > 0)
                {
-                  if (menu_stack->list[stack_size - 1].label)
-                     free(menu_stack->list[stack_size - 1].label);
-                  menu_stack->list[stack_size - 1].label = NULL;
-
-                  menu_stack->list[stack_size - 1].label = strdup(MENU_ENUM_LABEL_MAIN_MENU_STR);
+                  file_list_set_label_at_offset(menu_stack,
+                        stack_size - 1, MENU_ENUM_LABEL_MAIN_MENU_STR);
                   menu_stack->list[stack_size - 1].type  = MENU_SETTINGS;
                }
 
@@ -10618,6 +10644,7 @@ static void xmb_free(void *data)
          free(xmb->box_message);
       if (xmb->bg_file_path)
          free(xmb->bg_file_path);
+      free(xmb->wrap_scratch);
 
       menu_screensaver_free(xmb->screensaver);
    }
@@ -10727,9 +10754,9 @@ static void xmb_list_insert(void *userdata,
    if (fullpath && *fullpath)
    {
       if (node->fullpath)
-         free(node->fullpath);
+         menu_str_unref(node->fullpath);
 
-      node->fullpath = strdup(fullpath);
+      node->fullpath = menu_str_ref(fullpath);
    }
 
    node->alpha       = xmb->items_passive_alpha;
@@ -10745,6 +10772,7 @@ static void xmb_list_insert(void *userdata,
       node->zoom        = xmb->items_active_alpha;
    }
 
+   list->userdata_free    = xmb_free_node_cb;
    list->list[i].userdata = node;
 }
 
@@ -10844,9 +10872,7 @@ static void xmb_list_cache(void *data, enum menu_list_type type,
          if (stack_size < 1)
             break;
 
-         if (menu_stack->list[stack_size - 1].label)
-            free(menu_stack->list[stack_size - 1].label);
-         menu_stack->list[stack_size - 1].label = NULL;
+         file_list_free_label(menu_stack, stack_size - 1);
 
          switch (xmb_get_system_tab(xmb, (unsigned)xmb->categories_selection_ptr))
          {

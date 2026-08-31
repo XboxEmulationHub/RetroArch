@@ -22,6 +22,7 @@
 #include <retro_inline.h>
 #include <string/stdstring.h>
 #include <retro_math.h>
+#include <memalign.h>
 #include <retro_timers.h>
 #include <time/rtime.h>
 
@@ -72,6 +73,7 @@
 #include "../command.h"
 #include "../configuration.h"
 #include "video_shader_parse.h"
+#include <compat/strl.h>
 
 #define TIME_TO_FPS(last_time, new_time, frames) ((1000000.0f * (frames)) / ((new_time) - (last_time)))
 
@@ -871,33 +873,36 @@ const char *hw_render_context_name(
 
 static enum retro_hw_context_type hw_render_context_type(const char *s)
 {
-   size_t _len = strlen(s) + 1;
+   /* Every test here is an exact match against a fixed name, so
+    * string_is_equal() says what is meant and carries no length of
+    * its own - the driver set is decided at build time, and on a
+    * build with none of them a cached length has no reader. */
 #ifdef HAVE_OPENGL_CORE
-   if (_len >= 7 && memcmp(s, "glcore", 7) == 0)
+   if (string_is_equal(s, "glcore"))
       return RETRO_HW_CONTEXT_OPENGL_CORE;
 #endif
 #ifdef HAVE_OPENGL
-   if (_len >= 3 && memcmp(s, "gl", 3) == 0)
+   if (string_is_equal(s, "gl"))
       return RETRO_HW_CONTEXT_OPENGL;
 #endif
 #ifdef HAVE_VULKAN
-   if (_len >= 7 && memcmp(s, "vulkan", 7) == 0)
+   if (string_is_equal(s, "vulkan"))
       return RETRO_HW_CONTEXT_VULKAN;
 #endif
 #if defined(HAVE_D3D9) && defined(HAVE_HLSL)
-   if (_len >= 10 && memcmp(s, "d3d9_hlsl", 10) == 0)
+   if (string_is_equal(s, "d3d9_hlsl"))
       return RETRO_HW_CONTEXT_D3D9;
 #endif
 #ifdef HAVE_D3D10
-   if (_len >= 6 && memcmp(s, "d3d10", 6) == 0)
+   if (string_is_equal(s, "d3d10"))
       return RETRO_HW_CONTEXT_D3D10;
 #endif
 #ifdef HAVE_D3D11
-   if (_len >= 6 && memcmp(s, "d3d11", 6) == 0)
+   if (string_is_equal(s, "d3d11"))
       return RETRO_HW_CONTEXT_D3D11;
 #endif
 #ifdef HAVE_D3D12
-   if (_len >= 6 && memcmp(s, "d3d12", 6) == 0)
+   if (string_is_equal(s, "d3d12"))
       return RETRO_HW_CONTEXT_D3D12;
 #endif
    return RETRO_HW_CONTEXT_NONE;
@@ -1334,7 +1339,7 @@ static void recording_dump_frame(
       vp.full_width               = 0;
       vp.full_height              = 0;
 
-      if (vid && vid->viewport_info)
+      if (vid && vid->viewport_info && video_st->data)
          vid->viewport_info(video_st->data, &vp);
 
       if (!vp.width || !vp.height)
@@ -1856,7 +1861,7 @@ void video_driver_filter_free(void)
 #ifdef _3DS
       linearFree(video_st->state_buffer);
 #else
-      free(video_st->state_buffer);
+      memalign_free(video_st->state_buffer);
 #endif
    }
    video_st->state_buffer    = NULL;
@@ -1926,12 +1931,14 @@ void video_driver_init_filter(enum retro_pixel_format colfmt_int,
    video_st->state_out_bpp   = (video_st->flags & VIDEO_FLAG_STATE_OUT_RGB32)
       ? sizeof(uint32_t) : sizeof(uint16_t);
 
-   /* TODO: Aligned output. */
+   /* Every softfilter writes this with vector stores and the video
+    * driver reads it back for upload, so start it on a cache line:
+    * with the usual pitches every row then begins on one too. */
 #ifdef _3DS
    buf = linearMemAlign(
          width * height * video_st->state_out_bpp, 0x80);
 #else
-   buf = malloc(
+   buf = memalign_alloc(64,
          width * height * video_st->state_out_bpp);
 #endif
    if (!buf)
@@ -1968,6 +1975,7 @@ void video_driver_free_internal(void)
    input_driver_state_t *input_st = input_state_get_ptr();
    video_driver_state_t *video_st = &video_driver_st;
    const video_driver_t *vid      = video_st->current_video;
+   bool had_data                  = (video_st->data != NULL);
 #ifdef HAVE_THREADS
    bool is_threaded               = VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st);
 #endif
@@ -2036,6 +2044,16 @@ void video_driver_free_internal(void)
    if (video_st->data && vid && vid->free)
       vid->free(video_st->data);
 
+   /* The handle dies with the instance that owns it, but
+    * current_video keeps pointing at a live vtable, so anything that
+    * still reaches the driver through video_st->data between here and
+    * the next init reads freed memory. Input drivers do exactly that:
+    * a pointer or mouse event arriving while the window is being torn
+    * down runs video_driver_get_viewport_info(), which calls
+    * viewport_info(video_st->data, ...), and every GL, Vulkan and D3D
+    * implementation dereferences that argument on entry. */
+   video_st->data = NULL;
+
    /* The poke interface is a pointer into the driver's static vtable, so
     * unlike video_st->data it survives free "working" - and
     * video_context_driver_get_flags() consults poke->get_flags, so a
@@ -2068,7 +2086,7 @@ void video_driver_free_internal(void)
       return;
 #endif
 
-   if (video_st->data)
+   if (had_data)
       video_monitor_compute_fps_statistics(video_st->frame_time_count);
 }
 
@@ -2142,7 +2160,7 @@ bool video_driver_set_rotation(unsigned rotation)
 {
    video_driver_state_t *video_st   = &video_driver_st;
    const video_driver_t *vid        = video_st->current_video;
-   if (!vid || !vid->set_rotation)
+   if (!vid || !vid->set_rotation || !video_st->data)
       return false;
    vid->set_rotation(video_st->data, rotation);
    return true;
@@ -2180,7 +2198,7 @@ void *video_driver_read_frame_raw(unsigned *width,
 {
    video_driver_state_t *video_st = &video_driver_st;
    const video_driver_t *vid      = video_st->current_video;
-   if (vid && vid->read_frame_raw)
+   if (vid && vid->read_frame_raw && video_st->data)
       return vid->read_frame_raw(video_st->data, width,
             height, pitch);
    return NULL;
@@ -3325,7 +3343,7 @@ bool video_driver_get_viewport_info(struct video_viewport *viewport)
    const video_driver_t *vid       = video_st->current_video;
    if (!viewport)
       return false;
-   if (!vid || !vid->viewport_info)
+   if (!vid || !vid->viewport_info || !video_st->data)
    {
       /* Some video drivers don't implement viewport_info (gdi,
        * caca, sixel, network, fpga, vg, ps2, xenon360, xshm at
@@ -5517,7 +5535,7 @@ void video_driver_frame(const void *data, unsigned width,
                   audio_stats.close_to_blocking,
                   audio_stats.samples);
 
-         __len += strlcpy(video_info.stat_text + __len, "LATENCY\n",
+         __len += strlcpy_lit(video_info.stat_text + __len, "LATENCY\n",
                sizeof(video_info.stat_text) - __len);
 
          __len += snprintf(video_info.stat_text + __len, sizeof(video_info.stat_text) - __len,

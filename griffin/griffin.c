@@ -404,6 +404,18 @@ VIDEO SHADERS
 
 #ifdef HAVE_SLANG
 #include "../gfx/drivers_shader/glslang_util.c"
+#include "../gfx/drivers_shader/slang_cache.c"
+#include "../gfx/drivers_shader/slang_process.c"
+#endif
+
+/* Must mirror the guard this file carried in griffin_cpp.cpp exactly:
+ * shader_vulkan.c calls vulkan_common.c and the Vulkan symbol wrapper,
+ * neither of which is in the build unless HAVE_VULKAN is set.  HAVE_SLANG
+ * alone is a real configuration (MSVC lanes ship D3D + slang without
+ * Vulkan) and compiling this file there produces unresolved externals at
+ * link time, not a compile error. */
+#if defined(HAVE_VULKAN) && defined(HAVE_SLANG)
+#include "../gfx/drivers_shader/shader_vulkan.c"
 #endif
 
 /* Must mirror the guard on shader_gl3.cpp in griffin_cpp.cpp exactly:
@@ -1180,6 +1192,7 @@ FILE
 #include "../libretro-common/lists/dir_list.c"
 #include "../libretro-common/lists/string_list.c"
 #include "../libretro-common/lists/nested_list.c"
+#include "../libretro-common/memory/mempool.c"
 #include "../libretro-common/lists/file_list.c"
 #include "../libretro-common/file/retro_dirent.c"
 #include "../libretro-common/file/file_watch.c"
@@ -1465,6 +1478,7 @@ MENU
 #endif
 
 #ifdef HAVE_MENU
+#include "../menu/menu_str.c"
 #include "../menu/menu_driver.c"
 #include "../menu/menu_setting.c"
 #if defined(HAVE_MATERIALUI) || defined(HAVE_XMB) || defined(HAVE_OZONE)

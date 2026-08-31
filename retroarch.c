@@ -1549,7 +1549,7 @@ void driver_set_nonblock_state(void)
    unsigned swap_interval      = runloop_get_video_swap_interval(
          settings->uints.video_swap_interval);
    bool video_driver_active    = (video_st->flags  & VIDEO_FLAG_ACTIVE) ? true : false;
-   bool audio_driver_active    = (audio_st->flags  & AUDIO_FLAG_ACTIVE) ? true : false;
+   bool audio_driver_active    = (AUDIO_FLAGS_GET(audio_st)  & AUDIO_FLAG_ACTIVE) ? true : false;
    bool runloop_force_nonblock = (runloop_st->flags & RUNLOOP_FLAG_FORCE_NONBLOCK) ? true : false;
 
    /* Only apply non-block-state for video if we're using vsync. */
@@ -1568,13 +1568,7 @@ void driver_set_nonblock_state(void)
    }
 
    if (audio_driver_active && audio_st->context_audio_data)
-      audio_st->current_audio->set_nonblock_state(
-            audio_st->context_audio_data,
-            audio_sync ? enable : true);
-
-   audio_st->chunk_size = enable
-      ? audio_st->chunk_nonblock_size
-      : audio_st->chunk_block_size;
+      audio_driver_set_nonblock_state(audio_sync ? enable : true);
 }
 
 void drivers_init(
@@ -2042,7 +2036,7 @@ static void retroarch_deinit_drivers(struct retro_callbacks *cbs)
    video_driver_cached_frame_invalidate();
 
    /* Audio */
-   audio_state_get_ptr()->flags        &= ~AUDIO_FLAG_ACTIVE;
+   AUDIO_FLAGS_CLEAR(audio_state_get_ptr(), AUDIO_FLAG_ACTIVE);
    audio_state_get_ptr()->current_audio = NULL;
 
    if (input_st)
@@ -2262,27 +2256,27 @@ struct string_list *dir_list_new_special(const char *input_dir,
 
             if (BIT32_GET(flags.flags, GFX_CTX_FLAGS_SHADERS_CG))
             {
-               _len    += strlcpy(ext_shaders + _len, "cgp", sizeof(ext_shaders) - _len);
-               _len    += strlcpy(ext_shaders + _len, "|",   sizeof(ext_shaders) - _len);
-               _len    += strlcpy(ext_shaders + _len, "cg",  sizeof(ext_shaders) - _len);
+               _len    += strlcpy_lit(ext_shaders + _len, "cgp", sizeof(ext_shaders) - _len);
+               _len    += strlcpy_lit(ext_shaders + _len, "|",   sizeof(ext_shaders) - _len);
+               _len    += strlcpy_lit(ext_shaders + _len, "cg",  sizeof(ext_shaders) - _len);
             }
 
             if (BIT32_GET(flags.flags, GFX_CTX_FLAGS_SHADERS_GLSL))
             {
                if (_len > 0)
-                  _len += strlcpy(ext_shaders + _len, "|",     sizeof(ext_shaders) - _len);
-               _len    += strlcpy(ext_shaders + _len, "glslp", sizeof(ext_shaders) - _len);
-               _len    += strlcpy(ext_shaders + _len, "|",     sizeof(ext_shaders) - _len);
-               _len    += strlcpy(ext_shaders + _len, "glsl",  sizeof(ext_shaders) - _len);
+                  _len += strlcpy_lit(ext_shaders + _len, "|",     sizeof(ext_shaders) - _len);
+               _len    += strlcpy_lit(ext_shaders + _len, "glslp", sizeof(ext_shaders) - _len);
+               _len    += strlcpy_lit(ext_shaders + _len, "|",     sizeof(ext_shaders) - _len);
+               _len    += strlcpy_lit(ext_shaders + _len, "glsl",  sizeof(ext_shaders) - _len);
             }
 
             if (BIT32_GET(flags.flags, GFX_CTX_FLAGS_SHADERS_SLANG))
             {
                if (_len > 0)
-                  _len += strlcpy(ext_shaders + _len, "|",      sizeof(ext_shaders) - _len);
-               _len    += strlcpy(ext_shaders + _len, "slangp", sizeof(ext_shaders) - _len);
-               _len    += strlcpy(ext_shaders + _len, "|",      sizeof(ext_shaders) - _len);
-               strlcpy(ext_shaders + _len, "slang",  sizeof(ext_shaders) - _len);
+                  _len += strlcpy_lit(ext_shaders + _len, "|",      sizeof(ext_shaders) - _len);
+               _len    += strlcpy_lit(ext_shaders + _len, "slangp", sizeof(ext_shaders) - _len);
+               _len    += strlcpy_lit(ext_shaders + _len, "|",      sizeof(ext_shaders) - _len);
+               strlcpy_lit(ext_shaders + _len, "slang",  sizeof(ext_shaders) - _len);
             }
 
             exts = ext_shaders;
@@ -4338,53 +4332,17 @@ bool command_event(enum event_command cmd, void *data)
          }
 #endif
          break;
+      /* Plain stop and start. These used to be gated on the menu's
+       * pause and menu-sound settings because the menu toggle issued
+       * them; it no longer does, and the gate also disabled them for
+       * the callers that mean it, such as the 3DS sleep and wake hooks. */
       case CMD_EVENT_AUDIO_STOP:
-         {
-            bool menu_pause_libretro = false;
-            bool audio_enable_menu   = false;
-
-#if defined(HAVE_AUDIOMIXER) && defined(HAVE_MENU)
-            audio_enable_menu        = settings->bools.audio_enable_menu
-                  && menu_st->flags & MENU_ST_FLAG_ALIVE;
-#endif
-#ifdef HAVE_NETWORKING
-            menu_pause_libretro      = settings->bools.menu_pause_libretro
-                  && netplay_driver_ctl(RARCH_NETPLAY_CTL_ALLOW_PAUSE, NULL)
-                  && !netplay_driver_ctl(RARCH_NETPLAY_CTL_USE_CORE_PACKET_INTERFACE, NULL);
-#else
-            menu_pause_libretro      = settings->bools.menu_pause_libretro;
-#endif
-
-            if (audio_enable_menu || !menu_pause_libretro)
-               return false;
-
-            if (!audio_driver_stop())
-               return false;
-         }
+         if (!audio_driver_stop())
+            return false;
          break;
       case CMD_EVENT_AUDIO_START:
-         {
-            bool menu_pause_libretro = false;
-            bool audio_enable_menu   = false;
-
-#if defined(HAVE_AUDIOMIXER) && defined(HAVE_MENU)
-            audio_enable_menu        = settings->bools.audio_enable_menu
-                  && menu_st->flags & MENU_ST_FLAG_ALIVE;
-#endif
-#ifdef HAVE_NETWORKING
-            menu_pause_libretro      = settings->bools.menu_pause_libretro
-                  && netplay_driver_ctl(RARCH_NETPLAY_CTL_ALLOW_PAUSE, NULL)
-                  && !netplay_driver_ctl(RARCH_NETPLAY_CTL_USE_CORE_PACKET_INTERFACE, NULL);
-#else
-            menu_pause_libretro      = settings->bools.menu_pause_libretro;
-#endif
-
-            if (audio_enable_menu && !menu_pause_libretro)
-               return false;
-
-            if (!audio_driver_start(runloop_st->flags & RUNLOOP_FLAG_SHUTDOWN_INITIATED))
-               return false;
-         }
+         if (!audio_driver_start(runloop_st->flags & RUNLOOP_FLAG_SHUTDOWN_INITIATED))
+            return false;
          break;
 #ifdef HAVE_MICROPHONE
       case CMD_EVENT_MICROPHONE_STOP:
@@ -4704,11 +4662,6 @@ bool command_event(enum event_command cmd, void *data)
          break;
       case CMD_EVENT_CORE_DEINIT:
          {
-            struct retro_hw_render_callback *hwr = NULL;
-            video_driver_state_t
-               *video_st                         = video_state_get_ptr();
-            rarch_system_info_t *sys_info        = &runloop_st->system;
-            
             /* Restore unpaused state. The recursive command_event call
              * here re-enters this dispatcher; the UNPAUSE branch is
              * deliberately small (clears flags, resumes audio) and
@@ -5307,7 +5260,9 @@ bool command_event(enum event_command cmd, void *data)
          runloop_pause_checks();
          break;
       case CMD_EVENT_MENU_PAUSE_LIBRETRO:
-#ifdef HAVE_MENU
+         /* Audio is not stopped or started around the menu any more;
+          * see the menu toggle. Only the microphone follows the pause. */
+#if defined(HAVE_MENU) && defined(HAVE_MICROPHONE)
          {
 #ifdef HAVE_NETWORKING
             bool menu_pause_libretro = settings->bools.menu_pause_libretro
@@ -5315,21 +5270,10 @@ bool command_event(enum event_command cmd, void *data)
 #else
             bool menu_pause_libretro = settings->bools.menu_pause_libretro;
 #endif
-
             if (menu_pause_libretro)
-            {
-               command_event(CMD_EVENT_AUDIO_STOP, NULL);
-#ifdef HAVE_MICROPHONE
                command_event(CMD_EVENT_MICROPHONE_STOP, NULL);
-#endif
-            }
             else
-            {
-               command_event(CMD_EVENT_AUDIO_START, NULL);
-#ifdef HAVE_MICROPHONE
                command_event(CMD_EVENT_MICROPHONE_START, NULL);
-#endif
-            }
          }
 #endif
          break;
@@ -5602,7 +5546,7 @@ bool command_event(enum event_command cmd, void *data)
             if (!video_driver_has_windowed())
                return false;
 
-            audio_st->flags |= AUDIO_FLAG_SUSPENDED;
+            AUDIO_FLAGS_SET(audio_st, AUDIO_FLAG_SUSPENDED);
             video_driver_modify_disp_flags(VIDEO_FLAG_IS_SWITCHING_DISPLAY_MODE, 0);
 
             /* we toggled manually, write the new value to settings */
@@ -5641,7 +5585,7 @@ bool command_event(enum event_command cmd, void *data)
 #endif
 
             video_driver_modify_disp_flags(0, VIDEO_FLAG_IS_SWITCHING_DISPLAY_MODE);
-            audio_st->flags &= ~AUDIO_FLAG_SUSPENDED;
+            AUDIO_FLAGS_CLEAR(audio_st, AUDIO_FLAG_SUSPENDED);
 
             if (userdata && *userdata == true)
                video_driver_cached_frame();
@@ -6623,7 +6567,7 @@ int rarch_main(int argc, char *argv[], void *data)
    sthread_tls_set(&p_rarch->rarch_tls, MAGIC_POINTER);
 #endif
    video_driver_modify_disp_flags(VIDEO_FLAG_ACTIVE, 0);
-   audio_state_get_ptr()->flags |= AUDIO_FLAG_ACTIVE;
+   AUDIO_FLAGS_SET(audio_state_get_ptr(), AUDIO_FLAG_ACTIVE);
 
    {
       int i;
@@ -6881,9 +6825,21 @@ void libretro_free_system_info(struct retro_system_info *sysinfo)
    if (!sysinfo)
       return;
 
-   free((void*)sysinfo->library_name);
-   free((void*)sysinfo->library_version);
-   free((void*)sysinfo->valid_extensions);
+   /* The three strings are not owned here and never were.  Both paths
+    * that fill this struct leave pointers that cannot be free()d:
+    * libretro_get_system_info() copies into the fixed buffers inside
+    * runloop_state and assigns their addresses, and the core's own
+    * retro_get_system_info() returns its static literals, as do the
+    * MSG_UNKNOWN and "v0" fallbacks applied after it.  free()ing them
+    * is a free() of something malloc() never returned:
+    *
+    *   AddressSanitizer: SEGV in __asan::Allocator::Deallocate
+    *     #5 libretro_free_system_info retroarch.c
+    *     #6 menu_driver_ctl menu/menu_driver.c
+    *
+    * Clearing the struct is the whole of what this has to do.  Both
+    * callers already memset() it straight afterwards, which is what
+    * kept the missing ownership from being obvious. */
    memset(sysinfo, 0, sizeof(*sysinfo));
 }
 
@@ -6896,7 +6852,7 @@ static void retroarch_print_features(void)
 
    frontend_driver_attach_console();
 
-   _len  = strlcpy(buf, "Features:\n", sizeof(buf));
+   _len  = strlcpy_lit(buf, "Features:\n", sizeof(buf));
 #ifdef HAVE_DYLIB
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_DYLIB,           "Dylib",           "External filter and plugin support");
 #endif
@@ -7529,7 +7485,7 @@ static void retroarch_parse_input_libretro_path(
       _len = strlcpy(tmp_path, path, sizeof(tmp_path));
       if (!string_ends_with_size(tmp_path, "_libretro",
                _len, STRLEN_CONST("_libretro")))
-         strlcpy(tmp_path       + _len,
+         strlcpy_lit(tmp_path       + _len,
                "_libretro",
                sizeof(tmp_path) - _len);
       if (  !core_info_find(tmp_path, &core_info)
@@ -7670,7 +7626,7 @@ static bool retroarch_parse_input_and_config(
       {
          _len += strlcpy(p_rarch->launch_arguments        + _len,
                argv[i], sizeof(p_rarch->launch_arguments) - _len);
-         _len += strlcpy(p_rarch->launch_arguments        + _len,
+         _len += strlcpy_lit(p_rarch->launch_arguments        + _len,
                " ",     sizeof(p_rarch->launch_arguments) - _len);
       }
       string_trim_whitespace_left(p_rarch->launch_arguments);
@@ -8470,7 +8426,7 @@ bool retroarch_main_init(int argc, char *argv[])
 
    input_st->osk_idx             = OSK_LOWERCASE_LATIN;
    video_driver_modify_disp_flags(VIDEO_FLAG_ACTIVE, 0);
-   audio_state_get_ptr()->flags |= AUDIO_FLAG_ACTIVE;
+   AUDIO_FLAGS_SET(audio_state_get_ptr(), AUDIO_FLAG_ACTIVE);
 
    if (setjmp(global->error_sjlj_context) > 0)
    {
@@ -8525,7 +8481,7 @@ bool retroarch_main_init(int argc, char *argv[])
       {
          char str_output[384];
          const char *cpu_model  = frontend_driver_get_cpu_model_name();
-         size_t _len = strlcpy(str_output,
+         size_t _len = strlcpy_lit(str_output,
                "=== Build =================================================\n",
                sizeof(str_output));
 
@@ -9450,9 +9406,9 @@ size_t retroarch_get_capabilities(enum rarch_capabilities type,
                __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
 #elif defined(__clang__)
          _len += strlcpy(s + _len, msg_hash_to_str(MSG_COMPILER), len - _len);
-         _len += strlcpy(s + _len, ": Clang/LLVM (", len - _len);
+         _len += strlcpy_lit(s + _len, ": Clang/LLVM (", len - _len);
          _len += strlcpy(s + _len, __clang_version__, len - _len);
-         _len += strlcpy(s + _len, ")", len - _len);
+         _len += strlcpy_lit(s + _len, ")", len - _len);
 #elif defined(__GNUC__)
          _len += strlcpy (s + _len, msg_hash_to_str(MSG_COMPILER), len - _len);
          _len += snprintf(s + _len, len - _len, ": GCC (%d.%d.%d)",

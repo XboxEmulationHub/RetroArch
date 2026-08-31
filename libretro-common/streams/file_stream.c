@@ -2126,15 +2126,85 @@ error:
 bool filestream_write_file(const char *path, const void *data, int64_t size)
 {
    int64_t ret   = 0;
+   /* Everything this stream will ever write is in 'data' already, so
+    * ask for the descriptor path where one exists: one write for the
+    * whole buffer instead of a copy through a stdio buffer and a
+    * flush at close. */
    RFILE *file   = filestream_open(path,
          RETRO_VFS_FILE_ACCESS_WRITE,
-         RETRO_VFS_FILE_ACCESS_HINT_NONE);
+         RETRO_VFS_FILE_ACCESS_HINT_SEQUENTIAL_BULK);
    if (!file)
       return false;
    ret = filestream_write(file, data, size);
    if (filestream_close(file) != 0)
       free(file);
    return (ret == size);
+}
+
+bool filestream_write_file_atomic(const char *path,
+      const void *data, int64_t size)
+{
+   int64_t  ret       = 0;
+   size_t   path_len  = 0;
+   char    *temp_path = NULL;
+   RFILE   *file      = NULL;
+
+   if (!path || !*path)
+      return false;
+
+   path_len  = strlen(path);
+   temp_path = (char*)malloc(path_len + sizeof(".tmp"));
+   if (!temp_path)
+      return false;
+   memcpy(temp_path, path, path_len);
+   memcpy(temp_path + path_len, ".tmp", sizeof(".tmp"));
+
+   file = filestream_open(temp_path,
+         RETRO_VFS_FILE_ACCESS_WRITE,
+         RETRO_VFS_FILE_ACCESS_HINT_SEQUENTIAL_BULK);
+   if (!file)
+   {
+      free(temp_path);
+      return false;
+   }
+
+   ret = filestream_write(file, data, size);
+
+   /* A buffered write reports a full disk at close, not at write,
+    * so both have to agree before the rename goes ahead. */
+   if (filestream_close(file) != 0)
+   {
+      free(file);
+      filestream_delete(temp_path);
+      free(temp_path);
+      return false;
+   }
+
+   if (ret != size)
+   {
+      filestream_delete(temp_path);
+      free(temp_path);
+      return false;
+   }
+
+   if (filestream_rename(temp_path, path) == 0)
+   {
+      free(temp_path);
+      return true;
+   }
+
+   /* POSIX rename replaces the destination; the Win32 one refuses an
+    * existing destination, so it needs the target gone first. */
+   filestream_delete(path);
+   if (filestream_rename(temp_path, path) == 0)
+   {
+      free(temp_path);
+      return true;
+   }
+
+   filestream_delete(temp_path);
+   free(temp_path);
+   return false;
 }
 
 char *filestream_getline(RFILE *stream)

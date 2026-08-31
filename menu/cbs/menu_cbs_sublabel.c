@@ -867,7 +867,7 @@ static int action_bind_sublabel_subsystem_load(
       {
          if (_len + 1 >= sizeof(buf))
             break;
-         _len += strlcpy(buf + _len, "\n", sizeof(buf) - _len);
+         _len += strlcpy_lit(buf + _len, "\n", sizeof(buf) - _len);
       }
    }
    if (*buf)
@@ -1061,9 +1061,9 @@ static int action_bind_sublabel_netplay_room(file_list_t *list,
             (unsigned long)(unsigned)room->gamecrc);
    else
    {
-      _len += strlcpy(s + _len, "(", len - _len);
+      _len += strlcpy_lit(s + _len, "(", len - _len);
       _len += strlcpy(s + _len, room->subsystem_name, len - _len);
-      _len += strlcpy(s + _len, ")\n", len - _len);
+      _len += strlcpy_lit(s + _len, ")\n", len - _len);
    }
 
    if (room->spectator_count > 0)
@@ -1391,7 +1391,7 @@ static int action_bind_sublabel_core_updater_entry(
       {
          _len += strlcpy(s + _len, entry->licenses_list->elems[i].data, len - _len);
          if ((i + 1) < entry->licenses_list->size)
-            _len += strlcpy(s + _len, ", ", len - _len);
+            _len += strlcpy_lit(s + _len, ", ", len - _len);
       }
    }
    else /* No license found - set to N/A */
@@ -2337,6 +2337,8 @@ int menu_cbs_init_bind_sublabel(menu_file_list_cbs_t *cbs,
       { MENU_ENUM_LABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY, MENU_ENUM_SUBLABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY },
       { MENU_ENUM_LABEL_INPUT_TOUCH_SCALE, MENU_ENUM_SUBLABEL_INPUT_TOUCH_SCALE },
       { MENU_ENUM_LABEL_AUDIO_SYNC, MENU_ENUM_SUBLABEL_AUDIO_SYNC },
+      { MENU_ENUM_LABEL_AUDIO_THREADED_PIPELINE, MENU_ENUM_SUBLABEL_AUDIO_THREADED_PIPELINE },
+      { MENU_ENUM_LABEL_AUDIO_THREAD_PRIORITY, MENU_ENUM_SUBLABEL_AUDIO_THREAD_PRIORITY },
       { MENU_ENUM_LABEL_AUDIO_VOLUME, MENU_ENUM_SUBLABEL_AUDIO_VOLUME },
       { MENU_ENUM_LABEL_INPUT_POLL_TYPE_BEHAVIOR, MENU_ENUM_SUBLABEL_INPUT_POLL_TYPE_BEHAVIOR },
       { MENU_ENUM_LABEL_INPUT_MAX_USERS, MENU_ENUM_SUBLABEL_INPUT_MAX_USERS },

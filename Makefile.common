@@ -409,6 +409,7 @@ OBJ += \
        playlist.o \
        $(LIBRETRO_COMM_DIR)/features/features_cpu.o \
        $(LIBRETRO_COMM_DIR)/memory/mem_stats.o \
+       $(LIBRETRO_COMM_DIR)/memory/mempool.o \
        verbosity.o \
        $(LIBRETRO_COMM_DIR)/playlists/label_sanitization.o \
        $(LIBRETRO_COMM_DIR)/time/rtime.o \
@@ -1119,6 +1120,7 @@ endif
 ifeq ($(HAVE_MENU_COMMON), 1)
    OBJ += menu/menu_setting.o \
           menu/menu_driver.o \
+          menu/menu_str.o \
           menu/cbs/menu_cbs_ok.o \
           menu/cbs/menu_cbs_cancel.o \
           menu/cbs/menu_cbs_select.o \
@@ -1979,7 +1981,17 @@ ifneq ($(HAVE_BUILTINSPIRV_CROSS), 0)
    OBJ += $(DEPS_DIR)/SPIRV-Cross/spirv_msl.o
    OBJ += $(DEPS_DIR)/SPIRV-Cross/spirv_parser.o
    OBJ += $(DEPS_DIR)/SPIRV-Cross/spirv_cross_parsed_ir.o
+   OBJ += $(DEPS_DIR)/SPIRV-Cross/spirv_cross_c.o
+   # The C API translation unit compiles its backend wrappers only
+   # when these are defined truthy.
+   DEFINES += -DSPIRV_CROSS_C_API_GLSL=1
+   DEFINES += -DSPIRV_CROSS_C_API_HLSL=1
+   DEFINES += -DSPIRV_CROSS_C_API_MSL=1
+   DEFINES += -DSPIRV_CROSS_C_API_CPP=0
+   DEFINES += -DSPIRV_CROSS_C_API_REFLECT=0
 else
+   # slang_process.c is C: the header path must reach the C compiler too.
+   CFLAGS   += $(SPIRV_CROSS_CFLAGS)
    CXXFLAGS += $(SPIRV_CROSS_CFLAGS)
    LIBS     += $(SPIRV_CROSS_LIBS)
 endif

@@ -67,6 +67,7 @@
 #endif
 
 #include "../tasks/tasks_internal.h"
+#include <compat/strl.h>
 
 #define DEFAULT_GFX_THUMBNAIL_STREAM_DELAY  16.66667f * 3
 #define DEFAULT_GFX_THUMBNAIL_FADE_DURATION 166.66667f
@@ -412,6 +413,13 @@ enum gfx_thumb_anim_job_status
                                   keeps its meaning. */
 };
 
+/* The two jobs of an animation and their frame buffers come out of one
+ * block: job A at its start, job B one cache line in (the worker and
+ * the main thread hand the two back and forth, so they must not share
+ * a line), then the two frames, each on a 64-byte boundary. Job A's
+ * address is the block's; job B and both frame pointers are views. */
+#define GFX_THUMB_ANIM_JOB_STRIDE 64
+
 typedef struct gfx_thumb_anim_job
 {
    struct gfx_thumb_anim_job *next;  /* FIFO link (owned by the queue) */
@@ -729,22 +737,19 @@ static void gfx_thumbnail_preview_audio_start_owned(
 static void gfx_thumbnail_anim_close(gfx_thumbnail_t *thumbnail)
 {
 #ifdef HAVE_THREADS
+   /* Both jobs and their frames live in the block that anim_job
+    * addresses; pull each off the queue, then free once. */
+   if (thumbnail->anim_job2)
+      gfx_thumbnail_anim_job_release(
+            (gfx_thumb_anim_job_t*)thumbnail->anim_job2);
    if (thumbnail->anim_job)
    {
-      gfx_thumb_anim_job_t *job = (gfx_thumb_anim_job_t*)thumbnail->anim_job;
-      gfx_thumbnail_anim_job_release(job);
-      free(job->frame);
-      free(job);
-      thumbnail->anim_job = NULL;
+      gfx_thumbnail_anim_job_release(
+            (gfx_thumb_anim_job_t*)thumbnail->anim_job);
+      free(thumbnail->anim_job);
    }
-   if (thumbnail->anim_job2)
-   {
-      gfx_thumb_anim_job_t *job = (gfx_thumb_anim_job_t*)thumbnail->anim_job2;
-      gfx_thumbnail_anim_job_release(job);
-      free(job->frame);
-      free(job);
-      thumbnail->anim_job2 = NULL;
-   }
+   thumbnail->anim_job  = NULL;
+   thumbnail->anim_job2 = NULL;
    thumbnail->anim_job_upload = 0;
 #endif
 #if defined(GFX_THUMB_PREVIEW_AUDIO)
@@ -1882,24 +1887,21 @@ void gfx_thumbnail_animate(gfx_thumbnail_t *thumbnail)
 
          image_transfer_anim_stream_get_info(thumbnail->anim, type,
                &anim_w, &anim_h, &num_frames, &loop_count);
-         j0 = (gfx_thumb_anim_job_t*)calloc(1, sizeof(*j0));
-         j1 = (gfx_thumb_anim_job_t*)calloc(1, sizeof(*j1));
-         if (j0)
-            j0->frame = (uint32_t*)malloc(
-                  (size_t)anim_w * anim_h * sizeof(uint32_t));
-         if (j1)
-            j1->frame = (uint32_t*)malloc(
-                  (size_t)anim_w * anim_h * sizeof(uint32_t));
-         if (!j0 || !j1 || !j0->frame || !j1->frame)
          {
+            size_t frame_len = (((size_t)anim_w * anim_h * sizeof(uint32_t))
+                  + 63) & ~(size_t)63;
+            uint8_t *block   = (uint8_t*)calloc(1,
+                  2 * GFX_THUMB_ANIM_JOB_STRIDE + 2 * frame_len);
             /* Retry on a later vsync; the pair is all or nothing. */
-            if (j0)
-               free(j0->frame);
-            if (j1)
-               free(j1->frame);
-            free(j0);
-            free(j1);
-            return;
+            if (!block || sizeof(*j0) > GFX_THUMB_ANIM_JOB_STRIDE)
+            {
+               free(block);
+               return;
+            }
+            j0        = (gfx_thumb_anim_job_t*)block;
+            j1        = (gfx_thumb_anim_job_t*)(block + GFX_THUMB_ANIM_JOB_STRIDE);
+            j0->frame = (uint32_t*)(block + 2 * GFX_THUMB_ANIM_JOB_STRIDE);
+            j1->frame = (uint32_t*)(block + 2 * GFX_THUMB_ANIM_JOB_STRIDE + frame_len);
          }
          j0->stream     = thumbnail->anim;
          j1->stream     = thumbnail->anim;
@@ -3421,7 +3423,7 @@ void gfx_thumbnail_fill_content_img(char *s,
    while ((scrub_char_ptr = strpbrk(s, "&*/:`\"<>?\\|")))
       *scrub_char_ptr = '_';
    /* Add PNG extension */
-   strlcpy(s + _len, ".png", len - _len);
+   strlcpy_lit(s + _len, ".png", len - _len);
 }
 
 /* Resets thumbnail path data
@@ -3553,7 +3555,7 @@ bool gfx_thumbnail_set_system(gfx_thumbnail_path_data_t *path_data,
    /* Hack: There is only one MAME thumbnail repo,
     * so filter any input starting with 'MAME...' */
    if (strncmp(system, "MAME", 4) == 0)
-      path_data->system_len = strlcpy(path_data->system, "MAME", sizeof(path_data->system));
+      path_data->system_len = strlcpy_lit(path_data->system, "MAME", sizeof(path_data->system));
    else
       path_data->system_len = strlcpy(path_data->system, system, sizeof(path_data->system));
 
@@ -3713,14 +3715,14 @@ bool gfx_thumbnail_set_content_image(
       img_dir, img_name, sizeof(path_data->content_path));
 
    /* Set core name to "imageviewer" */
-   strlcpy(path_data->content_core_name,
+   strlcpy_lit(path_data->content_core_name,
          "imageviewer",
          sizeof(path_data->content_core_name));
 
    /* Set database name (arbitrarily) to "_images_"
     * (required for compatibility with gfx_thumbnail_update_path(),
     * but not actually used...) */
-   strlcpy(path_data->content_db_name,
+   strlcpy_lit(path_data->content_db_name,
          "_images_", sizeof(path_data->content_db_name));
 
    /* Redundant error check */
@@ -4201,7 +4203,7 @@ void gfx_savestate_thumbnail_get_path(
          path_remove_extension(new_path);
 
          _len = strlcpy(entry_basename, path_basename(new_path), PATH_MAX_LENGTH);
-         _len = strlcpy(entry_basename + _len, ".state", PATH_MAX_LENGTH - _len);
+         _len = strlcpy_lit(entry_basename + _len, ".state", PATH_MAX_LENGTH - _len);
 
          /* Set temporary save redirection paths */
          runloop_path_set_redirect(config_get_ptr(), old_savefile_dir, old_savestate_dir);

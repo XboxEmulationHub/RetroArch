@@ -10707,9 +10707,7 @@ static bool materialui_preswitch_tabs(materialui_handle_t *mui,
       return false;
 
    /* Delete existing label */
-   if (menu_stack->list[stack_size - 1].label)
-      free(menu_stack->list[stack_size - 1].label);
-   menu_stack->list[stack_size - 1].label = NULL;
+   file_list_free_label(menu_stack, stack_size - 1);
 
    /* Assign new label/type */
    switch (target_tab->type)
@@ -12206,7 +12204,8 @@ static void materialui_list_insert(void *userdata,
              * switch */
             break;
          default:
-            if (memcmp(label, "null", 4) == 0)
+            if (string_starts_with_size(label, "null",
+                     STRLEN_CONST("null")))
                break;
 #ifdef HAVE_CHEEVOS
             if (type >= MENU_SETTINGS_CHEEVOS_START &&
@@ -12710,7 +12709,7 @@ static void materialui_list_insert(void *userdata,
                   char val[NAME_MAX_LENGTH];
                   unsigned user_value = i + 1;
                   size_t _len = snprintf(val, sizeof(val), "%d", user_value);
-                  strlcpy(val       + _len,
+                  strlcpy_lit(val       + _len,
                         "_input_binds_list",
                         sizeof(val) - _len);
 

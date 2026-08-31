@@ -75,6 +75,7 @@ extern "C" {
 #include <file/file_path.h>
 #include <file/archive_file.h>
 #include <lists/string_list.h>
+#include <compat/strl.h>
 
 #ifndef CXX_BUILD
 }
@@ -8678,7 +8679,7 @@ QString MainWindow::getPlaylistDefaultCore(QString plName)
    _len = fill_pathname_join_special(
          playlist_path,  settings->paths.directory_playlist,
          plNameCString, sizeof(playlist_path));
-   strlcpy(playlist_path       + _len, ".lpl",
+   strlcpy_lit(playlist_path       + _len, ".lpl",
          sizeof(playlist_path) - _len);
 
    /* Load playlist, if required */

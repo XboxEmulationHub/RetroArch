@@ -48,7 +48,8 @@ typedef struct audio_thread
    bool is_paused;
    bool is_shutdown;
    bool use_float;
-
+   /* Ask the OS for a higher scheduling class from inside the thread. */
+   bool raise_priority;
 } audio_thread_t;
 
 /**
@@ -57,9 +58,19 @@ typedef struct audio_thread
  */
 static void audio_thread_loop(void *data)
 {
+   bool is_shutdown;
    audio_thread_t *thr = (audio_thread_t*)data;
 
    sthread_setname("ra-audio");
+
+   /* Best effort and never fatal: a refusal leaves the default. */
+   if (thr->raise_priority)
+   {
+      if (sthread_raise_current_priority())
+         RARCH_LOG("[Audio] Audio thread priority raised.\n");
+      else
+         RARCH_LOG("[Audio] Audio thread priority not raised; the system refused or has no such class.\n");
+   }
 
    if (!thr)
       return;
@@ -82,7 +93,13 @@ static void audio_thread_loop(void *data)
    slock_lock(thr->lock);
    while (thr->stopped)
       scond_wait(thr->cond, thr->lock);
+   is_shutdown = thr->is_shutdown;
    slock_unlock(thr->lock);
+
+   /* The loop below only calls the driver's start() when it comes out
+    * of a stop; the initial start has to be made here, on this thread,
+    * for drivers whose init() leaves the device paused (SDL). */
+   thr->driver->start(thr->driver_data, is_shutdown);
 
    for (;;)
    {
@@ -116,6 +133,7 @@ static void audio_thread_loop(void *data)
       audio_driver_callback();
    }
 
+   audio_driver_pipeline_consumer_exit();
    thr->driver->free(thr->driver_data);
 }
 
@@ -135,6 +153,10 @@ static void audio_thread_block(audio_thread_t *thr)
    thr->stopped_ack = false;
    thr->stopped = true;
    scond_signal(thr->cond);
+   /* The thread may be asleep in the pipeline waiting for data; wake it
+    * so it comes back to the loop and acknowledges now rather than
+    * after its timeout. */
+   audio_driver_pipeline_wake();
 
    /* Wait until audio driver actually goes to sleep. */
    while (!thr->stopped_ack)
@@ -173,6 +195,9 @@ static void audio_thread_free(void *data)
       scond_signal(thr->cond); /* Let the thread know it's okay to continue */
       slock_unlock(thr->lock); /* At this point, it will exit its loop. */
 
+      /* It may be asleep in the pipeline waiting for data; wake it so
+       * it sees alive == false now rather than after its timeout. */
+      audio_driver_pipeline_wake();
       sthread_join(thr->thread);
       /* Wait for the audio thread to exit, ensure that it's really dead.
        * (It will call the wrapped driver's free() function.) */
@@ -228,8 +253,10 @@ static bool audio_thread_start(void *data, bool is_shutdown)
 
    audio_driver_enable_callback();
 
+   slock_lock(thr->lock);
    thr->is_paused   = false;
    thr->is_shutdown = is_shutdown;
+   slock_unlock(thr->lock);
    audio_thread_unblock(thr);
 
    return true;
@@ -249,6 +276,47 @@ static bool audio_thread_use_float(void *data)
    if (!thr)
       return false;
    return thr->use_float;
+}
+
+/* Rate control runs on this thread when the pipeline is threaded, so
+ * the wrapped driver's fill queries are forwarded. They are only ever
+ * called from the audio thread, the same thread that writes. Drivers
+ * without them return 0 and audio_driver_init_internal() leaves rate
+ * control off, as it does without the wrapper. */
+static size_t audio_thread_write_avail(void *data)
+{
+   audio_thread_t *thr = (audio_thread_t*)data;
+   if (!thr || !thr->driver->write_avail || !thr->driver_data)
+      return 0;
+   return thr->driver->write_avail(thr->driver_data);
+}
+
+static size_t audio_thread_buffer_size(void *data)
+{
+   audio_thread_t *thr = (audio_thread_t*)data;
+   if (!thr || !thr->driver->buffer_size || !thr->driver_data)
+      return 0;
+   return thr->driver->buffer_size(thr->driver_data);
+}
+
+/* Only ever called from the audio thread. A wrapped driver that
+ * reports the device gone ends this thread the way a failed write
+ * does. */
+static size_t audio_thread_wait_writable(void *data, size_t len)
+{
+   size_t _len;
+   audio_thread_t *thr = (audio_thread_t*)data;
+   if (!thr || !thr->driver->wait_writable || !thr->driver_data)
+      return 0;
+   _len = thr->driver->wait_writable(thr->driver_data, len);
+   if (!_len)
+   {
+      slock_lock(thr->lock);
+      thr->alive = false;
+      scond_signal(thr->cond);
+      slock_unlock(thr->lock);
+   }
+   return _len;
 }
 
 static ssize_t audio_thread_write(void *data, const void *s, size_t len)
@@ -278,10 +346,12 @@ static const audio_driver_t audio_thread = {
    audio_thread_free,
    audio_thread_use_float,
    "audio-thread",
-   NULL, /* No point in using rate control with threaded audio. */
    NULL,
    NULL,
-   NULL
+   audio_thread_write_avail,
+   audio_thread_buffer_size,
+   NULL, /* write_raw */
+   audio_thread_wait_writable
 };
 
 /**
@@ -303,13 +373,15 @@ static const audio_driver_t audio_thread = {
 bool audio_init_thread(const audio_driver_t **out_driver,
       void **out_data, const char *device, unsigned audio_out_rate,
       unsigned *new_rate, unsigned latency,
-      unsigned block_frames, const audio_driver_t *drv)
+      unsigned block_frames, bool raise_priority,
+      const audio_driver_t *drv)
 {
    audio_thread_t *thr = (audio_thread_t*)calloc(1, sizeof(*thr));
    if (!thr)
       return false;
 
    thr->driver         = (const audio_driver_t*)drv;
+   thr->raise_priority = raise_priority;
    thr->device         = device;
    thr->out_rate       = audio_out_rate;
    thr->new_rate       = new_rate;

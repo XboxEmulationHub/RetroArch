@@ -2803,12 +2803,19 @@ bool runloop_environment_cb(unsigned cmd, void *data)
                   video_st->frame_delay_target = 0;
             }
 
+            /* CRT switchres derives its mode from the base resolution
+             * and field rate; while those hold, the shortcut below
+             * keeps the switched mode and only the remaining drivers
+             * (audio among them) pick up the new av_info. */
             no_video_reinit                       = (
-                     (crt_switch_resolution     == 0)
-                  && (video_switch_refresh_rate == false)
+                     (video_switch_refresh_rate == false)
                   && data
                   && ((*info)->geometry.max_width  == av_info->geometry.max_width)
-                  && ((*info)->geometry.max_height == av_info->geometry.max_height));
+                  && ((*info)->geometry.max_height == av_info->geometry.max_height)
+                  && (   (crt_switch_resolution == 0)
+                      || (   ((*info)->timing.fps           == av_info->timing.fps)
+                          && ((*info)->geometry.base_width  == av_info->geometry.base_width)
+                          && ((*info)->geometry.base_height == av_info->geometry.base_height))));
 
             /* First set new refresh rate and display rate, then after REINIT do
              * another display rate change to make sure the change stays */
@@ -3235,8 +3242,8 @@ bool runloop_environment_cb(unsigned cmd, void *data)
          video_driver_state_t *video_st    = video_state_get_ptr();
          audio_driver_state_t *audio_st    = audio_state_get_ptr();
 
-         if (    !(audio_st->flags & AUDIO_FLAG_SUSPENDED)
-               && (audio_st->flags & AUDIO_FLAG_ACTIVE))
+         if (    !(AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_SUSPENDED)
+               && (AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_ACTIVE))
             result |= RETRO_AV_ENABLE_AUDIO;
 
          if (      (video_st->flags & VIDEO_FLAG_ACTIVE)
@@ -3244,7 +3251,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
             result |= RETRO_AV_ENABLE_VIDEO;
 
 #ifdef HAVE_RUNAHEAD
-         if (audio_st->flags & AUDIO_FLAG_HARD_DISABLE)
+         if (AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_HARD_DISABLE)
             result |= RETRO_AV_ENABLE_HARD_DISABLE_AUDIO;
 #endif
 
@@ -3368,8 +3375,8 @@ bool runloop_environment_cb(unsigned cmd, void *data)
 
          bool menu_opened = false;
          bool core_paused = !!(runloop_st->flags & RUNLOOP_FLAG_PAUSED);
-         bool no_audio    = !!(audio_st->flags & AUDIO_FLAG_SUSPENDED)
-                         || !(audio_st->flags & AUDIO_FLAG_ACTIVE);
+         bool no_audio    = !!(AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_SUSPENDED)
+                         || !(AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_ACTIVE);
          float core_fps   = (float)video_st->av_info.timing.fps;
 
 #ifdef HAVE_REWIND
@@ -3729,9 +3736,9 @@ bool runloop_environment_cb(unsigned cmd, void *data)
           * yet initialised (queried before drivers_init, e.g. a direct CLI
           * load) we cannot read its real format, so fall back to the
           * format-negotiation hint, which is what it will request. */
-         if (audio_state_get_ptr()->flags & AUDIO_FLAG_ACTIVE)
+         if (AUDIO_FLAGS_GET(audio_state_get_ptr()) & AUDIO_FLAG_ACTIVE)
          {
-            if (!(audio_state_get_ptr()->flags & AUDIO_FLAG_USE_FLOAT))
+            if (!(AUDIO_FLAGS_GET(audio_state_get_ptr()) & AUDIO_FLAG_USE_FLOAT))
                return false;
          }
          else if (config_get_ptr()->uints.audio_format_negotiation
@@ -4420,9 +4427,9 @@ static void runloop_apply_fastmotion_override(runloop_state_t *runloop_st,
          runloop_st->flags &= ~RUNLOOP_FLAG_FASTMOTION;
 
       if (audio_fastforward_mute && (runloop_st->flags & RUNLOOP_FLAG_FASTMOTION))
-         audio_st->flags |=  AUDIO_FLAG_MUTED;
+         AUDIO_FLAGS_SET(audio_st, AUDIO_FLAG_MUTED);
       else
-         audio_st->flags &= ~AUDIO_FLAG_MUTED;
+         AUDIO_FLAGS_CLEAR(audio_st, AUDIO_FLAG_MUTED);
 
       if (input_st)
       {
@@ -5414,7 +5421,7 @@ void runloop_path_fill_names(void)
       size_t _len = strlcpy(runloop_st->name.ups,
             runloop_st->runtime_content_path_basename,
             sizeof(runloop_st->name.ups));
-      strlcpy(runloop_st->name.ups       + _len,
+      strlcpy_lit(runloop_st->name.ups       + _len,
             ".ups",
             sizeof(runloop_st->name.ups) - _len);
    }
@@ -5424,7 +5431,7 @@ void runloop_path_fill_names(void)
       size_t _len = strlcpy(runloop_st->name.bps,
             runloop_st->runtime_content_path_basename,
             sizeof(runloop_st->name.bps));
-      strlcpy(runloop_st->name.bps       + _len,
+      strlcpy_lit(runloop_st->name.bps       + _len,
             ".bps",
             sizeof(runloop_st->name.bps) - _len);
    }
@@ -5434,7 +5441,7 @@ void runloop_path_fill_names(void)
       size_t _len = strlcpy(runloop_st->name.ips,
             runloop_st->runtime_content_path_basename,
             sizeof(runloop_st->name.ips));
-      strlcpy(runloop_st->name.ips       + _len,
+      strlcpy_lit(runloop_st->name.ips       + _len,
             ".ips",
             sizeof(runloop_st->name.ips) - _len);
    }
@@ -5444,7 +5451,7 @@ void runloop_path_fill_names(void)
       size_t _len = strlcpy(runloop_st->name.xdelta,
             runloop_st->runtime_content_path_basename,
             sizeof(runloop_st->name.xdelta));
-      strlcpy(runloop_st->name.xdelta       + _len,
+      strlcpy_lit(runloop_st->name.xdelta       + _len,
             ".xdelta",
             sizeof(runloop_st->name.xdelta) - _len);
    }
@@ -6947,6 +6954,16 @@ static enum runloop_state_enum runloop_check_state(
                menu_pause_libretro);
 #endif
 
+         /* menu_driver_iterate() above dispatches entry actions, which
+          * can tear down and recreate the menu handle (menu driver
+          * change, any CMD_EVENT_REINIT from an action) - the pointer
+          * cached at the top of this function is stale from here on.
+          * Re-fetch before the render block below reads and writes
+          * through it; the second re-fetch further down covers
+          * core_run() inside display_menu_libretro() invalidating it
+          * again. */
+         menu = menu_st->driver_data;
+
          if (menu)
          {
             if (BIT64_GET(menu->state, MENU_STATE_RENDER_FRAMEBUFFER)
@@ -6989,25 +7006,28 @@ static enum runloop_state_enum runloop_check_state(
                         libretro_running, current_time))
                   video_driver_cached_frame();
 
-            if (menu->driver_ctx->set_texture)
-               menu->driver_ctx->set_texture(menu->userdata);
+            /* Core execution inside display_menu_libretro() can trigger
+             * a driver reinit (e.g. RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO
+             * -> CMD_EVENT_REINIT), which frees and recreates the menu
+             * handle - the cached pointer must be re-fetched before it
+             * is dereferenced again */
+            if ((menu = menu_st->driver_data))
+            {
+               if (menu->driver_ctx && menu->driver_ctx->set_texture)
+                  menu->driver_ctx->set_texture(menu->userdata);
 
-            menu->state               = 0;
+               menu->state            = 0;
+            }
          }
 
-         /* Pump the menu audio path when menu sounds are enabled, or when a
-          * mixer stream is active (e.g. animated thumbnail preview audio) --
-          * the mixer is only advanced by audio_driver_flush(), which in the
-          * menu is driven from here.  Without this, thumbnail audio would be
-          * silent whenever menu sounds are disabled. */
-         if (      !libretro_running
-#ifdef HAVE_AUDIOMIXER
-               && (   settings->bools.audio_enable_menu
-                   || audio_driver_mixer_get_streams_playing() > 0)
-#else
-               && settings->bools.audio_enable_menu
-#endif
-            )
+         /* Feed the audio device one frame of silence while the core is
+          * not running behind the menu, so the stream never starves or
+          * stops: the device stays in the same state it is in during
+          * play, rate control keeps its footing, and menu sounds, the
+          * mixer and thumbnail video playback mix into this stream
+          * through audio_driver_flush(), which in the menu is driven only
+          * from here. */
+         if (!libretro_running)
             audio_driver_menu_sample();
       }
 
@@ -7164,9 +7184,9 @@ static enum runloop_state_enum runloop_check_state(
          if (rewind_pressed != old_rewind_pressed)
          {
             if (settings->bools.audio_rewind_mute && rewind_pressed)
-               audio_st->flags |=  AUDIO_FLAG_MUTED;
+               AUDIO_FLAGS_SET(audio_st, AUDIO_FLAG_MUTED);
             else
-               audio_st->flags &= ~AUDIO_FLAG_MUTED;
+               AUDIO_FLAGS_CLEAR(audio_st, AUDIO_FLAG_MUTED);
          }
 
          old_rewind_pressed = rewind_pressed;
@@ -7466,9 +7486,9 @@ static enum runloop_state_enum runloop_check_state(
          }
 
          if (audio_fastforward_mute && (runloop_st->flags & RUNLOOP_FLAG_FASTMOTION))
-            audio_st->flags |=  AUDIO_FLAG_MUTED;
+            AUDIO_FLAGS_SET(audio_st, AUDIO_FLAG_MUTED);
          else
-            audio_st->flags &= ~AUDIO_FLAG_MUTED;
+            AUDIO_FLAGS_CLEAR(audio_st, AUDIO_FLAG_MUTED);
 
          driver_set_nonblock_state();
 
@@ -7720,7 +7740,7 @@ static enum runloop_state_enum runloop_check_state(
                   ": %d", settings->ints.replay_slot);
 
          if (cur_replay_slot < 0)
-            _len += strlcpy(msg + _len, " (Auto)", sizeof(msg) - _len);
+            _len += strlcpy_lit(msg + _len, " (Auto)", sizeof(msg) - _len);
 
 #ifdef HAVE_GFX_WIDGETS
          if (dispwidget_get_ptr()->active)
@@ -7996,7 +8016,7 @@ int runloop_iterate(void)
       bool audio_buf_underrun      = false;
 
       if (!(    (runloop_st->flags & RUNLOOP_FLAG_PAUSED)
-            || !(audio_st->flags & AUDIO_FLAG_ACTIVE)
+            || !(AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_ACTIVE)
             || !(audio_st->output_samples_buf))
             && audio_st->current_audio->write_avail
             && audio_st->context_audio_data
@@ -8217,12 +8237,9 @@ end:
          if (runloop_st->fastforward_after_frames == 1)
          {
             /* Nonblocking audio */
-            if (    (audio_st->flags & AUDIO_FLAG_ACTIVE)
+            if (    (AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_ACTIVE)
                  && (audio_st->context_audio_data))
-               audio_st->current_audio->set_nonblock_state(
-                     audio_st->context_audio_data, true);
-            audio_st->chunk_size =
-               audio_st->chunk_nonblock_size;
+               audio_driver_set_nonblock_state(true);
          }
 
          runloop_st->fastforward_after_frames++;
@@ -8230,13 +8247,10 @@ end:
          if (runloop_st->fastforward_after_frames == 6)
          {
             /* Blocking audio */
-            if (     (audio_st->flags & AUDIO_FLAG_ACTIVE)
+            if (     (AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_ACTIVE)
                   && (audio_st->context_audio_data))
-               audio_st->current_audio->set_nonblock_state(
-                     audio_st->context_audio_data,
-                     audio_sync ? false : true);
+               audio_driver_set_nonblock_state(audio_sync ? false : true);
 
-            audio_st->chunk_size = audio_st->chunk_block_size;
             runloop_st->fastforward_after_frames = 0;
          }
       }
@@ -8882,7 +8896,10 @@ void core_run(void)
     * (e.g. archive member opened with no core).  Never call through
     * a NULL retro_run — that is an immediate SIGSEGV. */
    if (current_core->retro_run)
+   {
       current_core->retro_run();
+      audio_driver_frame_end();
+   }
 
 #ifdef HAVE_GAME_AI
    {
